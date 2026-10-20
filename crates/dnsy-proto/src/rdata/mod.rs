@@ -164,6 +164,9 @@ impl RData {
                 let tag_len = usize::from(r.read_u8()?);
                 let tag = String::from_utf8(r.read_bytes(tag_len)?.to_vec())
                     .map_err(|_| WireError::BadRdata)?;
+                if !valid_caa_tag(&tag) {
+                    return Err(WireError::BadRdata);
+                }
                 let value_len = end.checked_sub(r.position()).ok_or(WireError::BadRdata)?;
                 Self::Caa {
                     flags,
@@ -231,6 +234,9 @@ impl RData {
             }
             Self::Caa { flags, tag, value } => {
                 w.write_u8(*flags);
+                if !valid_caa_tag(tag) {
+                    return Err(WireError::BadRdata);
+                }
                 w.write_u8(u8::try_from(tag.len()).map_err(|_| WireError::BadRdata)?);
                 w.write_bytes(tag.as_bytes());
                 w.write_bytes(value);
@@ -293,7 +299,7 @@ impl RData {
             RecordType::Caa => {
                 let flags = number(&mut it, "flags")?;
                 let tag = next(&mut it, "tag")?.text("tag")?.to_owned();
-                if tag.is_empty() || !tag.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                if !valid_caa_tag(&tag) {
                     return Err(RdataParseError::InvalidField("tag"));
                 }
                 let value = next(&mut it, "value")?.bytes.clone();
@@ -314,6 +320,11 @@ impl RData {
         }
         Ok(data)
     }
+}
+
+/// RFC 8659 tags are non-empty ASCII alphanumerics.
+fn valid_caa_tag(tag: &str) -> bool {
+    !tag.is_empty() && tag.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
 fn next<'a>(
