@@ -532,14 +532,23 @@ name = "dnsy-zone"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "argon2",
+ "base64",
+ "dnsy-config",
+ "dnsy-dnssec",
  "dnsy-proto",
+ "dnsy-store",
  "insta",
  "notify",
+ "ring",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

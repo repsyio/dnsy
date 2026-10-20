@@ -81,3 +81,68 @@ labels value of 3 that exceeds the owner's label count, so DNSY checks those sig
 directly rather than through the strict `verify_rrsig`; and RFC 5702's SHA-256 key is below
 the 1024-bit floor, so that algorithm is exercised with a 2048-bit key generated with
 openssl.
+
+## Signing keys
+
+The `KeyStore` in `dnsy-zone` keeps each signing zone's keys in the `dnssec_keys` table
+(migration `0006`). A key has a role (`csk`, `ksk` or `zsk`), an algorithm (13 or 15), its key
+tag, a state and a timestamp for every state it has reached. Generation uses `ring` through
+`SigningKey::generate`; RSA keys cannot be generated.
+
+When a zone's policy enables DNSSEC, `bootstrap` creates the first keys as `active`: one CSK,
+or a KSK and a ZSK when `key_layout` is `ksk_zsk`.
+
+### Encryption at rest
+
+Private keys are PKCS#8 documents sealed with AES-256-GCM (`ring`). The key comes from the
+passphrase through argon2id (19 MiB, 2 iterations, 1 lane by default) with a fresh random salt
+and nonce for every key; the KDF cost, the salt and the format version are authenticated and
+stored with the ciphertext. A wrong passphrase or damaged data yields one generic decryption
+error that never includes key material.
+
+The passphrase is read from `DNSY_DNSSEC_PASSPHRASE` (an empty value counts as unset), else
+from the first line of `dnssec.key_passphrase_file`. Keep that file at mode `0600`; DNSY logs
+a warning when other users can read it.
+
+Without a passphrase keys are stored unencrypted, DNSY logs a warning at startup and the API
+reports `keys_encrypted=false`. Protect the database file accordingly (mode `0600`, owned by
+the service user). Key material is zeroized after use and `Debug` output of keys and
+passphrases is redacted; keys and the passphrase are never logged.
+
+### Key states and rollover
+
+```text
+generated -> published -> active -> retired -> removed
+```
+
+| State | Meaning |
+| --- | --- |
+| `generated` | created, not in the DNSKEY RRset |
+| `published` | in the DNSKEY RRset, not signing |
+| `active` | signing |
+| `retired` | no longer signing, still published for validators holding old signatures |
+| `removed` | withdrawn; the private key is wiped from the database |
+
+Rollovers are planned by a pure function of the key set, the zone's timings and the current
+time, and a timer task (`KeyStore::spawn_timer`) applies them. The clock is injectable, which
+is how the tests advance days without sleeping.
+
+* **ZSK, pre-publish (RFC 6781).** `start_rollover` creates and publishes the new ZSK. After
+  the DNSKEY TTL plus the propagation delay it becomes `active` and the old ZSK is `retired`.
+  The old key leaves the DNSKEY RRset once its last signature has expired: the maximum
+  signature validity plus the DNSKEY TTL and propagation delay after retirement.
+* **KSK and CSK, double-DS.** The new key is published and its DS goes to the parent. It stays
+  `published` for as long as it takes: only when the operator confirms the DS at the parent
+  (`confirm_ds`, exposed through the API) and the DNSKEY TTL has elapsed does it become
+  `active` and the old key `retired`. DNSY never contacts the registrar.
+
+Only one rollover per role runs at a time, and a role needs an active key to roll. Algorithm
+rollovers are not coordinated beyond this: start one by passing the new algorithm.
+
+### Backup and restore
+
+`export_bundle` writes the zone's (or every zone's) non-removed keys as a single blob encrypted
+with AES-256-GCM under a bundle passphrase of the operator's choosing, independent of the
+store passphrase. `import_bundle` decrypts it, validates every key (PKCS#8, algorithm, key
+tag), re-seals the keys under the current store passphrase and skips keys that are already
+present. The file variants create the bundle with mode `0600` and refuse to overwrite.

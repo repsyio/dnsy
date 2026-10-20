@@ -1,12 +1,16 @@
 //! Zone model, JSON zone files, normalised file names and hot reload.
 
 mod export;
+mod keystore;
 mod lookup;
 mod model;
 mod policy;
 mod store;
 
 pub use export::{SignedZone, export_bind};
+pub use keystore::{
+    KdfCost, KeyStore, KeyStoreError, Passphrase, passphrase_from_environment, resolve_passphrase,
+};
 pub use lookup::LookupResult;
 pub use model::{Record, Zone, ZoneError, zone_file_name};
 pub use policy::{Denial, DnssecPolicy, KeyLayout, Nsec3Params};
