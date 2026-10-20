@@ -12,6 +12,7 @@
 mod algorithm;
 mod ds;
 mod error;
+mod keys;
 mod nsec3;
 mod pubkey;
 mod signing;
@@ -20,6 +21,10 @@ mod verify;
 pub use algorithm::{Algorithm, DigestType};
 pub use ds::ds_for;
 pub use error::{DnssecError, VerifyError};
+pub use keys::{
+    Clock, KeyRecord, KeyRole, KeyState, ManualClock, RolloverTimings, SystemClock, Transition,
+    plan,
+};
 pub use nsec3::{MAX_NSEC3_ITERATIONS, checked_nsec3_hash, nsec3_hash};
 pub use signing::SigningKey;
 pub use verify::{MAX_CLOCK_SKEW, verify_rrsig, verify_rrsig_with_skew};

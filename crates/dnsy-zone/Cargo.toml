@@ -12,12 +12,21 @@ workspace = true
 
 [dependencies]
 arc-swap = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+dnsy-config = { version = "0.1.0", path = "../dnsy-config" }
+dnsy-dnssec = { version = "0.1.0", path = "../dnsy-dnssec" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
+dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
 notify = { workspace = true }
+ring = { workspace = true }
+rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
