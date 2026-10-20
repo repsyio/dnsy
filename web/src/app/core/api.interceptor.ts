@@ -18,6 +18,8 @@ export function readCookie(name: string): string | null {
   return null;
 }
 
+const ANSWERS_401 = ['/auth/login', '/auth/me', '/auth/me/password'];
+
 /**
  * For same-origin API calls: add the double-submit `X-CSRF-Token` header on unsafe methods,
  * map failures to `ApiError` (RFC 9457 problem+json) and drop the session on 401.
@@ -32,7 +34,8 @@ export const apiInterceptor: HttpInterceptorFn = (req, next) => {
     catchError((err: unknown) => {
       if (!(err instanceof HttpErrorResponse)) return throwError(() => err);
       const problem = isProblem(err.error) ? err.error : null;
-      if (err.status === 401 && !req.url.endsWith('/auth/login') && !req.url.endsWith('/auth/me')) {
+      // A 401 from login, `/auth/me` or the password change is an answer, not an expired session.
+      if (err.status === 401 && !ANSWERS_401.some((p) => req.url.endsWith(p))) {
         auth.markSignedOut();
         void router.navigate(['/login']);
       }

@@ -47,7 +47,7 @@ describe('App routing', () => {
     const el = harness.routeNativeElement as HTMLElement;
     expect(TestBed.inject(Router).url).toBe('/dashboard');
     expect(el.textContent).toContain('Dashboard');
-    expect(NAV_ITEMS.length).toBe(10);
+    expect(NAV_ITEMS.length).toBe(12);
   });
 
   it('unknown path under the shell renders the 404 page', async () => {
@@ -73,6 +73,8 @@ describe('App routing', () => {
     'acl',
     'client-certs',
     'cache',
+    'tokens',
+    'profile',
   ])('lazy-loads the %s page', async (path) => {
     const harness = await RouterTestingHarness.create();
     const nav = harness.navigateByUrl('/' + path);
@@ -95,7 +97,9 @@ describe('App routing', () => {
         .flush({ id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' }),
     );
     await nav;
-    const btn = (harness.routeNativeElement as HTMLElement).querySelector('button')!;
+    const btn = (harness.routeNativeElement as HTMLElement).querySelector<HTMLButtonElement>(
+      'header div button',
+    )!;
     btn.click();
     await vi.waitFor(() => ctrl.expectOne('/api/v1/auth/logout').flush({}));
     await vi.waitFor(() => expect(TestBed.inject(Router).url).toBe('/login'));
