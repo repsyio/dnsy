@@ -1,6 +1,7 @@
 //! dnsy-resolver: upstream client, cache, load balancing and the validating forwarder.
 
 mod cache;
+pub mod forward;
 pub mod groups;
 pub mod upstream;
 

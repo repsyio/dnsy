@@ -488,6 +488,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -539,6 +540,7 @@ version = "0.1.0"
 dependencies = [
  "dnsy-config",
  "dnsy-core",
+ "dnsy-dnssec",
  "dnsy-proto",
  "dnsy-store",
  "rand",

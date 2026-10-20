@@ -2,13 +2,25 @@
 //!
 //! ACL -> rate limit -> blocklist/allowlist -> local zones (authoritative, never cached) ->
 //! RD check -> cache (keyed by the query's DO/CD bits) -> upstream groups (bounded by the overall
-//! deadline) -> DNSSEC validation seam -> response-IP policy -> shaping -> one `QueryEvent`.
+//! deadline) -> DNSSEC validation (per mode; the status is stored with the cache entry) ->
+//! response-IP policy -> AD / EDE / DNSSEC-record shaping -> one `QueryEvent`.
+//!
+//! Validation (modes `permissive` and `strict`, client CD=0): the query goes upstream with DO=1
+//! and CD=1, the raw answer is validated (DS/DNSKEY fetched through the cache by
+//! [`UpstreamFetcher`]), then scrubbed for the client (DNSSEC records only for DO=1), its TTLs
+//! capped by the signatures' remaining validity and cached with its status. AD is set only for
+//! `Secure` answers to clients that sent DO or AD (RFC 6840 5.7). `Bogus` answers become SERVFAIL
+//! with the validator's EDE in strict mode and are served without AD (EDE attached) in
+//! permissive mode. A client CD=1 skips validation: the upstream answer is returned as-is from
+//! its own (CD) cache entry.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use dnsy_config::Validation;
 use dnsy_core::{DnssecStatus, Principal};
 use dnsy_filter::{
     Acl, AclAction, BlockMode, FilterSet, ListManager, RateLimiter, RateVerdict, Verdict,
@@ -16,13 +28,16 @@ use dnsy_filter::{
 };
 use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink};
 use dnsy_proto::{EDNS_VERSION, Edns, Message, Name, Opcode, Question, Rcode, RecordType, ede};
+use dnsy_resolver::forward::{DnssecPolicy, UpstreamFetcher, cap_ttls, unix_now};
 use dnsy_resolver::groups::{Exchange, GroupError, GroupSet};
 use dnsy_resolver::{Cache, CacheKey, CacheLookup, Upstream, UpstreamClient, UpstreamError};
 use dnsy_zone::{ZoneSigning, ZoneStore};
+use tokio::sync::Semaphore;
 
 use crate::handler::{Handler, RequestContext};
 use crate::response::{
-    RESPONSE_IP_LIST, ResponseIpPolicy, authoritative, dnssec_ok, error_response, finish, scrub,
+    RESPONSE_IP_LIST, ResponseIpPolicy, answers_question, authoritative, bogus_servfail, dnssec_ok,
+    error_response, finish, scrub,
 };
 
 /// Clients tracked by the rate limiter.
@@ -44,6 +59,11 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) block_mode: BlockMode,
     pub(crate) attempts: u32,
     pub(crate) deadline: Duration,
+    pub(crate) dnssec: ArcSwap<DnssecPolicy>,
+    /// Bounds the validation fetches in flight across all clients.
+    pub(crate) fetch_permits: Semaphore,
+    /// Set while the system clock is before the policy's floor (shown by `/readyz`).
+    pub(crate) clock_untrusted: Arc<AtomicBool>,
 }
 
 /// Where the active blocklist filter comes from.
@@ -202,6 +222,47 @@ impl<E: Exchange> Engine<E> {
         self.groups.store(groups.map(Arc::new));
     }
 
+    /// The DNSSEC validation mode.
+    #[must_use]
+    pub fn dnssec_mode(&self) -> Validation {
+        self.dnssec.load().mode
+    }
+
+    /// Switches the validation mode; a change flushes the cache, whose entries carry statuses
+    /// computed under the old mode.
+    pub fn set_dnssec_mode(&self, mode: Validation) {
+        let current = self.dnssec.load_full();
+        if current.mode == mode {
+            return;
+        }
+        self.dnssec.store(Arc::new(DnssecPolicy {
+            mode,
+            ..(*current).clone()
+        }));
+        self.cache.flush_all();
+    }
+
+    /// Replaces the negative trust anchors (RFC 7646) and flushes the cache.
+    pub fn set_negative_trust_anchors(&self, names: Vec<Name>) {
+        let current = self.dnssec.load_full();
+        self.dnssec
+            .store(Arc::new(current.with_negative_trust_anchors(names)));
+        self.cache.flush_all();
+    }
+
+    /// True while the system clock is earlier than the build time: answers are served as
+    /// `Indeterminate`, without AD.
+    #[must_use]
+    pub fn dnssec_clock_untrusted(&self) -> bool {
+        self.clock_untrusted.load(Ordering::Relaxed)
+    }
+
+    /// The shared flag behind [`Engine::dnssec_clock_untrusted`], for the readiness probe.
+    #[must_use]
+    pub fn dnssec_clock_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.clock_untrusted)
+    }
+
     /// Runs the pipeline. `None` means the request is dropped without a reply (ACL `drop`, or
     /// rate-limited over UDP); transports that can drop use this instead of [`Handler::handle`].
     /// Emits exactly one `QueryEvent` either way.
@@ -283,19 +344,12 @@ impl<E: Exchange> Engine<E> {
             do_bit,
             cd_bit: query.header.cd,
         };
-        let (msg, source, dnssec) = match self.cache.get(&key, Instant::now()) {
-            CacheLookup::Fresh { msg, dnssec } => (msg, AnswerSource::Cache, dnssec),
-            CacheLookup::Miss => match self.forward(ctx, query, question, do_bit).await {
-                Ok((msg, from)) => {
-                    let dnssec = self.validate(question, &msg);
-                    self.cache.insert(key, &msg, dnssec, Instant::now());
-                    (msg, AnswerSource::Upstream(from), dnssec)
-                }
-                Err(failure) => {
-                    let msg = error_response(query, Rcode::ServFail, Some(failure.ede()));
-                    return Outcome::new(finish(query, msg), AnswerSource::Error);
-                }
-            },
+        let (msg, source, dnssec) = match self.answer(ctx, query, question, key).await {
+            Ok(found) => found,
+            Err(failure) => {
+                let msg = error_response(query, Rcode::ServFail, Some(failure.ede()));
+                return Outcome::new(finish(query, msg), AnswerSource::Error);
+            }
         };
 
         if self.response_ip.load().blocks(&msg)
@@ -311,39 +365,157 @@ impl<E: Exchange> Engine<E> {
                 )
             };
         }
+        let mut response = finish(query, msg);
+        // RFC 6840 5.7: AD only for validated data, and only to clients that asked for it.
+        response.header.ad =
+            dnssec == DnssecStatus::Secure && !query.header.cd && (do_bit || query.header.ad);
         Outcome {
             dnssec,
-            ..Outcome::new(finish(query, msg), source)
+            ..Outcome::new(response, source)
         }
     }
 
-    /// DNSSEC validation seam (DNSY-37): forwarded answers are not validated yet.
-    #[expect(
-        clippy::unused_self,
-        reason = "seam for the validating forwarder (DNSY-37), which needs engine state"
-    )]
-    fn validate(&self, _question: &Question, _msg: &Message) -> DnssecStatus {
-        DnssecStatus::Unchecked
-    }
-
-    /// Forwards a clean copy of the question (no client EDNS options) to the upstream groups,
-    /// retrying up to `attempts` times, all within the overall deadline measured from receipt.
-    async fn forward(
+    /// The cache entry for `key`, or a forwarded and validated answer (then cached). In strict
+    /// mode Bogus data never reaches a validating client: it becomes SERVFAIL with its EDE.
+    async fn answer(
         &self,
         ctx: &RequestContext,
         query: &Message,
         question: &Question,
-        do_bit: bool,
-    ) -> Result<(Message, SocketAddr), UpstreamFailure> {
+        key: CacheKey,
+    ) -> Result<(Message, AnswerSource, DnssecStatus), UpstreamFailure> {
+        let policy = self.dnssec.load_full();
+        let validating = policy.mode != Validation::Off && !query.header.cd;
+        let serve_bogus = policy.mode == Validation::Permissive;
+        let (msg, source, dnssec) = match self.cache.get_for(&key, Instant::now(), serve_bogus) {
+            CacheLookup::Fresh { msg, dnssec } => (msg, AnswerSource::Cache, dnssec),
+            CacheLookup::Miss => {
+                let (msg, from, dnssec) = self
+                    .resolve(ctx, query, question, &policy, validating)
+                    .await?;
+                self.cache.insert(key, &msg, dnssec, Instant::now());
+                (msg, AnswerSource::Upstream(from), dnssec)
+            }
+        };
+        if dnssec == DnssecStatus::Bogus
+            && validating
+            && policy.mode == Validation::Strict
+            && msg.header.rcode != Rcode::ServFail
+        {
+            return Ok((bogus_servfail(query, &msg), source, dnssec));
+        }
+        Ok((msg, source, dnssec))
+    }
+
+    /// Forwards, validates (when `validating`) and scrubs one cache miss. Returns the message to
+    /// cache and serve, the upstream that answered and the validation status.
+    async fn resolve(
+        &self,
+        ctx: &RequestContext,
+        query: &Message,
+        question: &Question,
+        policy: &DnssecPolicy,
+        validating: bool,
+    ) -> Result<(Message, SocketAddr, DnssecStatus), UpstreamFailure> {
         let Some(groups) = self.groups.load_full() else {
             return Err(UpstreamFailure::Unreachable);
         };
+        let do_bit = dnssec_ok(query);
+        let (raw, from) = self
+            .forward(ctx, &groups, query, question, do_bit, validating)
+            .await?;
+        if !answers_question(question, &raw) {
+            return Err(UpstreamFailure::Network);
+        }
+        let outcome = if validating {
+            Some(self.validate(&groups, policy, question, &raw).await)
+        } else {
+            None
+        };
+        let mut msg = scrub(question, raw, do_bit).ok_or(UpstreamFailure::Network)?;
+        let Some(outcome) = outcome else {
+            return Ok((msg, from, DnssecStatus::Unchecked));
+        };
+        if let Some(cap) = outcome.min_ttl {
+            cap_ttls(&mut msg, cap);
+        }
+        if outcome.status == DnssecStatus::Bogus {
+            let (code, text) = outcome.ede.unwrap_or((ede::DNSSEC_BOGUS, String::new()));
+            if policy.mode == Validation::Permissive {
+                tracing::warn!(
+                    qname = %question.name, qtype = ?question.qtype, ede = code, reason = %text,
+                    "DNSSEC bogus answer served without AD (permissive mode)"
+                );
+            } else {
+                tracing::info!(
+                    qname = %question.name, qtype = ?question.qtype, ede = code, reason = %text,
+                    "DNSSEC bogus answer refused"
+                );
+            }
+            // Stored with the entry, so cached replies carry the same EDE.
+            msg.edns = None;
+            msg.set_ede(code, &text);
+        }
+        Ok((msg, from, outcome.status))
+    }
+
+    /// Validates `raw`, fetching DS/DNSKEY through the cache. Fetches share a fresh deadline
+    /// of the same length as the upstream one, so validation cannot hang a client either.
+    async fn validate(
+        &self,
+        groups: &GroupSet,
+        policy: &DnssecPolicy,
+        question: &Question,
+        raw: &Message,
+    ) -> dnsy_dnssec::ValidationOutcome {
+        let now = unix_now();
+        self.note_clock(policy.clock_trusted(now));
+        let fetcher = UpstreamFetcher {
+            groups,
+            exchange: &self.exchange,
+            cache: &self.cache,
+            permits: &self.fetch_permits,
+            deadline: tokio::time::Instant::now() + self.deadline,
+        };
+        policy.validate(&fetcher, question, raw, now).await
+    }
+
+    /// Tracks the clock-sanity state, warning once when the clock becomes untrusted. When it
+    /// becomes plausible again the cache (full of `Indeterminate` entries) is flushed.
+    fn note_clock(&self, trusted: bool) {
+        let was_untrusted = self.clock_untrusted.swap(!trusted, Ordering::Relaxed);
+        if !trusted && !was_untrusted {
+            tracing::warn!(
+                "system clock is earlier than the build time: DNSSEC validation is suspended and \
+                 answers are served as indeterminate, without AD, until the clock is set"
+            );
+        } else if trusted && was_untrusted {
+            tracing::info!("system clock is plausible again: DNSSEC validation resumed");
+            self.cache.flush_all();
+        }
+    }
+
+    /// Forwards a clean copy of the question (no client EDNS options) to the upstream groups,
+    /// retrying up to `attempts` times, all within the overall deadline measured from receipt.
+    /// With `validating` the query carries DO=1 and CD=1 (we validate ourselves); otherwise the
+    /// client's DO and CD bits. Returns the raw (unscrubbed) answer.
+    async fn forward(
+        &self,
+        ctx: &RequestContext,
+        groups: &GroupSet,
+        query: &Message,
+        question: &Question,
+        do_bit: bool,
+        validating: bool,
+    ) -> Result<(Message, SocketAddr), UpstreamFailure> {
         let mut upstream_query = Message::response_to(query);
         upstream_query.header.qr = false;
         upstream_query.header.rd = true;
+        upstream_query.header.ad = false;
+        upstream_query.header.cd = validating || query.header.cd;
         upstream_query.questions = vec![question.clone()];
         upstream_query.edns = Some(Edns {
-            dnssec_ok: do_bit,
+            dnssec_ok: validating || do_bit,
             ..Edns::default()
         });
         let recording = Recording {
@@ -367,7 +539,6 @@ impl<E: Exchange> Engine<E> {
         let resp = tokio::time::timeout_at(deadline, attempts)
             .await
             .map_err(|_| UpstreamFailure::Unreachable)??;
-        let msg = scrub(question, resp, do_bit).ok_or(UpstreamFailure::Network)?;
         let from = recording
             .answered
             .into_inner()
@@ -375,7 +546,7 @@ impl<E: Exchange> Engine<E> {
             .map_or(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)), |u| {
                 upstream_addr(&u)
             });
-        Ok((msg, from))
+        Ok((resp, from))
     }
 
     fn emit(&self, ctx: &RequestContext, query: &Message, outcome: &Outcome) {

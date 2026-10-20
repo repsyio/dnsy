@@ -240,6 +240,32 @@ async fn health_ready_version_are_public() {
 }
 
 #[tokio::test]
+async fn readyz_reports_untrusted_dnssec_clock() {
+    let f = fixture();
+    let res = send(&f.app, req(Method::GET, "/readyz", &[])).await;
+    assert!(body_json(res).await.get("warnings").is_none());
+    f.state
+        .dnssec_clock_untrusted
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let res = send(&f.app, req(Method::GET, "/readyz", &[])).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    assert_eq!(body["status"], "ready");
+    assert_eq!(body["warnings"][0], "dnssec_clock_untrusted");
+
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let state = f
+        .state
+        .clone()
+        .with_dnssec_clock_flag(std::sync::Arc::clone(&flag));
+    assert!(
+        state
+            .dnssec_clock_untrusted
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+}
+
+#[tokio::test]
 async fn unknown_api_path_is_404_problem_json() {
     let f = fixture();
     let res = send(&f.app, req(Method::GET, "/api/v1/nope", &[])).await;

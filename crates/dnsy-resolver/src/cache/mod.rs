@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use dnsy_config::Cache as CacheConfig;
 use dnsy_core::DnssecStatus;
-use dnsy_proto::{Class, Header, Message, Name, Question, RData, Rcode, Record, RecordType};
+use dnsy_proto::{
+    Class, Edns, EdnsOption, Header, Message, Name, Question, RData, Rcode, Record, RecordType,
+};
 
 #[cfg(test)]
 mod tests;
@@ -162,11 +164,18 @@ impl Cache {
         self.tick.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Looks `key` up at `now`. An NXDOMAIN cached for the name answers any type.
+    /// Looks `key` up at `now`. An NXDOMAIN cached for the name answers any type. A Bogus entry
+    /// is returned to a CD=0 query as SERVFAIL (carrying the entry's Extended DNS Errors).
     pub fn get(&self, key: &CacheKey, now: Instant) -> CacheLookup {
+        self.get_for(key, now, false)
+    }
+
+    /// Like [`Cache::get`]; with `serve_bogus` (permissive validation) a Bogus entry comes back
+    /// as its data, still labelled Bogus, so the caller can serve it without AD.
+    pub fn get_for(&self, key: &CacheKey, now: Instant, serve_bogus: bool) -> CacheLookup {
         if self.cfg.enabled && key.qtype != RESERVED_TYPE {
             for k in [StoreKey::exact(key), StoreKey::by_name(key)] {
-                if let Some(found) = self.get_exact(&k, key, now) {
+                if let Some(found) = self.get_exact(&k, key, now, serve_bogus) {
                     self.hits.fetch_add(1, Ordering::Relaxed);
                     return found;
                 }
@@ -181,6 +190,7 @@ impl Cache {
         stored_key: &StoreKey,
         asked: &CacheKey,
         now: Instant,
+        serve_bogus: bool,
     ) -> Option<CacheLookup> {
         let tick = self.next_tick();
         let mut shard = lock(self.shard_for(stored_key));
@@ -193,7 +203,7 @@ impl Cache {
         }
         entry.last_used = tick;
         // A Bogus result is only ever shown to a validating (CD=0) client as SERVFAIL.
-        if entry.dnssec == DnssecStatus::Bogus && !asked.cd_bit {
+        if entry.dnssec == DnssecStatus::Bogus && !asked.cd_bit && !serve_bogus {
             return Some(CacheLookup::Fresh {
                 msg: servfail_for(&entry.msg),
                 dnssec: DnssecStatus::Bogus,
@@ -424,6 +434,14 @@ fn servfail_for(msg: &Message) -> Message {
         answers: Vec::new(),
         authority: Vec::new(),
         additional: Vec::new(),
-        edns: None,
+        edns: msg.edns.as_ref().map(|e| Edns {
+            options: e
+                .options
+                .iter()
+                .filter(|o| matches!(o, EdnsOption::ExtendedError { .. }))
+                .cloned()
+                .collect(),
+            ..Edns::default()
+        }),
     }
 }

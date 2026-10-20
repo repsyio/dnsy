@@ -11,6 +11,7 @@ use dnsy_filter::{
     SourceStore,
 };
 use dnsy_observe::{QueryEventSink, QueryLogWriter, WriterConfig};
+use dnsy_resolver::forward::{DnssecConfigError, DnssecPolicy, MAX_CONCURRENT_FETCHES, unix_now};
 use dnsy_resolver::groups::{
     Exchange, GroupError, GroupSet, GroupStore, GroupStoreError, SystemClock, ThreadRng,
 };
@@ -19,6 +20,8 @@ use dnsy_store::Store;
 use dnsy_zone::{
     KeyStore, KeyStoreError, ZoneError, ZoneSigning, ZoneStore, passphrase_from_environment,
 };
+use std::sync::atomic::AtomicBool;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::engine::{Engine, Filters, RATE_LIMIT_KEYS};
@@ -41,6 +44,8 @@ pub enum EngineError {
     Filter(#[from] FilterError),
     #[error("blocklists: {0}")]
     Lists(#[from] RefreshError),
+    #[error("dnssec: {0}")]
+    Dnssec(#[from] DnssecConfigError),
 }
 
 fn block_mode(mode: dnsy_config::BlockMode) -> BlockMode {
@@ -68,6 +73,7 @@ pub struct EngineBuilder<E = UpstreamClient> {
     sink: Option<Arc<dyn QueryEventSink>>,
     attempts: u32,
     deadline: Duration,
+    dnssec: DnssecPolicy,
     querylog_task: Option<JoinHandle<()>>,
 }
 
@@ -87,20 +93,25 @@ impl EngineBuilder<UpstreamClient> {
     /// - upstream groups from the store, seeded from `[resolver] upstreams` on first start, and an
     ///   upstream client with a per-attempt timeout of `timeout_ms`; overall deadline
     ///   `timeout_ms * attempts`;
+    /// - DNSSEC validation from `[dnssec]`: mode, trust anchors (inline and file), negative trust
+    ///   anchors and clock skew; the clock-sanity floor defaults to
+    ///   [`dnsy_resolver::forward::RELEASE_FLOOR_UNIX`] (the binary passes its build time with
+    ///   [`EngineBuilder::build_time`]);
     /// - the batched query-log writer when `[querylog] enabled` (take its task with
     ///   [`EngineBuilder::take_querylog_task`] to await the final flush on shutdown).
     ///
     /// Must run inside a Tokio runtime.
     ///
     /// # Errors
-    /// Unreadable zones directory, store failures, invalid stored groups, or an unusable TLS
-    /// setup for the upstream client.
+    /// Unreadable zones directory, store failures, invalid stored groups, an unusable TLS
+    /// setup for the upstream client, or bad trust anchors.
     pub async fn from_config(config: &Config, store: &Store) -> Result<Self, EngineError> {
         let client = UpstreamClient::new(UpstreamConfig {
             timeout: Duration::from_millis(config.resolver.timeout_ms),
             ..UpstreamConfig::default()
         })?;
         let mut builder = Self::new(config, client);
+        builder.dnssec = DnssecPolicy::from_config(&config.dnssec)?;
 
         let rules = RuleStore::new(store.clone());
         builder.acl = Acl::new(
@@ -170,7 +181,7 @@ impl EngineBuilder<UpstreamClient> {
 impl<E: Exchange> EngineBuilder<E> {
     /// Config-derived defaults: allow-all ACL, `[limits] per_client_qps`, empty blocklists in
     /// `[filter] block_mode`, cache from `[cache]`, deadline `timeout_ms * attempts`; no zones,
-    /// upstream groups or event sink.
+    /// upstream groups, event sink or DNSSEC validation.
     #[must_use]
     pub fn new(config: &Config, exchange: E) -> Self {
         let mode = block_mode(config.filter.block_mode);
@@ -191,6 +202,7 @@ impl<E: Exchange> EngineBuilder<E> {
             sink: None,
             attempts,
             deadline: Duration::from_millis(config.resolver.timeout_ms).saturating_mul(attempts),
+            dnssec: DnssecPolicy::off(),
             querylog_task: None,
         }
     }
@@ -244,6 +256,21 @@ impl<E: Exchange> EngineBuilder<E> {
         self
     }
 
+    /// Replaces the DNSSEC validation policy.
+    #[must_use]
+    pub fn dnssec(mut self, policy: DnssecPolicy) -> Self {
+        self.dnssec = policy;
+        self
+    }
+
+    /// Sets the clock-sanity floor to the binary's build time (seconds since the epoch): while
+    /// the system clock is earlier, answers are not validated and are served without AD.
+    #[must_use]
+    pub fn build_time(mut self, unix: u64) -> Self {
+        self.dnssec.not_before_unix = unix;
+        self
+    }
+
     /// The query-log writer task started by [`EngineBuilder::from_config`]; it finishes once the
     /// engine (holding the writer) is dropped and the remaining events are flushed.
     pub fn take_querylog_task(&mut self) -> Option<JoinHandle<()>> {
@@ -266,6 +293,12 @@ impl<E: Exchange> EngineBuilder<E> {
             block_mode: self.block_mode,
             attempts: self.attempts,
             deadline: self.deadline,
+            fetch_permits: Semaphore::new(MAX_CONCURRENT_FETCHES),
+            clock_untrusted: Arc::new(AtomicBool::new(
+                self.dnssec.mode != dnsy_config::Validation::Off
+                    && !self.dnssec.clock_trusted(unix_now()),
+            )),
+            dnssec: ArcSwap::from_pointee(self.dnssec),
         }
     }
 }

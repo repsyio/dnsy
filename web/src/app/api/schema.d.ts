@@ -604,6 +604,16 @@ export interface components {
             /** @description URI identifying the problem type. */
             type: string;
         };
+        /** @description Readiness answer. */
+        Ready: {
+            /** @description `ready`. */
+            status: string;
+            /**
+             * @description Conditions that do not stop serving but need attention. `dnssec_clock_untrusted`: the
+             *     system clock is before the build time, so DNSSEC validation is suspended.
+             */
+            warnings?: string[];
+        };
         /** @description A record as written by a client. */
         RecordInput: {
             /** @description `@`, a name relative to the zone, or an absolute name ending in a dot. */
@@ -2414,7 +2424,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Status"];
+                    "application/json": components["schemas"]["Ready"];
                 };
             };
             /** @description Not ready */

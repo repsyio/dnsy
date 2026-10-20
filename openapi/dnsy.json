@@ -2461,7 +2461,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Status"
+                  "$ref": "#/components/schemas/Ready"
                 }
               }
             }
@@ -2853,6 +2853,26 @@
           "type": {
             "type": "string",
             "description": "URI identifying the problem type."
+          }
+        }
+      },
+      "Ready": {
+        "type": "object",
+        "description": "Readiness answer.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "`ready`."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Conditions that do not stop serving but need attention. `dnssec_clock_untrusted`: the\nsystem clock is before the build time, so DNSSEC validation is suspended."
           }
         }
       },
