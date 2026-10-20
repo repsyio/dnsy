@@ -39,6 +39,29 @@ This page describes how it treats packets on the wire.
 - For DoT and DoH, `Message::encode_padded` pads the response to a multiple of 468 octets
   (RFC 8467) when the query carried a Padding option (`Edns::has_padding`).
 
+## DNSSEC records
+
+`dnsy-proto` has typed codecs and presentation text for DNSKEY, CDNSKEY, RRSIG, DS, CDS, NSEC,
+NSEC3 and NSEC3PARAM (RFC 4034, RFC 5155, RFC 8078).
+
+- Presentation: keys and signatures are base64 (may be split over several tokens), digests and
+  salts are hex (an empty salt is `-`), NSEC3 next-hashed-owner names are base32hex (written
+  uppercase, accepted in either case), RRSIG times are `YYYYMMDDHHmmSS` (a plain count of seconds
+  is accepted too), and algorithms are numbers.
+- A decoded record always has a presentation form that parses back to the same value, so wire
+  decoding rejects empty keys, signatures, digests and next-hashed names, and type bitmaps with an
+  empty, oversized, repeated or out-of-order window or a trailing zero octet.
+- `TypeBitmap` encodes and decodes the NSEC/NSEC3 window blocks. Types print by mnemonic, or as
+  `TYPEnnn` when unnamed.
+- `Dnskey::key_tag` follows RFC 4034 appendix B, including the algorithm 1 special case (a key too
+  short for it gives tag 0). `serial_lt` and `serial_gt` implement RFC 1982 arithmetic for RRSIG
+  validity checks; `Rrsig::is_current` uses them.
+- `canonical::rrset_signing_input` builds the octets an RRSIG signs (RFC 4034 3.1.8.1): the RRSIG
+  fields without the signature, then the RRs ordered by canonical RDATA with duplicates removed,
+  the original TTL, lowercased owner names, and wildcard owners rewritten from the RRSIG `labels`
+  field. Names in the RDATA of NS, CNAME, PTR, MX, SOA and SRV are lowercased and never compressed;
+  NSEC and RRSIG names keep their case (RFC 6840 section 5.1).
+
 ## Fuzzing
 
 A `cargo-fuzz` target lives in `crates/dnsy-proto/fuzz/` (not run by `just ci`):

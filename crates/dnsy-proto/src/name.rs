@@ -227,7 +227,7 @@ impl fmt::Display for Name {
         for label in self.labels() {
             for &b in label {
                 match b {
-                    b'.' | b'\\' => write!(f, "\\{}", char::from(b))?,
+                    b'.' | b'\\' | b'"' => write!(f, "\\{}", char::from(b))?,
                     0x21..=0x7e => write!(f, "{}", char::from(b))?,
                     _ => write!(f, "\\{b:03}")?,
                 }
