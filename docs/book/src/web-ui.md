@@ -5,7 +5,7 @@ and embedded into the binary by `dnsy-api` (feature `embed-ui`), which serves it
 single-page-app fallback.
 
 This page covers the shell, the zones pages and the admin pages (filtering, ACL, upstreams, client
-certificates, cache, settings); the other pages (dashboard, query log, users) arrive with later
+certificates, cache, settings); the other pages (dashboard, users) arrive with later
 stories and are placeholders for now.
 
 This page covers the shell, the dashboard and the zones pages; the other pages (filtering,
@@ -224,3 +224,37 @@ from the stats API:
 
 The layout is a two-column tile grid that grows to four columns, and a single column of lists below
 the `lg` breakpoint, so it works at 360 px.
+
+## Query log
+
+Code lives in `web/src/app/features/query-log/`; route `/query-log`.
+
+- **Filter bar**: time range (presets or a custom from/to), domain substring, client, query type,
+  outcome, response code and DNSSEC status. Outcome is the answer source: blocked, cached, stale,
+  forwarded, refused, authoritative or error. Filters are sent on Apply and cleared by Reset; empty
+  filters are left out of the request (`toQuery` in `query-log.model.ts`).
+- **Table**: newest first, 100 rows per request, "Load more" follows the API's `next_cursor`
+  (keyset pagination, so rows arriving meanwhile do not shift pages). Rows are deduplicated by id.
+  Client, response code and latency columns hide on narrow screens; the page works at 360 px.
+- **Badges**: DNSSEC status has a lock in `--dnsy-secure` for secure, a warning mark in
+  `--dnsy-bogus` for bogus and muted text for insecure, unchecked and indeterminate. Stale answers
+  carry an orange `Stale` tag, blocked, refused and error answers use the bogus colour.
+- **Detail drawer**: the domain in each row is a button that opens a side drawer with every field
+  the API returns: time, client, principal, transport, type, response code, source and upstream
+  or blocklist name, latency and DNSSEC status. Escape closes it, focus stays inside and returns
+  to the row. The log record does not carry answer data or extended DNS errors, so the drawer
+  does not show them.
+- **Live tail**: the toggle opens `GET /api/v1/querylog/stream` with `EventSource` (same-origin,
+  authenticated by the session cookie) using the applied filters, without the time range. New rows
+  are placed on top and the table keeps at most 1000 rows. Pause keeps the connection but holds
+  new rows (up to 500, a counter shows how many) until Resume. A `lagged` event shows a notice that
+  rows were skipped. When the connection drops the page reconnects with exponential backoff (1 s,
+  doubling, capped at 30 s; reset once a connection opens). Viewers cannot tail (the API needs
+  operator or admin), so the toggle is disabled for them.
+- **States**: loading, empty and error use the Nox mascot components; a failed "Load more" shows
+  an inline alert and keeps the rows.
+- **Quick actions**: block and allow domain buttons are not present because the API has no such
+  endpoint yet.
+
+Controls are labelled, the table has a caption and column headers, and live status changes are
+announced through `role="status"`.

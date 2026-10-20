@@ -47,7 +47,8 @@ export const routes: Routes = [
       {
         path: 'query-log',
         title: 'Query log',
-        loadComponent: () => import('./pages/query-log/query-log.page').then((m) => m.QueryLogPage),
+        loadComponent: () =>
+          import('./features/query-log/query-log.page').then((m) => m.QueryLogPage),
       },
       {
         path: 'users',
