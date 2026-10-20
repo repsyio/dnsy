@@ -7,11 +7,12 @@ default:
 fmt:
     cargo fmt --all
 
-# fmt --check, clippy (pedantic via workspace lints) with warnings as errors, cargo-deny.
+# fmt --check, clippy (pedantic via workspace lints) with warnings as errors, cargo-deny, OpenAPI drift.
 check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo deny check
+    just openapi-check
 
 # Run the Rust test suite.
 test:
@@ -30,9 +31,13 @@ e2e:
 web:
     @if [ -f web/package.json ]; then cd web && pnpm install --frozen-lockfile && pnpm ng lint && pnpm ng test --coverage --watch=false && pnpm ng build; else echo "no web app yet"; fi
 
-# Regenerate openapi/dnsy.json (implemented by the API stories).
+# Regenerate openapi/dnsy.json from the handler annotations.
 openapi:
-    @if [ -d crates/dnsy-api ] && grep -q openapi crates/dnsy-api/Cargo.toml 2>/dev/null; then cargo run -p dnsy-api --bin gen-openapi > openapi/dnsy.json; else echo "no OpenAPI spec yet"; fi
+    cargo run -q -p dnsy-api --bin gen-openapi > openapi/dnsy.json
+
+# Fail when the checked-in openapi/dnsy.json differs from the generated spec.
+openapi-check:
+    cargo run -q -p dnsy-api --bin gen-openapi | diff -u openapi/dnsy.json - || { echo "openapi/dnsy.json is stale: run 'just openapi'"; exit 1; }
 
 # Build the site into target/site/: landing (index.html), book (docs/), rustdoc (api/), shared branding/.
 docs:
