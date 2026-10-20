@@ -9,3 +9,15 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+arc-swap = { workspace = true }
+dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
+notify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
