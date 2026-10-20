@@ -50,6 +50,11 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "acl",
         sql: include_str!("../migrations/0004_acl.sql"),
     },
+    Migration {
+        version: 5,
+        name: "upstreams",
+        sql: include_str!("../migrations/0005_upstreams.sql"),
+    },
 ];
 
 /// Applied state of one known migration.
