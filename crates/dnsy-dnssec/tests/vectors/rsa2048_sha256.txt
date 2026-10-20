@@ -1,0 +1,5 @@
+; RSA/SHA-256 with a 2048-bit key generated with openssl, signed over the RFC 5702 6.1 RRset (inception 2000-01-01, expiration 2030-01-01).
+; ring cannot verify the RFC's 512-bit key, so this covers the algorithm 8 path with a supported key size.
+example.net. 3600 IN DNSKEY 256 3 8 AwEAAcGMjR7LLFwg54IfXH0RRx/fC952svgLW2fR4S6R10Dcz4eq3e6eT37plRR8IgmpMRRRcgepmXrCCsnJs8aHlMuJcBuIYGxrTktqS8U651m7maL6VbKFI1KpEGZ2LqHf/K6cP0NU0Fda6JJTm+JtxE7RIUqyHMuT7O+HQaZnQs2imYQSdTJeXC+F3PsyuYj6nI7kux/ssiJBvScvENlzVTVqev9ukSA/AGGpx2B+hQGa6dii+vfdL+Ja1Yu5e0k/cwaeojzvASw+qINK+WjTab23IT+jtBXd081XxMi3wlnTo96ZvqclY/JJ/nX585K2W7Ypf4cwpCQn18q7yzt4yPE=
+www.example.net. 3600 IN A 192.0.2.91
+www.example.net. 3600 IN RRSIG A 8 3 3600 20300101000000 20000101000000 47184 example.net. dK+190naAHnzYhcX9/oQw2hwlWTPhT0bJIy8ZeMnWbfGLdGqdTNdANl4RY7blAdzv/+kQwmbWXA3ONteFzZTGTd7A3+xPLMIL/XZHy6w9hOtdQab9oCxE2OKr6lBhhOEHNeHyl07K0fl9l2eEIIYwDIMxhvxvpugcnTmLqErWGjpLhtCBIFXpYs4BCxq0CkP9h3IYuJ6tzT4CQ41DCwbrqWQPnhqSIlvx0MyQFJtNc/hZ3CsabKoqVPpSy93O4FZqrejMj1YNW+WZX6Cu/QQ9pp1ENjm3WTLIxtWXP7ehoj2gdib/Z7V65eHav94Q2C10pQ16ido/NxeEiS/dzBQtw==

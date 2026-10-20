@@ -1,0 +1,11 @@
+; RFC 8080 section 6.1: Ed25519 examples. '; seed' lines hold the base64 private seed. The RFC text prints the RRSIG as 'MX 3 3600', omitting the algorithm; the signatures were made over algorithm 15 and labels 3 (found by search; labels 3 exceeds the 2 labels of example.com., so a strict validator rejects the RRSIG).
+example.com. 3600 IN DNSKEY 257 3 15 l02Woi0iS8Aa25FQkUd9RMzZHJpBoRQwAQEX1SxZJA4=
+example.com. 3600 IN DS 3613 15 2 3aa5ab37efce57f737fc1627013fee07bdf241bd10f3b1964ab55c78e79a304b
+example.com. 3600 IN MX 10 mail.example.com.
+example.com. 3600 IN RRSIG MX 15 3 3600 1440021600 1438207200 3613 example.com. Edk+IB9KNNWg0HAjm7FazXyrd5m3Rk8zNZbvNpAcM+eysqcUOMIjWoevFkjH5GaMWeG96GUVZu6ECKOQmemHDg==
+; seed ODIyNjAzODQ2MjgwODAxMjI2NDUxOTAyMDQxNDIyNjI=
+example.com. 3600 IN DNSKEY 257 3 15 zPnZ/QwEe7S8C5SPz2OfS5RR40ATk2/rYnE9xHIEijs=
+example.com. 3600 IN DS 35217 15 2 401781b934e392de492ec77ae2e15d70f6575a1c0bc59c5275c04ebe80c6614c
+example.com. 3600 IN MX 10 mail.example.com.
+example.com. 3600 IN RRSIG MX 15 3 3600 1440021600 1438207200 35217 example.com. 5LL2obmzdqjWI+Xto5eP5adXt/T5tMhasWvwcyW4L3SzfcRawOle9bodhC+oip9ayUGjY9T/rL4rN3bOuESGDA==
+; seed DSSF3o0s0f+ElWzj9E/Osxw8hLpk55chkmx0LYN5WiY=
