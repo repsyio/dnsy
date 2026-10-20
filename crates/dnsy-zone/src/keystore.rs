@@ -949,6 +949,7 @@ fn open_key(
 mod tests {
     use super::*;
     use dnsy_dnssec::ManualClock;
+    use std::fmt::Write as _;
 
     const CHEAP: KdfCost = KdfCost {
         memory_kib: 8,
@@ -1152,7 +1153,10 @@ mod tests {
             Passphrase::new("hunter2-passphrase")
         );
         assert!(!dump.contains("hunter2"));
-        let hex: String = der.iter().map(|b| format!("{b:02x}")).collect();
+        let hex = der.iter().fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        });
         assert!(!dump.contains(&hex));
         assert!(!dump.contains(&format!("{:?}", der.as_slice())));
         assert!(dump.contains("redacted"));
@@ -1204,7 +1208,7 @@ mod tests {
         ));
 
         f.clock.advance(3599);
-        assert!(f.ks.tick(&z, T).await.unwrap().is_empty());
+        assert_eq!(f.ks.tick(&z, T).await.unwrap(), []);
         f.clock.advance(1);
         assert_eq!(f.ks.tick(&z, T).await.unwrap().len(), 2);
         let keys = f.ks.keys(&z).await.unwrap();
@@ -1216,7 +1220,7 @@ mod tests {
         assert_eq!(f.ks.dnskeys(&z).await.unwrap().len(), 3);
 
         f.clock.advance(13_599);
-        assert!(f.ks.tick(&z, T).await.unwrap().is_empty());
+        assert_eq!(f.ks.tick(&z, T).await.unwrap(), []);
         f.clock.advance(1);
         f.ks.tick(&z, T).await.unwrap();
         let keys = f.ks.keys(&z).await.unwrap();
