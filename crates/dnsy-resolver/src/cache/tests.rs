@@ -721,3 +721,27 @@ fn qtype_zero_neither_hits_nor_overwrites_name_level_nxdomain() {
     assert_eq!(got.questions[0].qtype, RecordType::Txt);
     assert_eq!(c.stats().inserts, 1);
 }
+
+#[test]
+fn bound_is_global_whatever_the_hash_distribution() {
+    // Each new cache hashes differently. With a per-shard bound, a shard that received no keys
+    // left the cache under-filled (entries < max_entries); the bound must be global.
+    for _ in 0..300 {
+        let c = Cache::new(&CacheConfig {
+            max_entries: 4,
+            ..cfg()
+        });
+        let t0 = Instant::now();
+        for i in 0..10 {
+            let n = format!("h{i}.example.com");
+            c.insert(
+                key(&n, RecordType::A),
+                &positive(&n, 300),
+                DnssecStatus::Unchecked,
+                t0,
+            );
+        }
+        let s = c.stats();
+        assert_eq!((s.entries, s.inserts, s.evictions), (4, 10, 6));
+    }
+}

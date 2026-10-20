@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -17,8 +17,8 @@ use dnsy_proto::{Class, Header, Message, Name, Question, RData, Rcode, Record, R
 mod tests;
 
 const MAX_SHARDS: usize = 16;
-/// Entries examined when an eviction is needed; the oldest of the sample goes.
-const EVICTION_SAMPLE: usize = 32;
+/// Entries examined per shard when an eviction is needed; the oldest of all samples goes.
+const EVICTION_SAMPLE: usize = 8;
 /// QTYPE 0 is reserved and never cached.
 const RESERVED_TYPE: RecordType = RecordType::Unknown(0);
 
@@ -101,7 +101,6 @@ struct Entry {
 
 struct Shard {
     map: HashMap<StoreKey, Entry>,
-    capacity: usize,
 }
 
 /// A sharded, bounded DNS cache.
@@ -110,6 +109,8 @@ pub struct Cache {
     hasher: RandomState,
     cfg: CacheConfig,
     tick: AtomicU64,
+    /// Live entries across all shards: the bound applies to this, not to each shard.
+    len: AtomicUsize,
     hits: AtomicU64,
     misses: AtomicU64,
     inserts: AtomicU64,
@@ -130,12 +131,10 @@ impl Cache {
     #[must_use]
     pub fn new(cfg: &CacheConfig) -> Cache {
         let count = cfg.max_entries.clamp(1, MAX_SHARDS);
-        let (base, extra) = (cfg.max_entries / count, cfg.max_entries % count);
         let shards = (0..count)
-            .map(|i| {
+            .map(|_| {
                 Mutex::new(Shard {
                     map: HashMap::new(),
-                    capacity: base + usize::from(i < extra),
                 })
             })
             .collect();
@@ -144,6 +143,7 @@ impl Cache {
             hasher: RandomState::new(),
             cfg: cfg.clone(),
             tick: AtomicU64::new(0),
+            len: AtomicUsize::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             inserts: AtomicU64::new(0),
@@ -187,6 +187,7 @@ impl Cache {
         let entry = shard.map.get_mut(stored_key)?;
         if now >= entry.expires_at {
             shard.map.remove(stored_key);
+            self.len.fetch_sub(1, Ordering::Relaxed);
             self.expired.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -264,15 +265,17 @@ impl Cache {
         {
             return;
         }
-        if !shard.map.contains_key(&key) {
-            while shard.map.len() >= shard.capacity.max(1) {
-                if !self.evict_one(&mut shard) {
+        let added = shard.map.insert(key.clone(), entry).is_none();
+        drop(shard);
+        self.inserts.fetch_add(1, Ordering::Relaxed);
+        if added {
+            self.len.fetch_add(1, Ordering::Relaxed);
+            while self.len.load(Ordering::Relaxed) > self.cfg.max_entries {
+                if !self.evict_one(&key) {
                     break;
                 }
             }
         }
-        shard.map.insert(key, entry);
-        self.inserts.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Works out the entry lifetime and the message to store (record TTLs clamped).
@@ -304,21 +307,33 @@ impl Cache {
         Some((ttl, stored))
     }
 
-    fn evict_one(&self, shard: &mut Shard) -> bool {
-        let victim = shard
-            .map
-            .iter()
-            .take(EVICTION_SAMPLE)
-            .min_by_key(|(_, e)| e.last_used)
-            .map(|(k, _)| k.clone());
-        match victim {
-            Some(k) => {
-                shard.map.remove(&k);
-                self.evictions.fetch_add(1, Ordering::Relaxed);
-                true
+    /// Evicts the least recently used entry among a per-shard sample, never `keep` (the entry
+    /// just inserted). The bound is global, so the victim may live in any shard.
+    fn evict_one(&self, keep: &StoreKey) -> bool {
+        let mut best: Option<(u64, usize, StoreKey)> = None;
+        for (i, s) in self.shards.iter().enumerate() {
+            let shard = lock(s);
+            let local = shard
+                .map
+                .iter()
+                .filter(|(k, _)| *k != keep)
+                .take(EVICTION_SAMPLE)
+                .min_by_key(|(_, e)| e.last_used);
+            if let Some((k, e)) = local
+                && best.as_ref().is_none_or(|(t, _, _)| e.last_used < *t)
+            {
+                best = Some((e.last_used, i, k.clone()));
             }
-            None => false,
         }
+        let Some((_, i, k)) = best else {
+            return false;
+        };
+        // Another thread may have removed it meanwhile; the caller's loop re-checks the length.
+        if lock(&self.shards[i]).map.remove(&k).is_some() {
+            self.len.fetch_sub(1, Ordering::Relaxed);
+            self.evictions.fetch_add(1, Ordering::Relaxed);
+        }
+        true
     }
 
     /// Removes everything; returns the number of entries dropped.
@@ -329,6 +344,7 @@ impl Cache {
                 let mut shard = lock(s);
                 let n = shard.map.len();
                 shard.map.clear();
+                self.len.fetch_sub(n, Ordering::Relaxed);
                 n
             })
             .sum()
@@ -349,14 +365,16 @@ impl Cache {
                     };
                     !hit
                 });
-                before - shard.map.len()
+                let removed = before - shard.map.len();
+                self.len.fetch_sub(removed, Ordering::Relaxed);
+                removed
             })
             .sum()
     }
 
     /// A snapshot of the counters.
     pub fn stats(&self) -> CacheStats {
-        let entries = self.shards.iter().map(|s| lock(s).map.len() as u64).sum();
+        let entries = self.len.load(Ordering::Relaxed) as u64;
         CacheStats {
             entries,
             capacity: self.cfg.max_entries as u64,
