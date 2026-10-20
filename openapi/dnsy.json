@@ -1115,6 +1115,34 @@
         ]
       }
     },
+    "/api/v1/dnssec/status": {
+      "get": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Validation counters of the last 24 hours and whether the clock is trusted.",
+        "operationId": "dnssec_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnssecStatus"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/querylog": {
       "get": {
         "tags": [
@@ -1602,6 +1630,97 @@
           },
           "422": {
             "description": "Unknown field or invalid value; nothing changed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/settings/dnssec": {
+      "get": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Validation mode, negative trust anchors and the (read-only) trust anchors.",
+        "operationId": "get_validation",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationSettings"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Change the validation mode or the negative trust anchors at run time. A change flushes the\nresolver cache.",
+        "operationId": "patch_validation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidationPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3293,12 +3412,511 @@
         ]
       }
     },
+    "/api/v1/zones/{name}/dnssec": {
+      "get": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "A zone's DNSSEC policy, keys and rollover state.",
+        "operationId": "get_dnssec",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnssecView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Enable, disable or change a zone's signing policy. Writes the zone file's `dnssec` block;\nenabling creates the keys and signs the zone before the response is sent.",
+        "operationId": "put_dnssec",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DnssecPolicyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnssecView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/zones/{name}/dnssec/ds": {
+      "get": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "DS records (SHA-256 and SHA-384) and DNSKEY records of the zone's KSKs and CSKs, for the\nparent zone or registrar. JSON by default; `Accept: text/plain` returns zone-file lines.",
+        "operationId": "ds_export",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "DS and DNSKEY records; `text/plain` (zone-file lines) when asked for by `Accept`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DsExport"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/zones/{name}/dnssec/keys": {
+      "get": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "The zone's keys (public metadata only), including removed ones.",
+        "operationId": "list_keys",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KeyView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Generate a key in the `generated` state (not yet published). The zone needs signing\nenabled.",
+        "operationId": "generate_key",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateKeyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/zones/{name}/dnssec/keys/{id}/ds-confirmed": {
+      "post": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Record that the key's DS is published at the parent; a KSK or CSK rollover waits for this.",
+        "operationId": "confirm_ds",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Published KSK or CSK",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Recorded"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/zones/{name}/dnssec/keys/{id}/rollover": {
+      "post": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Start a rollover of the role of an active key: a new key is generated and published, and\nthe rollover state machine moves it along. KSK and CSK rollovers wait for\n`ds-confirmed`.",
+        "operationId": "start_rollover",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Active key to replace",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RolloverInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The incoming key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/zones/{name}/export": {
       "get": {
         "tags": [
           "zones"
         ],
-        "summary": "Download the zone as a BIND master file.",
+        "summary": "Download the zone as a BIND master file, unsigned or (`signed=true`) with its DNSSEC records.",
         "operationId": "export_zone",
         "parameters": [
           {
@@ -3308,6 +3926,15 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "signed",
+            "in": "query",
+            "description": "Export the signed zone: adds DNSKEY, RRSIG, NSEC or NSEC3 and NSEC3PARAM records.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -3332,6 +3959,16 @@
             }
           },
           "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`signed=true` for a zone that is not signed",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4394,6 +5031,341 @@
           }
         }
       },
+      "DenialBody": {
+        "type": "string",
+        "description": "Authenticated denial of existence.",
+        "enum": [
+          "nsec",
+          "nsec3"
+        ]
+      },
+      "DnskeyRecordView": {
+        "type": "object",
+        "description": "A DNSKEY record, for registrars that take keys instead of digests.",
+        "required": [
+          "key_id",
+          "key_tag",
+          "flags",
+          "protocol",
+          "algorithm",
+          "public_key",
+          "record"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "flags": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "key_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key_tag": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "protocol": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "public_key": {
+            "type": "string",
+            "description": "Base64 public key."
+          },
+          "record": {
+            "type": "string",
+            "description": "The record in presentation format."
+          }
+        }
+      },
+      "DnssecPolicyInput": {
+        "type": "object",
+        "description": "Signing policy of a zone. Omitted fields keep their current value (the defaults for a zone\nthat never had a policy).",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "13 (ECDSAP256SHA256) or 15 (Ed25519). Existing keys are replaced only by a rollover.",
+            "minimum": 0
+          },
+          "denial": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DenialBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dnskey_ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Sign the zone. Turning it on creates the zone's keys."
+          },
+          "key_layout": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/KeyLayoutBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nsec3": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Nsec3Body"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refresh_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "signature_validity_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "DnssecStatus": {
+        "type": "object",
+        "description": "Validation counters and clock trust.",
+        "required": [
+          "clock_trusted",
+          "window_ms",
+          "counters",
+          "secure",
+          "bogus",
+          "signed_zones"
+        ],
+        "properties": {
+          "bogus": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "clock_trusted": {
+            "type": "boolean",
+            "description": "False while the system clock is before the build time: validation is suspended."
+          },
+          "counters": {
+            "type": "object",
+            "description": "Answers in the window by DNSSEC status (`unchecked`, `secure`, `insecure`, `bogus`,\n`indeterminate`).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "secure": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "signed_zones": {
+            "type": "integer",
+            "description": "Zones with signing enabled.",
+            "minimum": 0
+          },
+          "validation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ValidationMode",
+                "description": "`None` while the validation control is not wired."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "window_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Window of the counters, milliseconds, ending now."
+          }
+        }
+      },
+      "DnssecView": {
+        "type": "object",
+        "description": "A zone's DNSSEC state.",
+        "required": [
+          "enabled",
+          "algorithm",
+          "key_layout",
+          "denial",
+          "nsec3",
+          "signature_validity_days",
+          "refresh_days",
+          "dnskey_ttl",
+          "keys",
+          "rollover",
+          "keys_encrypted"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "denial": {
+            "$ref": "#/components/schemas/DenialBody"
+          },
+          "dnskey_ttl": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "key_layout": {
+            "$ref": "#/components/schemas/KeyLayoutBody"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyView"
+            },
+            "description": "Keys that are not removed."
+          },
+          "keys_encrypted": {
+            "type": "boolean",
+            "description": "Private keys are encrypted at rest (a key passphrase is configured)."
+          },
+          "next_resign": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix time from which signatures are refreshed; `None` while the zone is unsigned."
+          },
+          "nsec3": {
+            "$ref": "#/components/schemas/Nsec3Body"
+          },
+          "refresh_days": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rollover": {
+            "$ref": "#/components/schemas/RolloverView"
+          },
+          "signature_validity_days": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "DsExport": {
+        "type": "object",
+        "description": "What to hand the registrar.",
+        "required": [
+          "zone",
+          "ds",
+          "dnskey"
+        ],
+        "properties": {
+          "dnskey": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnskeyRecordView"
+            }
+          },
+          "ds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DsRecordView"
+            },
+            "description": "SHA-256 first, then SHA-384, for each published or active KSK or CSK."
+          },
+          "zone": {
+            "type": "string"
+          }
+        }
+      },
+      "DsRecordView": {
+        "type": "object",
+        "description": "A DS record to publish at the parent.",
+        "required": [
+          "key_id",
+          "key_tag",
+          "algorithm",
+          "digest_type",
+          "digest",
+          "record"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "digest": {
+            "type": "string",
+            "description": "Upper-case hex."
+          },
+          "digest_type": {
+            "type": "integer",
+            "format": "int32",
+            "description": "2 (SHA-256) or 4 (SHA-384).",
+            "minimum": 0
+          },
+          "key_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key_tag": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "record": {
+            "type": "string",
+            "description": "The record in presentation format."
+          }
+        }
+      },
       "FilterPatch": {
         "type": "object",
         "properties": {
@@ -4446,6 +5418,29 @@
           "domains",
           "adblock"
         ]
+      },
+      "GenerateKeyInput": {
+        "type": "object",
+        "description": "A new key.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "13 or 15; defaults to the zone policy's algorithm.",
+            "minimum": 0
+          },
+          "role": {
+            "$ref": "#/components/schemas/KeyRoleBody",
+            "description": "`csk`, `ksk` or `zsk`."
+          }
+        },
+        "additionalProperties": false
       },
       "GroupBody": {
         "type": "object",
@@ -4549,6 +5544,99 @@
           },
           "upstream": {
             "type": "string"
+          }
+        }
+      },
+      "KeyLayoutBody": {
+        "type": "string",
+        "description": "Whether one key signs everything or keys are split into KSK and ZSK.",
+        "enum": [
+          "csk",
+          "ksk_zsk"
+        ]
+      },
+      "KeyRoleBody": {
+        "type": "string",
+        "description": "Key role.",
+        "enum": [
+          "csk",
+          "ksk",
+          "zsk"
+        ]
+      },
+      "KeyView": {
+        "type": "object",
+        "description": "Public metadata of a key. There is no private key field.",
+        "required": [
+          "id",
+          "role",
+          "algorithm",
+          "key_tag",
+          "state",
+          "created_at"
+        ],
+        "properties": {
+          "active_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "algorithm": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ds_confirmed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the operator confirmed the DS at the parent (KSK and CSK)."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key_tag": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "published_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "removed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "retired_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "role": {
+            "type": "string",
+            "description": "`csk`, `ksk` or `zsk`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`generated`, `published`, `active`, `retired` or `removed`."
           }
         }
       },
@@ -4754,6 +5842,30 @@
             "minimum": 0
           }
         }
+      },
+      "Nsec3Body": {
+        "type": "object",
+        "description": "NSEC3 parameters (RFC 5155, RFC 9276).",
+        "properties": {
+          "allow_nonzero_iterations": {
+            "type": "boolean",
+            "description": "Accept a non-zero iteration count despite RFC 9276."
+          },
+          "iterations": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Extra hash iterations; 0 unless `allow_nonzero_iterations` is set.",
+            "minimum": 0
+          },
+          "opt_out": {
+            "type": "boolean"
+          },
+          "salt": {
+            "type": "string",
+            "description": "Salt in hexadecimal; empty for none."
+          }
+        },
+        "additionalProperties": false
       },
       "PatchBlocklist": {
         "type": "object",
@@ -5001,6 +6113,50 @@
           "outcome": {
             "type": "string",
             "description": "`updated` or `not_modified`."
+          }
+        }
+      },
+      "RolloverInput": {
+        "type": "object",
+        "description": "Rollover options.",
+        "properties": {
+          "algorithm": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Algorithm of the new key (13 or 15); defaults to the rolled key's algorithm.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "RolloverView": {
+        "type": "object",
+        "description": "Where the key rollover stands.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "new_key_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The incoming key."
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Role being rolled over."
+          },
+          "state": {
+            "type": "string",
+            "description": "`idle`, `in_progress` or `awaiting_ds_confirmation`."
           }
         }
       },
@@ -5432,6 +6588,50 @@
           }
         }
       },
+      "TrustAnchorView": {
+        "type": "object",
+        "description": "A configured trust anchor (read-only; set in the configuration file).",
+        "required": [
+          "owner",
+          "key_tag",
+          "algorithm",
+          "kind"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "digest_type": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "key_tag": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "`ds` or `dnskey`."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Zone the anchor belongs to (`.` for the root)."
+          }
+        }
+      },
       "UpdateUser": {
         "type": "object",
         "description": "Fields to change; absent fields stay as they are.",
@@ -5479,6 +6679,69 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "ValidationMode": {
+        "type": "string",
+        "description": "Validation mode.",
+        "enum": [
+          "off",
+          "permissive",
+          "strict"
+        ]
+      },
+      "ValidationPatch": {
+        "type": "object",
+        "description": "Validation settings changes. Applied at once; not persisted across restarts (the\nconfiguration file is the source at startup). Changing the mode or the negative trust\nanchors flushes the cache.",
+        "properties": {
+          "negative_trust_anchors": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replaces the whole list; `[]` clears it."
+          },
+          "validation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ValidationMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ValidationSettings": {
+        "type": "object",
+        "description": "Validation settings.",
+        "required": [
+          "validation",
+          "negative_trust_anchors",
+          "trust_anchors"
+        ],
+        "properties": {
+          "negative_trust_anchors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names at or below which validation is skipped (RFC 7646)."
+          },
+          "trust_anchors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrustAnchorView"
+            }
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ValidationMode"
           }
         }
       },

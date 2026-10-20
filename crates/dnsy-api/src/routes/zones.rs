@@ -231,19 +231,19 @@ fn detail(store: &ZoneStore, zone: &Zone) -> ZoneDetail {
     }
 }
 
-fn zone_error(e: &ZoneError) -> ApiError {
+pub(super) fn zone_error(e: &ZoneError) -> ApiError {
     match e {
         ZoneError::Invalid(_) | ZoneError::Json(_) => ApiError::Unprocessable(e.to_string()),
         ZoneError::Io(_) => ApiError::Internal(e.to_string()),
     }
 }
 
-fn store(state: &ApiState) -> Result<&Arc<ZoneStore>, ApiError> {
+pub(super) fn store(state: &ApiState) -> Result<&Arc<ZoneStore>, ApiError> {
     state.zones.as_ref().ok_or(ApiError::Unavailable)
 }
 
 /// Parses a zone name from a path or body. Only names that map to a safe file name pass.
-fn zone_name(text: &str) -> Result<Name, ApiError> {
+pub(super) fn zone_name(text: &str) -> Result<Name, ApiError> {
     let bad = |why: &str| ApiError::BadRequest(format!("invalid zone name: {why}"));
     if text.len() > 255 {
         return Err(bad("too long"));
@@ -256,7 +256,10 @@ fn zone_name(text: &str) -> Result<Name, ApiError> {
     Ok(name.to_lowercase())
 }
 
-fn existing(state: &ApiState, name: &str) -> Result<(Arc<ZoneStore>, Arc<Zone>), ApiError> {
+pub(super) fn existing(
+    state: &ApiState,
+    name: &str,
+) -> Result<(Arc<ZoneStore>, Arc<Zone>), ApiError> {
     let origin = zone_name(name)?;
     let store = Arc::clone(store(state)?);
     let zone = store
@@ -295,7 +298,7 @@ fn check_if_match(wanted: Option<&str>, zone: &Zone) -> Result<(), ApiError> {
 }
 
 /// Runs a zone write on the blocking pool, serialised with all other zone writes.
-async fn mutate<T: Send + 'static>(
+pub(super) async fn mutate<T: Send + 'static>(
     state: &ApiState,
     f: impl FnOnce(&ZoneStore) -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {
@@ -310,7 +313,11 @@ async fn mutate<T: Send + 'static>(
 }
 
 /// The current stored zone, checked against `If-Match`. Call inside [`mutate`].
-fn current(store: &ZoneStore, origin: &Name, wanted: Option<&str>) -> Result<Arc<Zone>, ApiError> {
+pub(super) fn current(
+    store: &ZoneStore,
+    origin: &Name,
+    wanted: Option<&str>,
+) -> Result<Arc<Zone>, ApiError> {
     let zone = store
         .snapshot()
         .get(origin)
@@ -746,25 +753,49 @@ async fn delete_record(
 // ---------------------------------------------------------------------------------------
 // export
 
-/// Download the zone as a BIND master file.
+/// Export options.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ExportParams {
+    /// Export the signed zone: adds DNSKEY, RRSIG, NSEC or NSEC3 and NSEC3PARAM records.
+    #[serde(default)]
+    signed: bool,
+}
+
+/// Download the zone as a BIND master file, unsigned or (`signed=true`) with its DNSSEC records.
 #[utoipa::path(get, path = "/zones/{name}/export", tag = "zones", security(("bearer" = []), ("session" = [])),
-    params(("name" = String, Path, description = "Zone name")),
+    params(("name" = String, Path, description = "Zone name"), ExportParams),
     responses(
         (status = 200, description = "BIND master file", content_type = "text/dns", body = String),
         (status = 400, body = Problem, content_type = "application/problem+json"),
         (status = 404, body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "`signed=true` for a zone that is not signed", body = Problem, content_type = "application/problem+json"),
     ))]
 async fn export_zone(
     _scope: RequireScope<Read>,
     State(state): State<ApiState>,
     Path(name): Path<String>,
+    Query(params): Query<ExportParams>,
 ) -> Result<Response, ApiError> {
-    let (_, zone) = existing(&state, &name)?;
+    let (store, zone) = existing(&state, &name)?;
+    let signed = if params.signed {
+        Some(
+            store
+                .snapshot()
+                .signed(&zone.origin)
+                .cloned()
+                .ok_or_else(|| ApiError::Conflict(format!("zone {} is not signed", zone.origin)))?,
+        )
+    } else {
+        None
+    };
     // The file name is `[a-z0-9.-]` by construction of `zone_name`, so it is header-safe.
     let file = zone.file_name().map_err(|e| zone_error(&e))?;
     let file = file.trim_end_matches(".json");
-    let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{file}.zone\""))
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let suffix = if signed.is_some() { ".signed" } else { "" };
+    let disposition =
+        HeaderValue::from_str(&format!("attachment; filename=\"{file}{suffix}.zone\""))
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok((
         [
             (
@@ -773,7 +804,7 @@ async fn export_zone(
             ),
             (header::CONTENT_DISPOSITION, disposition),
         ],
-        export_bind(&zone, None),
+        export_bind(&zone, signed.as_deref()),
     )
         .into_response())
 }

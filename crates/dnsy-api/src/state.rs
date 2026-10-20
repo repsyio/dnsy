@@ -12,10 +12,11 @@ use dnsy_filter::{RuleStore, SourceStore};
 use dnsy_resolver::Cache;
 use dnsy_resolver::groups::GroupStore;
 use dnsy_store::Store;
-use dnsy_zone::ZoneStore;
+use dnsy_zone::{ZoneSigning, ZoneStore};
 use tokio::sync::Semaphore;
 
 use crate::routes::RuntimeSettings;
+use crate::validation::ValidationControl;
 
 /// Reloads the `DoT` client-certificate fingerprint allowlist from the database, which bumps its
 /// generation so open connections are re-checked. The binary builds it from the server's
@@ -62,6 +63,10 @@ pub struct ApiState {
     pub settings: Arc<RuntimeSettings>,
     /// Serialises changes that rebuild and swap live policy.
     pub apply_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Zone signing and its key store; the DNSSEC zone routes answer 503 without it.
+    pub signing: Option<ZoneSigning>,
+    /// Run-time validation settings (the engine); the settings routes answer 503 without it.
+    pub validation: Option<Arc<dyn ValidationControl>>,
 }
 
 /// Default cap on concurrent live-tail connections.
@@ -92,6 +97,8 @@ impl ApiState {
             live_tail: Arc::new(Semaphore::new(MAX_LIVE_TAILS)),
             live_tail_poll: Duration::from_millis(500),
             dnssec_clock_untrusted: Arc::new(AtomicBool::new(false)),
+            signing: None,
+            validation: None,
         }
     }
 
@@ -157,6 +164,20 @@ impl ApiState {
     #[must_use]
     pub fn with_max_live_tails(mut self, max: usize) -> ApiState {
         self.live_tail = Arc::new(Semaphore::new(max));
+        self
+    }
+
+    /// Serve the DNSSEC zone routes from this signer.
+    #[must_use]
+    pub fn with_signing(mut self, signing: ZoneSigning) -> ApiState {
+        self.signing = Some(signing);
+        self
+    }
+
+    /// Serve `/settings/dnssec` from this validation control (the engine).
+    #[must_use]
+    pub fn with_validation(mut self, validation: Arc<dyn ValidationControl>) -> ApiState {
+        self.validation = Some(validation);
         self
     }
 }
