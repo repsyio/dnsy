@@ -89,6 +89,167 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Live cache statistics. */
+        get: operations["cache_stats"];
+        put?: never;
+        post?: never;
+        /** Remove every cache entry. Needs `api:write`. */
+        delete: operations["flush_all"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cache/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove the entries of one name, optionally with its subtree. Needs `api:write`. */
+        delete: operations["flush_entries"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/querylog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search the query log, newest first. */
+        get: operations["search_log"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/querylog/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Live tail of the query log as server-sent events.
+         * @description Events are named `query` and carry one log record as JSON; `lagged` means rows were
+         *     skipped because the consumer was too slow. The server polls at its own pace, so a slow
+         *     consumer never makes it buffer. The number of concurrent streams is capped (429 beyond).
+         *     Takes the same filters as the search (`from`/`to` bound the stream). Needs `api:write`
+         *     (operator or admin).
+         */
+        get: operations["stream_log"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/stats/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Totals, answer sources, DNSSEC status counts, cache hit ratio, blocked ratio and latency. */
+        get: operations["summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/stats/timeseries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Query counts per bucket (only buckets with data), oldest first. */
+        get: operations["timeseries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/stats/top-blocked": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Most blocked names. */
+        get: operations["top_blocked"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/stats/top-clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Busiest clients (network addresses when client redaction is on). */
+        get: operations["top_clients"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/stats/top-domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Most queried names. */
+        get: operations["top_domains"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tokens": {
         parameters: {
             query?: never;
@@ -178,6 +339,96 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/zones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List zones. */
+        get: operations["list_zones"];
+        put?: never;
+        /** Create a zone. */
+        post: operations["create_zone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/zones/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a zone, with its `load_error` and an `ETag`. */
+        get: operations["get_zone"];
+        /** Replace a zone's settings and records. The DNSSEC policy is kept; the serial is bumped. */
+        put: operations["replace_zone"];
+        post?: never;
+        /** Delete a zone and its file. */
+        delete: operations["delete_zone"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/zones/{name}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download the zone as a BIND master file. */
+        get: operations["export_zone"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/zones/{name}/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List records of a zone (paged). The SOA is part of the zone detail, not listed here. */
+        get: operations["list_records"];
+        put?: never;
+        /** Add a record. The SOA serial is bumped. */
+        post: operations["create_record"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/zones/{name}/records/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replace a record. The id changes when name, type or value change. The serial is bumped. */
+        put: operations["replace_record"];
+        post?: never;
+        /** Delete a record. The apex keeps at least one NS record. The serial is bumped. */
+        delete: operations["delete_record"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -224,6 +475,32 @@ export interface components {
             password: string;
             username: string;
         };
+        /** @description Live cache counters. */
+        CacheStatsBody: {
+            /** Format: int64 */
+            capacity: number;
+            /** Format: int64 */
+            entries: number;
+            /** Format: int64 */
+            evictions: number;
+            /** Format: int64 */
+            expired: number;
+            /**
+             * Format: double
+             * @description `hits / (hits + misses)`, 0 before any lookup.
+             */
+            hit_ratio: number;
+            /** Format: int64 */
+            hits: number;
+            /** Format: int64 */
+            inserts: number;
+            /** Format: int64 */
+            misses: number;
+            /** Format: int64 */
+            prefetches: number;
+            /** Format: int64 */
+            stale_served: number;
+        };
         /** @description Password change. */
         ChangePassword: {
             current_password: string;
@@ -249,11 +526,54 @@ export interface components {
             role: string;
             username: string;
         };
+        /** @description New zone. */
+        CreateZone: components["schemas"]["ZoneBody"] & {
+            /** @description Zone name, e.g. `example.com.`. */
+            name: string;
+        };
         /** @description The only response that contains the token secret. */
         CreatedToken: {
             meta: components["schemas"]["TokenInfo"];
             /** @description The secret. Store it now; it cannot be retrieved again. */
             token: string;
+        };
+        /** @description Outcome of a flush. */
+        Flushed: {
+            /**
+             * Format: int64
+             * @description Entries removed.
+             */
+            removed: number;
+        };
+        /** @description A page of the query log, newest first. */
+        LogPageBody: {
+            entries: components["schemas"]["LogRecord"][];
+            /** @description Pass as `cursor` for the next page; absent on the last page. */
+            next_cursor?: string | null;
+        };
+        /** @description One logged query. */
+        LogRecord: {
+            /** @description Client address (truncated to its network when redaction is on). */
+            client: string;
+            dnssec: string;
+            /** Format: int64 */
+            id: number;
+            /** Format: int32 */
+            latency_us: number;
+            /** @description Authenticated principal (`DoH` token name), never a token secret. */
+            principal?: string | null;
+            qname: string;
+            qtype: string;
+            rcode: string;
+            source: string;
+            /** @description Upstream address or blocklist name. */
+            source_detail?: string | null;
+            transport: string;
+            /**
+             * Format: int64
+             * @description Unix milliseconds.
+             */
+            ts_ms: number;
         };
         /** @description Credentials. */
         Login: {
@@ -284,10 +604,127 @@ export interface components {
             /** @description URI identifying the problem type. */
             type: string;
         };
+        /** @description A record as written by a client. */
+        RecordInput: {
+            /** @description `@`, a name relative to the zone, or an absolute name ending in a dot. */
+            name: string;
+            /**
+             * Format: int32
+             * @description Seconds; defaults to the zone default TTL.
+             */
+            ttl?: number | null;
+            /** @description A, AAAA, NS, CNAME, PTR, MX, TXT, SRV or CAA. */
+            type: string;
+            /** @description Presentation-format rdata, e.g. `10 mail.example.com.`. */
+            value: string;
+        };
+        /** @description One page of records. */
+        RecordPage: {
+            items: components["schemas"]["RecordView"][];
+            limit: number;
+            offset: number;
+            /** @description Records matching the filters, across all pages. */
+            total: number;
+        };
+        /** @description A stored record. */
+        RecordView: {
+            /** @description Stable id: hash of owner name, type and value. */
+            id: string;
+            /** @description Absolute owner name. */
+            name: string;
+            /** Format: int32 */
+            ttl: number;
+            type: string;
+            value: string;
+        };
+        /** @description One timeseries bucket. */
+        SeriesPoint: {
+            /** Format: int64 */
+            blocked: number;
+            /** Format: int64 */
+            cache_hits: number;
+            /** Format: int64 */
+            max_latency_us: number;
+            /** Format: int64 */
+            start_ms: number;
+            /** Format: int64 */
+            total: number;
+        };
+        /** @description The SOA record of a zone. */
+        SoaBody: {
+            /** Format: int32 */
+            expire: number;
+            /** Format: int32 */
+            minimum: number;
+            /** @description Primary name server. */
+            mname: string;
+            /** Format: int32 */
+            refresh: number;
+            /** Format: int32 */
+            retry: number;
+            /** @description Responsible mailbox, as a domain name. */
+            rname: string;
+            /**
+             * Format: int32
+             * @description Initial serial on create (default 1). Ignored on replace: every write bumps the serial.
+             */
+            serial?: number | null;
+            /**
+             * Format: int32
+             * @description TTL of the SOA record; defaults to the zone default TTL.
+             */
+            ttl?: number | null;
+        };
         /** @description Liveness/readiness answer. */
         Status: {
             /** @description `ok` or `ready`. */
             status: string;
+        };
+        /** @description Aggregate over the range. */
+        SummaryBody: {
+            /**
+             * Format: int64
+             * @description Upstream and overall latency, microseconds.
+             */
+            avg_latency_us: number;
+            /**
+             * Format: int64
+             * @description Answers blocked by a blocklist or rule.
+             */
+            blocked: number;
+            /**
+             * Format: double
+             * @description `blocked / total`, 0 when there are no queries.
+             */
+            blocked_ratio: number;
+            /** @description Response code number to count. */
+            by_rcode: {
+                [key: string]: number;
+            };
+            /** @description Answer source to count. */
+            by_source: {
+                [key: string]: number;
+            };
+            /** Format: double */
+            cache_hit_ratio: number;
+            /** Format: int64 */
+            cache_hits: number;
+            /** Format: int64 */
+            cache_misses: number;
+            /** @description DNSSEC status (`unchecked`, `secure`, `insecure`, `bogus`, `indeterminate`) to count. */
+            dnssec: {
+                [key: string]: number;
+            };
+            /** Format: int64 */
+            from: number;
+            /** Format: int64 */
+            max_latency_us: number;
+            /** Format: int64 */
+            stale_answers: number;
+            /** Format: int64 */
+            to: number;
+            /** Format: int64 */
+            total: number;
         };
         /** @description Token metadata. The secret is never part of it. */
         TokenInfo: {
@@ -308,6 +745,12 @@ export interface components {
              * @description Owner.
              */
             user_id: number;
+        };
+        /** @description A ranked name or address. */
+        TopItem: {
+            /** Format: int64 */
+            count: number;
+            key: string;
         };
         /** @description Fields to change; absent fields stay as they are. */
         UpdateUser: {
@@ -339,6 +782,35 @@ export interface components {
         Version: {
             /** @description `dnsy` crate version. */
             version: string;
+        };
+        /** @description Settings and records of a zone, for create and replace. */
+        ZoneBody: {
+            /** Format: int32 */
+            default_ttl: number;
+            /** @description Must contain at least one NS record at the apex. */
+            records?: components["schemas"]["RecordInput"][];
+            soa: components["schemas"]["SoaBody"];
+        };
+        /** @description A zone with its SOA (no records; see `/zones/{name}/records`). */
+        ZoneDetail: {
+            /** Format: int32 */
+            default_ttl: number;
+            dnssec_enabled: boolean;
+            load_error?: string | null;
+            name: string;
+            record_count: number;
+            soa: components["schemas"]["SoaBody"];
+        };
+        /** @description Overview row of a zone. */
+        ZoneSummary: {
+            dnssec_enabled: boolean;
+            /** @description Why the zone file on disk is not being served, if its latest version is invalid. */
+            load_error?: string | null;
+            /** @description Absolute, lowercase zone name. */
+            name: string;
+            record_count: number;
+            /** Format: int32 */
+            serial: number;
         };
     };
     responses: never;
@@ -543,6 +1015,533 @@ export interface operations {
                 };
             };
             /** @description Not a session */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cache_stats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CacheStatsBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No cache is running */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    flush_all: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Flushed"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No cache is running */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    flush_entries: {
+        parameters: {
+            query: {
+                /** @description Domain name whose entries are removed. */
+                name: string;
+                /** @description Also remove everything below the name (default false). */
+                subtree?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Flushed"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No cache is running */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    search_log: {
+        parameters: {
+            query?: {
+                /** @description Inclusive start, unix milliseconds. */
+                from?: number;
+                /** @description Exclusive end, unix milliseconds. */
+                to?: number;
+                /** @description Exact client address (the network address when client redaction is on). */
+                client?: string;
+                /** @description Case-insensitive substring of the query name. */
+                domain?: string;
+                /** @description Query type by name (`A`, `AAAA`, ...) or number. */
+                type?: string;
+                /** @description Response code by name (`NOERROR`, `NXDOMAIN`, ...) or number. */
+                outcome?: string;
+                /** @description `authoritative`, `cache`, `cache_stale`, `upstream`, `blocked`, `refused` or `error`. */
+                source?: string;
+                /** @description `unchecked`, `secure`, `insecure`, `bogus` or `indeterminate`. */
+                dnssec?: string;
+                /** @description Page size, 1 to 500 (default 100). */
+                limit?: number;
+                /** @description `next_cursor` of the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogPageBody"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stream_log: {
+        parameters: {
+            query?: {
+                /** @description Inclusive start, unix milliseconds. */
+                from?: number;
+                /** @description Exclusive end, unix milliseconds. */
+                to?: number;
+                /** @description Exact client address (the network address when client redaction is on). */
+                client?: string;
+                /** @description Case-insensitive substring of the query name. */
+                domain?: string;
+                /** @description Query type by name (`A`, `AAAA`, ...) or number. */
+                type?: string;
+                /** @description Response code by name (`NOERROR`, `NXDOMAIN`, ...) or number. */
+                outcome?: string;
+                /** @description `authoritative`, `cache`, `cache_stale`, `upstream`, `blocked`, `refused` or `error`. */
+                source?: string;
+                /** @description `unchecked`, `secure`, `insecure`, `bogus` or `indeterminate`. */
+                dnssec?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/event-stream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many live-tail connections */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    summary: {
+        parameters: {
+            query?: {
+                /** @description Inclusive start, unix milliseconds (default: `to` minus 24 hours). */
+                from?: number;
+                /** @description Exclusive end, unix milliseconds (default: now). */
+                to?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummaryBody"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    timeseries: {
+        parameters: {
+            query?: {
+                /** @description Inclusive start, unix milliseconds (default: `to` minus 24 hours). */
+                from?: number;
+                /** @description Exclusive end, unix milliseconds (default: now). */
+                to?: number;
+                /** @description Bucket width in seconds, a multiple of 60 (default 3600). */
+                bucket?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesPoint"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    top_blocked: {
+        parameters: {
+            query?: {
+                /** @description Inclusive start, unix milliseconds (default: `to` minus 24 hours). */
+                from?: number;
+                /** @description Exclusive end, unix milliseconds (default: now). */
+                to?: number;
+                /** @description Number of entries, 1 to 100 (default 10). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopItem"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    top_clients: {
+        parameters: {
+            query?: {
+                /** @description Inclusive start, unix milliseconds (default: `to` minus 24 hours). */
+                from?: number;
+                /** @description Exclusive end, unix milliseconds (default: now). */
+                to?: number;
+                /** @description Number of entries, 1 to 100 (default 10). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopItem"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    top_domains: {
+        parameters: {
+            query?: {
+                /** @description Inclusive start, unix milliseconds (default: `to` minus 24 hours). */
+                from?: number;
+                /** @description Exclusive end, unix milliseconds (default: now). */
+                to?: number;
+                /** @description Number of entries, 1 to 100 (default 10). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopItem"][];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -894,6 +1893,488 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Version"];
+                };
+            };
+        };
+    };
+    list_zones: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ZoneSummary"][];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_zone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateZone"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    /** @description Validator for If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ZoneDetail"];
+                };
+            };
+            /** @description Invalid zone name */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The zone exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid zone data */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_zone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description Validator for If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ZoneDetail"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    replace_zone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description Validator for If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ZoneDetail"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match does not match */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_zone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match does not match */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    export_zone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description BIND master file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/dns": string;
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_records: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Only this owner name (relative or absolute). */
+                name: string | null;
+                /** @description Page size (default 100, at most 1000). */
+                limit: number | null;
+                offset: number | null;
+                /** @description Only this record type. */
+                type: string | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description Validator for If-Match */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordPage"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_record: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordInput"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    /** @description Validator of the zone after the write */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Duplicate record */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match does not match */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid name, rdata or TTL, or a CNAME conflict */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    replace_record: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+                /** @description Record id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordInput"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    /** @description Validator of the zone after the write */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Duplicate record */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match does not match */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid name, rdata or TTL, a CNAME conflict, or the last apex NS removed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_record: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+                /** @description Record id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    /** @description Validator of the zone after the write */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match does not match */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The last apex NS record cannot be removed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
         };
