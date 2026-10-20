@@ -178,7 +178,7 @@ impl Cache {
 
     fn get_exact(
         &self,
-        stored_key: &CacheKey,
+        stored_key: &StoreKey,
         asked: &CacheKey,
         now: Instant,
     ) -> Option<CacheLookup> {
