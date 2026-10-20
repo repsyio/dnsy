@@ -82,7 +82,7 @@ describe('ZonesService', () => {
     const create = vi.fn(() => 'blob:x');
     const revoke = vi.fn();
     Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(vi.fn());
     downloadText('a.zone', 'data');
     expect(create).toHaveBeenCalled();
     expect(click).toHaveBeenCalled();

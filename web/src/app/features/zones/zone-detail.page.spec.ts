@@ -213,7 +213,7 @@ describe('ZoneDetailPage', () => {
   it('downloads the BIND export, signed and unsigned, and reports failures', async () => {
     const t = await setup();
     const saved: string[] = [];
-    Object.assign(URL_, { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} });
+    Object.assign(URL_, { createObjectURL: () => 'blob:x', revokeObjectURL: vi.fn() });
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
       this: HTMLAnchorElement,
     ) {
