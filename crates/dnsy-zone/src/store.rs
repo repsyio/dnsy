@@ -4,15 +4,17 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use dnsy_dnssec::SignedZone;
 use dnsy_proto::Name;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::sync::Notify;
 
 use crate::lookup::ZoneIndex;
 use crate::model::{Zone, ZoneError};
@@ -20,10 +22,12 @@ use crate::model::{Zone, ZoneError};
 /// Quiet period after the last file event before the directory is reloaded.
 const DEBOUNCE: Duration = Duration::from_millis(250);
 
-/// Immutable snapshot of all loaded zones.
+/// Immutable snapshot of all loaded zones, with the signed snapshot of each zone that is
+/// served signed.
 #[derive(Debug, Default)]
 pub struct ZoneSet {
     zones: BTreeMap<Name, Arc<Zone>>,
+    signed: BTreeMap<Name, Arc<SignedZone>>,
     /// Per-zone lookup index, keyed like `zones`.
     pub(crate) indexes: BTreeMap<Name, ZoneIndex>,
     /// Query counter driving record set rotation.
@@ -31,16 +35,35 @@ pub struct ZoneSet {
 }
 
 impl ZoneSet {
+    #[cfg(test)]
     pub(crate) fn new(zones: BTreeMap<Name, Arc<Zone>>) -> Self {
+        Self::with_signed(zones, BTreeMap::new())
+    }
+
+    /// A snapshot serving each zone of `signed` (keyed by origin) from its signed snapshot.
+    pub(crate) fn with_signed(
+        zones: BTreeMap<Name, Arc<Zone>>,
+        signed: BTreeMap<Name, Arc<SignedZone>>,
+    ) -> Self {
         let indexes = zones
             .iter()
-            .map(|(origin, zone)| (origin.clone(), ZoneIndex::build(zone)))
+            .map(|(origin, zone)| {
+                let index = ZoneIndex::build(zone, signed.get(origin).map(AsRef::as_ref));
+                (origin.clone(), index)
+            })
             .collect();
         Self {
             zones,
+            signed,
             indexes,
             rotation: AtomicUsize::new(0),
         }
+    }
+
+    /// The signed snapshot a zone is served from, when it is served signed.
+    #[must_use]
+    pub fn signed(&self, origin: &Name) -> Option<&Arc<SignedZone>> {
+        self.signed.get(origin)
     }
 
     /// The zone with exactly this origin.
@@ -77,12 +100,21 @@ impl ZoneSet {
     }
 }
 
+/// The latest signed snapshot of a zone and the zone version it was signed from.
+#[derive(Debug, Clone)]
+pub(crate) struct SignedEntry {
+    pub(crate) zone: Arc<Zone>,
+    pub(crate) signed: Arc<SignedZone>,
+}
+
 #[derive(Default)]
 struct State {
     /// Last good zone per file name.
     good: BTreeMap<String, Arc<Zone>>,
     /// Current load error per file name.
     errors: BTreeMap<String, String>,
+    /// Latest signed snapshot per origin.
+    signed: BTreeMap<Name, SignedEntry>,
 }
 
 /// Zones directory with an atomically swapped snapshot.
@@ -90,6 +122,10 @@ pub struct ZoneStore {
     dir: PathBuf,
     set: ArcSwap<ZoneSet>,
     state: Mutex<State>,
+    /// Set once a [`crate::ZoneSigning`] serves zones with `dnssec.enabled` signed.
+    signing: AtomicBool,
+    /// Wakes the signing task when a signed zone needs a new snapshot.
+    resign: Arc<Notify>,
 }
 
 impl ZoneStore {
@@ -105,6 +141,8 @@ impl ZoneStore {
             dir,
             set: ArcSwap::from_pointee(ZoneSet::default()),
             state: Mutex::new(State::default()),
+            signing: AtomicBool::new(false),
+            resign: Arc::new(Notify::new()),
         });
         store.reload()?;
         Ok(store)
@@ -161,14 +199,69 @@ impl ZoneStore {
                 }
             }
         }
-        let zones = good
-            .values()
-            .map(|z| (z.origin.clone(), Arc::clone(z)))
-            .collect();
         st.good = good;
         st.errors = errors;
-        self.set.store(Arc::new(ZoneSet::new(zones)));
+        self.publish(&mut st);
         Ok(())
+    }
+
+    /// Builds and swaps in the snapshot. A zone with `dnssec.enabled` is served from its
+    /// latest signed snapshot once signing is on: when the zone changed since, the previous
+    /// version keeps serving (still signed) until the signing task has re-signed it; a zone
+    /// that was never signed serves unsigned until then.
+    fn publish(&self, st: &mut State) {
+        let signing = self.signing.load(Ordering::Acquire);
+        let mut zones = BTreeMap::new();
+        let mut signed = BTreeMap::new();
+        let mut entries = BTreeMap::new();
+        let mut stale = false;
+        for zone in st.good.values() {
+            let origin = zone.origin.clone();
+            let wants = signing && zone.dnssec.as_ref().is_some_and(|p| p.enabled);
+            if let Some(entry) = st.signed.remove(&origin).filter(|_| wants) {
+                stale |= *entry.zone != **zone;
+                zones.insert(origin.clone(), Arc::clone(&entry.zone));
+                signed.insert(origin.clone(), Arc::clone(&entry.signed));
+                entries.insert(origin, entry);
+            } else {
+                stale |= wants;
+                zones.insert(origin, Arc::clone(zone));
+            }
+        }
+        st.signed = entries;
+        self.set
+            .store(Arc::new(ZoneSet::with_signed(zones, signed)));
+        if stale {
+            self.resign.notify_one();
+        }
+    }
+
+    /// Serves signed snapshots for zones with `dnssec.enabled` from now on.
+    pub(crate) fn enable_signing(&self) {
+        self.signing.store(true, Ordering::Release);
+    }
+
+    /// The signal [`ZoneStore::publish`] raises when a signed zone needs signing.
+    pub(crate) fn resign_signal(&self) -> Arc<Notify> {
+        Arc::clone(&self.resign)
+    }
+
+    /// Every loaded zone with `dnssec.enabled`, with its latest signed snapshot.
+    pub(crate) fn signing_state(&self) -> Vec<(Arc<Zone>, Option<SignedEntry>)> {
+        let st = self.lock();
+        st.good
+            .values()
+            .filter(|z| z.dnssec.as_ref().is_some_and(|p| p.enabled))
+            .map(|z| (Arc::clone(z), st.signed.get(&z.origin).cloned()))
+            .collect()
+    }
+
+    /// Installs a signed snapshot of `zone` and swaps in a new snapshot.
+    pub(crate) fn install_signed(&self, zone: Arc<Zone>, signed: Arc<SignedZone>) {
+        let mut st = self.lock();
+        st.signed
+            .insert(zone.origin.clone(), SignedEntry { zone, signed });
+        self.publish(&mut st);
     }
 
     /// Validates `zone` and writes it atomically (temp file in the same directory, fsync,

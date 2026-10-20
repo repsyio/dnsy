@@ -768,3 +768,46 @@ async fn from_config_silent_upstream_servfails_within_deadline() {
     assert_eq!(ede_codes(&r), [ede::NO_REACHABLE_AUTHORITY]);
     assert!(started.elapsed() < Duration::from_millis(1000));
 }
+
+#[tokio::test]
+async fn from_config_serves_signed_zone_with_aa_never_ad() {
+    let upstream = udp_upstream(false).await;
+    let (dir, engine) = assembled(upstream, 2000).await;
+    let signed = ZONE.replace(
+        "  ]}",
+        "  ],\n  \"dnssec\":{\"enabled\":true,\"algorithm\":13,\"denial\":\"nsec\"}}",
+    );
+    std::fs::write(dir.path().join("zones").join("home.test.json"), signed).unwrap();
+    engine.zone_store().unwrap().reload().unwrap();
+    let signing = engine.zone_signing().unwrap();
+    assert_eq!(signing.sign_due().await, 1);
+
+    let mut q = query("nas.home.test.", RecordType::A);
+    q.header.ad = true;
+    q.edns.as_mut().unwrap().dnssec_ok = true;
+    let r = engine.handle(ctx(), q).await;
+    assert!(r.header.aa);
+    assert!(!r.header.ad, "AD is never set on authoritative answers");
+    assert!(r.edns.unwrap().dnssec_ok);
+    assert!(r.answers.iter().any(|a| a.rtype == RecordType::Rrsig));
+
+    let mut q = query("missing.home.test.", RecordType::A);
+    q.edns.as_mut().unwrap().dnssec_ok = true;
+    let r = engine.handle(ctx(), q).await;
+    assert_eq!(r.header.rcode, Rcode::NxDomain);
+    assert!(r.authority.iter().any(|a| a.rtype == RecordType::Nsec));
+
+    // Without DO: no DNSSEC records.
+    let r = engine
+        .handle(ctx(), query("missing.home.test.", RecordType::A))
+        .await;
+    assert!(
+        r.authority
+            .iter()
+            .chain(&r.answers)
+            .all(|a| !matches!(a.rtype, RecordType::Rrsig | RecordType::Nsec))
+    );
+    let keys = engine.zone_signing().unwrap().keys();
+    let home = Name::from_ascii("home.test.").unwrap();
+    assert_eq!(keys.keys(&home).await.unwrap().len(), 1);
+}

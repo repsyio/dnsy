@@ -16,7 +16,9 @@ use dnsy_resolver::groups::{
 };
 use dnsy_resolver::{Cache, UpstreamClient, UpstreamConfig, UpstreamError};
 use dnsy_store::Store;
-use dnsy_zone::{ZoneError, ZoneStore};
+use dnsy_zone::{
+    KeyStore, KeyStoreError, ZoneError, ZoneSigning, ZoneStore, passphrase_from_environment,
+};
 use tokio::task::JoinHandle;
 
 use crate::engine::{Engine, Filters, RATE_LIMIT_KEYS};
@@ -27,6 +29,8 @@ use crate::response::ResponseIpPolicy;
 pub enum EngineError {
     #[error("zones: {0}")]
     Zones(#[from] ZoneError),
+    #[error("dnssec keys: {0}")]
+    Keys(#[from] KeyStoreError),
     #[error("upstream client: {0}")]
     Upstream(#[from] UpstreamError),
     #[error("upstream groups: {0}")]
@@ -57,6 +61,7 @@ pub struct EngineBuilder<E = UpstreamClient> {
     block_mode: BlockMode,
     response_ip: ResponseIpPolicy,
     zones: Option<Arc<ZoneStore>>,
+    zone_signing: Option<ZoneSigning>,
     cache: Arc<Cache>,
     groups: Option<GroupSet>,
     exchange: E,
@@ -74,7 +79,10 @@ impl EngineBuilder<UpstreamClient> {
     ///   start) answering in `[filter] block_mode`; the filter starts from the custom rules and
     ///   fills as the caller runs [`dnsy_filter::ListManager::run`] (via [`Engine::list_manager`]);
     /// - local zones from `[zones] dir` (the caller starts the watcher via
-    ///   [`Engine::zone_store`]);
+    ///   [`Engine::zone_store`]); zones with `dnssec.enabled` are signed before this returns,
+    ///   with keys from the store's key table (passphrase from `DNSY_DNSSEC_PASSPHRASE` or
+    ///   `[dnssec] key_passphrase_file`); the caller spawns the re-signing task via
+    ///   [`Engine::zone_signing`];
     /// - the cache from `[cache]`;
     /// - upstream groups from the store, seeded from `[resolver] upstreams` on first start, and an
     ///   upstream client with a per-attempt timeout of `timeout_ms`; overall deadline
@@ -121,7 +129,17 @@ impl EngineBuilder<UpstreamClient> {
         lists.reload().await?;
         builder.filter = Filters::Lists(lists);
 
-        builder.zones = Some(ZoneStore::open(&config.zones.dir)?);
+        let zones = ZoneStore::open(&config.zones.dir)?;
+        let passphrase = passphrase_from_environment(config.dnssec.key_passphrase_file.as_deref())?;
+        let keys = KeyStore::open(
+            store.clone(),
+            passphrase,
+            Arc::new(dnsy_dnssec::SystemClock),
+        );
+        let signing = ZoneSigning::new(Arc::clone(&zones), keys);
+        signing.sign_due().await;
+        builder.zones = Some(zones);
+        builder.zone_signing = Some(signing);
 
         let groups = GroupStore::new(store.clone());
         groups.seed_default(&config.resolver.upstreams).await?;
@@ -166,6 +184,7 @@ impl<E: Exchange> EngineBuilder<E> {
             block_mode: mode,
             response_ip: ResponseIpPolicy::default(),
             zones: None,
+            zone_signing: None,
             cache: Arc::new(Cache::new(&config.cache)),
             groups: None,
             exchange,
@@ -240,6 +259,7 @@ impl<E: Exchange> EngineBuilder<E> {
             response_ip: ArcSwap::from_pointee(self.response_ip),
             groups: ArcSwapOption::from(self.groups.map(Arc::new)),
             zones: self.zones,
+            zone_signing: self.zone_signing,
             cache: self.cache,
             exchange: self.exchange,
             sink: self.sink,

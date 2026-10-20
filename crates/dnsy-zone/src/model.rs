@@ -94,6 +94,7 @@ fn parse_type(s: &str) -> Result<RecordType, ZoneError> {
         "TXT" => RecordType::Txt,
         "SRV" => RecordType::Srv,
         "CAA" => RecordType::Caa,
+        "DS" => RecordType::Ds,
         "SOA" => return invalid("SOA belongs in the \"soa\" block, not in records"),
         "DNSKEY" | "RRSIG" | "NSEC" | "NSEC3" | "NSEC3PARAM" | "CDS" | "CDNSKEY" => {
             return invalid(format!(
@@ -179,6 +180,7 @@ impl Zone {
             });
         }
         check_cname_exclusivity(&records, &origin)?;
+        check_ds_at_delegations(&records, &origin)?;
         let mut warnings = Vec::new();
         if let Some(policy) = &file.dnssec {
             warnings = policy.validate()?;
@@ -263,6 +265,23 @@ impl Zone {
     }
 }
 
+/// DS belongs to the parent side of a zone cut (RFC 4035 2.4): only at a delegation point.
+fn check_ds_at_delegations(records: &[Record], origin: &Name) -> Result<(), ZoneError> {
+    for r in records.iter().filter(|r| r.rdata.rtype() == RecordType::Ds) {
+        let delegated = r.name != *origin
+            && records
+                .iter()
+                .any(|n| n.name == r.name && n.rdata.rtype() == RecordType::Ns);
+        if !delegated {
+            return invalid(format!(
+                "DS at {} needs an NS record there: DS is only allowed at a delegation point",
+                r.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn check_cname_exclusivity(records: &[Record], origin: &Name) -> Result<(), ZoneError> {
     let mut by_name: BTreeMap<&Name, (usize, usize)> = BTreeMap::new();
     for r in records {
@@ -345,6 +364,16 @@ mod tests {
         let apex = r#"{"name":"@","type":"CNAME","value":"x.example.com."}"#;
         assert!(err(&with_records(apex)).contains("CNAME"));
         assert!(Zone::from_json(&with_records(cname)).is_ok());
+    }
+
+    #[test]
+    fn ds_only_at_delegations() {
+        let ds = r#"{"name":"sub","type":"DS","value":"1 13 2 AABB"}"#;
+        let ns = r#"{"name":"sub","type":"NS","value":"ns.example.net."}"#;
+        assert!(err(&with_records(ds)).contains("delegation"));
+        let apex = r#"{"name":"@","type":"DS","value":"1 13 2 AABB"}"#;
+        assert!(err(&with_records(&format!("{apex},{ns}"))).contains("delegation"));
+        assert!(Zone::from_json(&with_records(&format!("{ds},{ns}"))).is_ok());
     }
 
     #[test]

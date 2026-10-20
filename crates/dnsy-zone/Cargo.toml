@@ -29,5 +29,6 @@ tracing = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
 insta = { workspace = true }
 tempfile = { workspace = true }

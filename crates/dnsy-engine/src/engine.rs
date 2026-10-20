@@ -18,7 +18,7 @@ use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink};
 use dnsy_proto::{EDNS_VERSION, Edns, Message, Name, Opcode, Question, Rcode, RecordType, ede};
 use dnsy_resolver::groups::{Exchange, GroupError, GroupSet};
 use dnsy_resolver::{Cache, CacheKey, CacheLookup, Upstream, UpstreamClient, UpstreamError};
-use dnsy_zone::ZoneStore;
+use dnsy_zone::{ZoneSigning, ZoneStore};
 
 use crate::handler::{Handler, RequestContext};
 use crate::response::{
@@ -37,6 +37,7 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) response_ip: ArcSwap<ResponseIpPolicy>,
     pub(crate) groups: ArcSwapOption<GroupSet>,
     pub(crate) zones: Option<Arc<ZoneStore>>,
+    pub(crate) zone_signing: Option<ZoneSigning>,
     pub(crate) cache: Arc<Cache>,
     pub(crate) exchange: E,
     pub(crate) sink: Option<Arc<dyn QueryEventSink>>,
@@ -159,6 +160,13 @@ impl<E: Exchange> Engine<E> {
         self.zones.as_ref()
     }
 
+    /// The signer of zones with `dnssec.enabled`, when wired by
+    /// [`crate::EngineBuilder::from_config`] (spawn its re-signing task; share its key store).
+    #[must_use]
+    pub fn zone_signing(&self) -> Option<&ZoneSigning> {
+        self.zone_signing.as_ref()
+    }
+
     /// Current upstream groups (for health reporting).
     #[must_use]
     pub fn groups(&self) -> Option<Arc<GroupSet>> {
@@ -256,7 +264,8 @@ impl<E: Exchange> Engine<E> {
         let do_bit = dnssec_ok(query);
         if let Some(zones) = &self.zones {
             let snapshot = zones.snapshot();
-            // DNSY-36 seam: `do_bit` makes the lookup add signatures and denial proofs.
+            // With DO, signed zones answer with RRSIGs and denial proofs. AA only: AD is never
+            // set on authoritative data (`response_to` clears it).
             if let Some(result) = snapshot.lookup(question, do_bit) {
                 let msg = authoritative(query, question, &snapshot, result, do_bit);
                 return Outcome::new(finish(query, msg), AnswerSource::Authoritative);

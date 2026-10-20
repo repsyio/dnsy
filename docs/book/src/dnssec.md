@@ -5,8 +5,8 @@ DNSY implements DNSSEC itself. The `dnsy-dnssec` crate holds the cryptography an
 crypto is [`ring`](https://github.com/briansmith/ring) for raw signature checks and digests
 (plus `zeroize` to wipe key material); the DNSSEC logic is written in this repository.
 
-This page covers the cryptographic building blocks, signing keys, zone signing and the
-chain-of-trust validator.
+This page covers the cryptographic building blocks, signing keys, zone signing, the
+chain-of-trust validator and the signed authoritative answers.
 
 ## Algorithms
 
@@ -337,3 +337,65 @@ who can block those fetches must not get unvalidated answers served in strict mo
 child zones, NSEC and NSEC3 chains, opt-out, wildcards) and serves them from an in-memory
 `DnssecFetcher`, covering secure chains, insecure delegations, every bogus case above, the
 negative trust anchor short-circuit and the work limits.
+
+## Authoritative DNSSEC responses
+
+Zones whose `dnssec` block has `enabled = true` are served signed. `ZoneSigning` (in
+`dnsy-zone`) holds the zone store and the key store; `EngineBuilder::from_config` creates it,
+signs every such zone before it returns and hands it out as `Engine::zone_signing()` so the
+caller can spawn its refresh task (`ZoneSigning::spawn(interval)`). A zone without keys gets its
+first key set (`KeyStore::bootstrap`) on the first signing pass.
+
+### Signed snapshots
+
+A signing pass signs a zone when it was never signed, when its file changed, when its keys
+changed state (a rollover step) or when some signature is within `refresh_days` of expiry
+(`SignedZone::needs_refresh`). Re-signing goes through `ZoneSigner::resign`, so unchanged
+`RRsets` keep their signatures. The signing itself runs on a blocking thread; the finished
+snapshot is installed with the same atomic swap the zone store uses for reloads, so queries
+never wait for it and always see one complete version.
+
+A reload that changes a signed zone does not expose unsigned data: the previous version keeps
+serving, signed, until the refresh task (woken by the reload) has signed the new one, then
+both are swapped in together. A zone that has never been signed (the window between startup
+and the first pass, or a zone whose keys cannot be decrypted) is served unsigned and the error
+is logged. Disabling `dnssec` drops the signed snapshot on the next reload.
+
+### What a DO query gets
+
+Without the EDNS DO bit nothing changes: no RRSIG, NSEC or NSEC3 is added and an `ANY` query
+leaves the NSEC record out. DNSKEY, NSEC3PARAM, CDS and CDNSKEY are ordinary data at the apex
+and are answered when asked for, with or without DO.
+
+With DO (RFC 4035 3.1, RFC 5155 7.2):
+
+| Answer | Added records |
+| --- | --- |
+| Data, CNAME chains, additional A/AAAA | the RRSIGs of every `RRset` (wildcard expansions carry the RRSIG under the query name, its `labels` field showing the expansion) |
+| Wildcard expansion | NSEC covering the query name, or NSEC3 covering the next closer name |
+| NXDOMAIN | SOA and RRSIG; NSEC covering the name and NSEC covering the wildcard at the closest encloser, or the NSEC3 closest-encloser proof (matching closest encloser, covering next closer name, covering wildcard) |
+| NODATA | SOA and RRSIG; the NSEC or NSEC3 matching the name (for an NSEC empty non-terminal, the NSEC whose span holds it) |
+| Wildcard NODATA | the NXDOMAIN-style proof for the name plus the NSEC/NSEC3 matching the wildcard |
+| Referral to a signed child | NS, DS and its RRSIG, glue |
+| Referral to an unsigned child | NS, the NSEC/NSEC3 matching the cut (bitmap without DS) and its RRSIG; under NSEC3 opt-out, the closest provable encloser proof with the opt-out NSEC3 covering the cut |
+
+Delegation NS records and glue are never signed. DS queries are answered by the parent side of
+the cut (RFC 4035 3.1.4.1), with a NODATA proof when the delegation has no DS. NSEC3 owner names
+do not exist as names: a query for one gets NXDOMAIN (RFC 5155 7.2.8).
+
+Authoritative answers set AA and never AD (AD speaks for validated data, RFC 4035 3.1.6);
+referrals set neither. When a signed answer does not fit the client's UDP payload size, the
+response is truncated by whole `RRsets` with TC set so the client retries over TCP; signatures
+are never dropped to make an answer fit.
+
+### Verification
+
+The tests in `crates/dnsy-zone/src/signed_tests.rs` sign zones with NSEC, NSEC3 and NSEC3
+opt-out, then check every RRSIG of the responses with `verify_rrsig` against the zone's DNSKEYs
+and check that every proof record matches or covers the names it must (hash order for NSEC3,
+canonical order for NSEC). `signed_responses_validate_secure` feeds the responses to the
+chain-of-trust validator, anchored at the zone's DS: answers, CNAME chains, NODATA, wildcard
+answers and wildcard NODATA, NXDOMAIN and DS validate `Secure` under NSEC, NSEC3 and NSEC3
+opt-out (except an NXDOMAIN inside an opt-out span, which is `Insecure` by RFC 5155 9.2), and
+data below the unsigned delegation validates `Insecure`. The engine test
+`from_config_serves_signed_zone_with_aa_never_ad` runs a DO query through the full pipeline.
