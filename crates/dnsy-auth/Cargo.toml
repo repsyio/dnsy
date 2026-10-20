@@ -12,8 +12,8 @@ workspace = true
 
 [dependencies]
 argon2 = { workspace = true }
-dnsy-core = { path = "../dnsy-core" }
-dnsy-store = { path = "../dnsy-store" }
+dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
+dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
 rand = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }

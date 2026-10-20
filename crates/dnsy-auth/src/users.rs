@@ -249,12 +249,11 @@ impl UserService {
             })
             .await?;
         let password = password.to_owned();
-        let (user, ok) = blocking(move || match row {
-            Some((user, phc)) => {
+        let (user, ok) = blocking(move || {
+            if let Some((user, phc)) = row {
                 let ok = password::verify(&password, &phc);
                 (Some(user), ok)
-            }
-            None => {
+            } else {
                 let _ = password::hash(&password);
                 (None, false)
             }
@@ -338,7 +337,7 @@ mod tests {
 
     use super::*;
 
-    async fn svc() -> (UserService, tempfile::TempDir) {
+    fn svc() -> (UserService, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("t.db")).unwrap();
         (UserService::new(store), dir)
@@ -346,7 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn password_verify_roundtrip() {
-        let (s, _d) = svc().await;
+        let (s, _d) = svc();
         let u = s
             .create("alice", "correct horse", Role::Viewer)
             .await
@@ -374,7 +373,7 @@ mod tests {
 
     #[tokio::test]
     async fn stored_hash_is_argon2id_owasp() {
-        let (s, _d) = svc().await;
+        let (s, _d) = svc();
         let u = s.create("alice", "pw", Role::Admin).await.unwrap();
         let phc: String = s
             .store
@@ -392,7 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_username_rejected() {
-        let (s, _d) = svc().await;
+        let (s, _d) = svc();
         s.create("Alice", "pw", Role::Viewer).await.unwrap();
         assert!(matches!(
             s.create("aLiCe", "pw", Role::Admin).await,
@@ -411,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn last_admin_protected() {
-        let (s, _d) = svc().await;
+        let (s, _d) = svc();
         let a = s.create("a", "pw", Role::Admin).await.unwrap();
         assert!(matches!(s.delete(a.id).await, Err(UserError::LastAdmin)));
         assert!(matches!(
@@ -439,7 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_code_single_use_and_expires() {
-        let (s, _d) = svc().await;
+        let (s, _d) = svc();
         let (h, code) = BootstrapCode::generate(bootstrap::TTL);
         assert!(matches!(
             s.bootstrap_admin(&h, "nope", "root", "pw").await,
@@ -453,7 +452,7 @@ mod tests {
         ));
         assert_eq!(s.count().await.unwrap(), 1);
 
-        let (s2, _d2) = svc().await;
+        let (s2, _d2) = svc();
         let (h2, code2) = BootstrapCode::generate(Duration::ZERO);
         assert!(matches!(
             s2.bootstrap_admin(&h2, &code2, "root", "pw").await,
@@ -464,7 +463,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_only_without_users() {
-        let (s, _d) = svc().await;
+        let (s, _d) = svc();
         let h = s.start_bootstrap().await.unwrap().expect("code issued");
         let _ = h;
         s.create("a", "pw", Role::Admin).await.unwrap();

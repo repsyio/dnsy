@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 /// How long a bootstrap code stays valid.
-pub(crate) const TTL: Duration = Duration::from_secs(60 * 60);
+pub(crate) const TTL: Duration = Duration::from_hours(1);
 
 struct State {
     digest: [u8; 32],
