@@ -1,0 +1,187 @@
+<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+  <h1 class="text-2xl font-bold text-cyan">Dashboard</h1>
+  <div class="flex flex-wrap items-center gap-3">
+    <div role="group" aria-label="Time range" class="flex gap-2">
+      @for (r of ranges; track r.key) {
+        <button
+          type="button"
+          [class]="range().key === r.key ? 'btn bg-cyan/20' : 'btn'"
+          [attr.aria-pressed]="range().key === r.key"
+          [attr.data-range]="r.key"
+          (click)="selectRange(r.key)"
+        >
+          {{ r.key }}
+        </button>
+      }
+    </div>
+    <button
+      type="button"
+      class="btn"
+      data-testid="pause"
+      [attr.aria-pressed]="paused()"
+      (click)="togglePause()"
+    >
+      {{ paused() ? 'Resume' : 'Pause' }}
+    </button>
+  </div>
+</div>
+
+@if (data(); as d) {
+  @if (d.clockTrusted === false) {
+    <div
+      class="panel mb-6 border-orange text-orange shadow-glow-orange"
+      role="alert"
+      data-testid="clock-banner"
+    >
+      The system clock is before the build time: DNSSEC validation is suspended until it is
+      corrected.
+    </div>
+  }
+
+  <section aria-label="Summary" class="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+    @for (t of tiles(); track t.id) {
+      <div class="panel" [attr.data-tile]="t.id">
+        <div class="text-xs uppercase tracking-widest text-muted">{{ t.label }}</div>
+        <div
+          class="mt-2 font-display text-2xl tabular-nums"
+          [class.text-cyan]="!t.tone || t.tone === 'normal'"
+          [class.text-secure]="t.tone === 'secure'"
+          [class.text-bogus]="t.tone === 'bogus'"
+        >
+          {{ t.value }}
+        </div>
+        @if (t.hint) {
+          <div class="mt-1 text-xs text-muted">{{ t.hint }}</div>
+        }
+      </div>
+    }
+  </section>
+
+  @if (empty()) {
+    <section class="panel" data-testid="empty">
+      <dnsy-mascot-empty message="No queries in this range yet." />
+    </section>
+  } @else {
+    @if (chart(); as c) {
+      <section class="panel mb-6" aria-labelledby="qps-heading">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <h2 id="qps-heading" class="text-sm text-cyan">Queries over time</h2>
+          <button
+            type="button"
+            class="btn"
+            data-testid="toggle-table"
+            [attr.aria-pressed]="showTable()"
+            (click)="toggleTable()"
+          >
+            {{ showTable() ? 'Show chart' : 'Show table' }}
+          </button>
+        </div>
+        @if (showTable()) {
+          <div class="max-h-72 overflow-auto">
+            <table class="w-full text-left text-sm" data-testid="chart-table">
+              <caption class="sr-only">
+                Queries per bucket
+              </caption>
+              <thead class="text-muted">
+                <tr>
+                  <th scope="col" class="py-1 pr-4">Time</th>
+                  <th scope="col" class="py-1 pr-4">Queries</th>
+                  <th scope="col" class="py-1 pr-4">Cache hits</th>
+                  <th scope="col" class="py-1">Blocked</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (row of c.rows; track row.start) {
+                  <tr>
+                    <td class="py-1 pr-4">{{ time(row.start) }}</td>
+                    <td class="py-1 pr-4 tabular-nums">{{ formatCount(row.total) }}</td>
+                    <td class="py-1 pr-4 tabular-nums">{{ formatCount(row.cacheHits) }}</td>
+                    <td class="py-1 tabular-nums">{{ formatCount(row.blocked) }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        } @else {
+          <svg
+            [attr.viewBox]="'0 0 ' + chartBox.width + ' ' + chartBox.height"
+            class="h-auto w-full"
+            role="img"
+            aria-labelledby="qps-title"
+            data-testid="chart"
+          >
+            <title id="qps-title">{{ chartLabel() }}</title>
+            @for (t of c.yTicks; track $index) {
+              <line
+                [attr.x1]="chartBox.left"
+                [attr.x2]="chartBox.width - chartBox.right"
+                [attr.y1]="t.pos"
+                [attr.y2]="t.pos"
+                class="stroke-cyan/20"
+              />
+              <text
+                [attr.x]="chartBox.left - 6"
+                [attr.y]="t.pos + 3"
+                text-anchor="end"
+                class="fill-muted text-[10px]"
+              >
+                {{ t.label }}
+              </text>
+            }
+            @for (t of c.xTicks; track $index) {
+              <text
+                [attr.x]="t.pos"
+                [attr.y]="chartBox.height - 8"
+                text-anchor="middle"
+                class="fill-muted text-[10px]"
+              >
+                {{ t.label }}
+              </text>
+            }
+            <path [attr.d]="c.totalArea" class="fill-cyan/10 stroke-none" />
+            <path
+              [attr.d]="c.totalPath"
+              class="fill-none stroke-cyan"
+              stroke-width="1.5"
+              data-testid="total-line"
+            />
+            <path
+              [attr.d]="c.cachePath"
+              class="fill-none stroke-secure"
+              stroke-width="1.5"
+              stroke-dasharray="4 3"
+              data-testid="cache-line"
+            />
+          </svg>
+          <p class="mt-2 flex gap-4 text-xs text-muted">
+            <span><span class="text-cyan">&#9644;</span> Queries</span>
+            <span><span class="text-secure">&#9644;</span> Answered from cache</span>
+          </p>
+        }
+        @if (updatedAt(); as u) {
+          <p class="mt-2 text-xs text-muted">
+            Updated {{ u.toLocaleTimeString() }}{{ paused() ? ' (auto-refresh paused)' : '' }}
+          </p>
+        }
+      </section>
+    }
+
+    <div class="grid gap-4 lg:grid-cols-3">
+      <app-top-list heading="Top domains" [items]="d.topDomains" />
+      <app-top-list heading="Top blocked" [items]="d.topBlocked" accent="orange" />
+      <app-top-list heading="Top clients" [items]="d.topClients" />
+    </div>
+  }
+} @else if (failed()) {
+  <section class="panel" data-testid="error">
+    <dnsy-mascot-error
+      message="Could not load the dashboard."
+      action="Retry"
+      (actionClick)="retry()"
+    />
+  </section>
+} @else {
+  <section class="panel" data-testid="loading">
+    <dnsy-mascot-loading message="Loading statistics..." />
+  </section>
+}
