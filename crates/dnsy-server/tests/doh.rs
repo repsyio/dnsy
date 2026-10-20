@@ -467,7 +467,7 @@ async fn redaction_scenario() {
         "secret fragment too short to be meaningful"
     );
     let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
-    assert!(!logs.contains(&secret) && !logs.contains(secret.splitn(3, '_').nth(1).unwrap()));
+    assert!(!logs.contains(&secret) && !logs.contains(secret.split('_').nth(1).unwrap()));
     assert!(!logs.is_empty(), "the test must actually capture logs");
     assert!(!logs.contains(secret_part) && !logs.contains(&f.no_scope));
     for r in &replies {
