@@ -99,3 +99,14 @@ alphanumeric is written in the RFC 3597 generic form (`\# len hex`).
 
 The export is checked with `named-checkzone` when it is installed (the test is skipped
 otherwise).
+
+## Managing zones over the API
+
+Zones, records and the BIND export are available under `/api/v1/zones` (see
+[REST API](rest-api.md#zones-records-and-export)). The API writes the same JSON files described
+above, atomically, bumps the SOA serial on every change and keeps the `dnssec` block of the file.
+Records are addressed by a stable id derived from name, type and value. `GET /zones/{name}` shows
+`load_error` when the file on disk is currently invalid (the previous version keeps serving).
+Authoritative answers are not cached, so a change is visible to queries as soon as the write
+returns.
+

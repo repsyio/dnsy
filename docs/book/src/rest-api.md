@@ -50,6 +50,52 @@ The token secret is returned only in the `POST /tokens` response (`token`); list
 metadata only. Creating a token and changing a password need a session, so a leaked token cannot
 mint further tokens or lock the owner out.
 
+## Zones, records and export
+
+Zones are the JSON files of the zones directory; the API reads and writes them through the same
+validation as hot reload, so a write the API accepts is a file the server loads. Zone routes
+answer 503 when no zones directory is attached.
+
+| Endpoint | Scope | Purpose |
+| --- | --- | --- |
+| `GET /api/v1/zones` | read | list zones: name, serial, record count, `dnssec_enabled`, `load_error` |
+| `POST /api/v1/zones` | write | `{name, default_ttl, soa, records}`; 201 with `ETag`. The records must include an apex NS |
+| `GET /api/v1/zones/{name}` | read | settings and SOA, `record_count`, `load_error`; `ETag` header |
+| `PUT /api/v1/zones/{name}` | write | replace settings and records (`default_ttl, soa, records`); keeps the DNSSEC policy |
+| `DELETE /api/v1/zones/{name}` | write | delete the zone and its file (204) |
+| `GET /api/v1/zones/{name}/records` | read | paged: `limit` (default 100, max 1000), `offset`, `type`, `name`; returns `{items, total, limit, offset}` |
+| `POST /api/v1/zones/{name}/records` | write | `{name, type, ttl?, value}`; 201 with the record |
+| `PUT /api/v1/zones/{name}/records/{id}` | write | replace a record |
+| `DELETE /api/v1/zones/{name}/records/{id}` | write | delete a record (204) |
+| `GET /api/v1/zones/{name}/export` | read | BIND master file, `text/dns; charset=utf-8`, `Content-Disposition: attachment; filename="<zone>.zone"` |
+
+A record `id` is a hash of its absolute lowercase owner name, type and value, so it is stable
+across reloads and changes when any of those change. Record `name` may be `@`, relative to the
+zone, or absolute (trailing dot).
+
+Rules, all enforced on write:
+
+- **Zone names** must map to a safe file name: letters, digits, `-` and `.` only, lowercase on
+  disk, no root zone. Anything else (`../x`, `a/b`, backslashes, `_`, IDN in Unicode form) is 400,
+  in the body and in the path. Names are case-insensitive; a second zone with the same name is 409.
+- **Records** are validated as in zone files: type (A, AAAA, NS, CNAME, PTR, MX, TXT, SRV, CAA),
+  rdata, owner inside the zone, and CNAME exclusivity (a CNAME cannot share a name with other
+  records and cannot sit at the apex). DNSSEC types and SOA cannot be written by hand. Failures are
+  422. A TTL above 2147483647 is 422.
+- **Apex NS.** A zone must have at least one NS record at the apex; deleting or changing the last
+  one is 422.
+- **Duplicates** (same name, type, value) are 409.
+- **SOA serial** goes up by one on every successful write (creation uses `soa.serial`, default 1).
+- **Limits**: request bodies up to 1 MiB (413), 10000 records per zone, 1000 zones, values up to
+  4096 characters.
+
+**Concurrency.** Zone reads return an `ETag`. Writes (`PUT`, `DELETE`, record `POST`/`PUT`/`DELETE`)
+accept `If-Match`; a stale tag is 412 and nothing is written. `If-Match: *` always matches. Without
+the header the write goes through. Writes are serialised, and write responses carry the new `ETag`.
+
+Export file names come from the validated zone name, so the `Content-Disposition` header cannot be
+influenced beyond `[a-z0-9.-]`.
+
 ## Errors
 
 Errors are RFC 9457 `application/problem+json`:
@@ -65,7 +111,10 @@ Errors are RFC 9457 `application/problem+json`:
 | 401 | missing, invalid or expired credentials (`WWW-Authenticate: Bearer`) |
 | 403 | credential lacks the scope, or CSRF check failed |
 | 404 | no such resource |
-| 409 | conflict (duplicate name, last admin) |
+| 409 | conflict (duplicate name, record or zone, last admin) |
+| 412 | `If-Match` does not match the current `ETag` |
+| 413 | request body too large |
+| 422 | well-formed request with invalid data (record rdata, CNAME conflict, missing apex NS) |
 | 429 | too many failed logins; `Retry-After` header and `retry_after_secs` field |
 | 500 | internal error; details are logged, never returned |
 | 503 | not ready |

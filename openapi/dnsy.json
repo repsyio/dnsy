@@ -735,6 +735,776 @@
         }
       }
     },
+    "/api/v1/zones": {
+      "get": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "List zones.",
+        "operationId": "list_zones",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ZoneSummary"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "Create a zone.",
+        "operationId": "create_zone",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateZone"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator for If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZoneDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid zone name",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The zone exists",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid zone data",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/zones/{name}": {
+      "get": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "Get a zone, with its `load_error` and an `ETag`.",
+        "operationId": "get_zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator for If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZoneDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "Replace a zone's settings and records. The DNSSEC policy is kept; the serial is bumped.",
+        "operationId": "replace_zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ZoneBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator for If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZoneDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match does not match",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "Delete a zone and its file.",
+        "operationId": "delete_zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match does not match",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/zones/{name}/export": {
+      "get": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "Download the zone as a BIND master file.",
+        "operationId": "export_zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "BIND master file",
+            "content": {
+              "text/dns": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/zones/{name}/records": {
+      "get": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "List records of a zone (paged). The SOA is part of the zone detail, not listed here.",
+        "operationId": "list_records",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "Page size (default 100, at most 1000).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "type",
+            "in": "path",
+            "description": "Only this record type.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Only this owner name (relative or absolute).",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator for If-Match"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "Add a record. The SOA serial is bumped.",
+        "operationId": "create_record",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator of the zone after the write"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate record",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match does not match",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid name, rdata or TTL, or a CNAME conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/zones/{name}/records/{id}": {
+      "put": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "Replace a record. The id changes when name, type or value change. The serial is bumped.",
+        "operationId": "replace_record",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Record id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator of the zone after the write"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate record",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match does not match",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid name, rdata or TTL, a CNAME conflict, or the last apex NS removed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "zones"
+        ],
+        "summary": "Delete a record. The apex keeps at least one NS record. The serial is bumped.",
+        "operationId": "delete_record",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Record id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator of the zone after the write"
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match does not match",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The last apex NS record cannot be removed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
@@ -879,6 +1649,26 @@
           }
         }
       },
+      "CreateZone": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ZoneBody"
+          },
+          {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Zone name, e.g. `example.com.`."
+              }
+            }
+          }
+        ],
+        "description": "New zone."
+      },
       "CreatedToken": {
         "type": "object",
         "description": "The only response that contains the token secret.",
@@ -968,6 +1758,162 @@
           "type": {
             "type": "string",
             "description": "URI identifying the problem type."
+          }
+        }
+      },
+      "RecordInput": {
+        "type": "object",
+        "description": "A record as written by a client.",
+        "required": [
+          "name",
+          "type",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "`@`, a name relative to the zone, or an absolute name ending in a dot."
+          },
+          "ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds; defaults to the zone default TTL.",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string",
+            "description": "A, AAAA, NS, CNAME, PTR, MX, TXT, SRV or CAA."
+          },
+          "value": {
+            "type": "string",
+            "description": "Presentation-format rdata, e.g. `10 mail.example.com.`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecordPage": {
+        "type": "object",
+        "description": "One page of records.",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordView"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "description": "Records matching the filters, across all pages.",
+            "minimum": 0
+          }
+        }
+      },
+      "RecordView": {
+        "type": "object",
+        "description": "A stored record.",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "ttl",
+          "value"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable id: hash of owner name, type and value."
+          },
+          "name": {
+            "type": "string",
+            "description": "Absolute owner name."
+          },
+          "ttl": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "SoaBody": {
+        "type": "object",
+        "description": "The SOA record of a zone.",
+        "required": [
+          "mname",
+          "rname",
+          "refresh",
+          "retry",
+          "expire",
+          "minimum"
+        ],
+        "properties": {
+          "expire": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "minimum": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "mname": {
+            "type": "string",
+            "description": "Primary name server."
+          },
+          "refresh": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "retry": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rname": {
+            "type": "string",
+            "description": "Responsible mailbox, as a domain name."
+          },
+          "serial": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Initial serial on create (default 1). Ignored on replace: every write bumps the serial.",
+            "minimum": 0
+          },
+          "ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "TTL of the SOA record; defaults to the zone default TTL.",
+            "minimum": 0
           }
         }
       },
@@ -1098,6 +2044,104 @@
           "version": {
             "type": "string",
             "description": "`dnsy` crate version."
+          }
+        }
+      },
+      "ZoneBody": {
+        "type": "object",
+        "description": "Settings and records of a zone, for create and replace.",
+        "required": [
+          "default_ttl",
+          "soa"
+        ],
+        "properties": {
+          "default_ttl": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordInput"
+            },
+            "description": "Must contain at least one NS record at the apex."
+          },
+          "soa": {
+            "$ref": "#/components/schemas/SoaBody"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ZoneDetail": {
+        "type": "object",
+        "description": "A zone with its SOA (no records; see `/zones/{name}/records`).",
+        "required": [
+          "name",
+          "default_ttl",
+          "soa",
+          "record_count",
+          "dnssec_enabled"
+        ],
+        "properties": {
+          "default_ttl": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "dnssec_enabled": {
+            "type": "boolean"
+          },
+          "load_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "record_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "soa": {
+            "$ref": "#/components/schemas/SoaBody"
+          }
+        }
+      },
+      "ZoneSummary": {
+        "type": "object",
+        "description": "Overview row of a zone.",
+        "required": [
+          "name",
+          "serial",
+          "record_count",
+          "dnssec_enabled"
+        ],
+        "properties": {
+          "dnssec_enabled": {
+            "type": "boolean"
+          },
+          "load_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the zone file on disk is not being served, if its latest version is invalid."
+          },
+          "name": {
+            "type": "string",
+            "description": "Absolute, lowercase zone name."
+          },
+          "record_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "serial": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       }

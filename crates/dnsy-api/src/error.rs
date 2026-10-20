@@ -42,6 +42,10 @@ pub enum ApiError {
     NotFound(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    PreconditionFailed(String),
+    #[error("{0}")]
+    Unprocessable(String),
     #[error("too many failed logins, retry in {retry_after_secs}s")]
     Throttled { retry_after_secs: u64 },
     #[error("service unavailable")]
@@ -59,6 +63,16 @@ impl ApiError {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad-request", "Bad request"),
             ApiError::NotFound(_) => (StatusCode::NOT_FOUND, "not-found", "Not found"),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, "conflict", "Conflict"),
+            ApiError::PreconditionFailed(_) => (
+                StatusCode::PRECONDITION_FAILED,
+                "precondition-failed",
+                "Precondition failed",
+            ),
+            ApiError::Unprocessable(_) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unprocessable",
+                "Unprocessable content",
+            ),
             ApiError::Throttled { .. } => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too-many-requests",
