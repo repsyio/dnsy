@@ -128,6 +128,7 @@ async fn create_cert(
         ));
     }
     let _guard = state.apply_lock.lock().await;
+    super::live::require_cert_reload(&state)?;
     let existing = state.client_certs.list().await.map_err(internal)?;
     if existing.iter().any(|c| c.sha256 == sha256) {
         return Err(ApiError::Conflict(
@@ -160,6 +161,7 @@ async fn patch_cert(
     Json(req): Json<PatchClientCert>,
 ) -> Result<Json<ClientCertView>, ApiError> {
     let _guard = state.apply_lock.lock().await;
+    super::live::require_cert_reload(&state)?;
     if !state
         .client_certs
         .set_enabled(id, req.enabled)
@@ -192,6 +194,7 @@ async fn delete_cert(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
+    super::live::require_cert_reload(&state)?;
     if !state.client_certs.remove(id).await.map_err(internal)? {
         return Err(ApiError::NotFound(
             "client certificate not found".to_owned(),

@@ -828,3 +828,39 @@ async fn from_config_serves_signed_zone_with_aa_never_ad() {
     let home = Name::from_ascii("home.test.").unwrap();
     assert_eq!(keys.keys(&home).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn reload_trust_anchors_swaps_anchors_and_keeps_mode_and_ntas() {
+    let engine = EngineBuilder::new(&Config::default(), Up(Arc::new(Fake::hanging()))).build();
+    engine.set_negative_trust_anchors(vec![name("broken.test.")]);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("anchors.ds");
+    std::fs::write(
+        &file,
+        "; extra anchor\n20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n",
+    )
+    .unwrap();
+    let cfg = dnsy_config::Dnssec {
+        trust_anchors: vec![],
+        trust_anchor_file: Some(file.clone()),
+        ..dnsy_config::Dnssec::default()
+    };
+    engine.reload_trust_anchors(&cfg).unwrap();
+    let policy = engine.dnssec_policy();
+    assert_eq!(policy.validator.anchors().ds_anchors().len(), 1);
+    assert_eq!(policy.validator.anchors().negative_anchors().len(), 1);
+    assert_eq!(policy.mode, engine.dnssec_mode());
+
+    std::fs::write(&file, "not an anchor\n").unwrap();
+    assert!(engine.reload_trust_anchors(&cfg).is_err());
+    assert_eq!(
+        engine
+            .dnssec_policy()
+            .validator
+            .anchors()
+            .ds_anchors()
+            .len(),
+        1,
+        "failed reload keeps the previous anchors"
+    );
+}

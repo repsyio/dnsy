@@ -4,6 +4,7 @@ use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dnsy_proto::{Class, Message, Name, Question, RData, Rcode, RecordType};
@@ -624,4 +625,307 @@ fn serve_fails_fast_on_missing_certificate() {
     env.append_config("[doh]\nlisten = [\"127.0.0.1:0\"]\ncert = \"/nonexistent/c.pem\"\nkey = \"/nonexistent/k.pem\"\n");
     let out = env.run(&["serve"]);
     assert!(!out.status.success());
+}
+
+/// Opens a TLS connection to `addr` trusting `cert_pem` (server name `localhost`).
+fn tls_connect(
+    addr: SocketAddr,
+    cert_pem: &str,
+) -> rustls::StreamOwned<rustls::ClientConnection, TcpStream> {
+    use rustls_pki_types::pem::PemObject as _;
+    let mut roots = rustls::RootCertStore::empty();
+    for der in rustls_pki_types::CertificateDer::pem_slice_iter(cert_pem.as_bytes()) {
+        roots.add(der.unwrap()).unwrap();
+    }
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let conn = rustls::ClientConnection::new(
+        Arc::new(config),
+        rustls_pki_types::ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let tcp = TcpStream::connect(addr).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    rustls::StreamOwned::new(conn, tcp)
+}
+
+fn dot_ask(addr: SocketAddr, cert_pem: &str, name: &str) -> Message {
+    let mut s = tls_connect(addr, cert_pem);
+    let q = query(name);
+    s.write_all(&u16::try_from(q.len()).unwrap().to_be_bytes())
+        .unwrap();
+    s.write_all(&q).unwrap();
+    let mut len = [0_u8; 2];
+    s.read_exact(&mut len).unwrap();
+    let mut buf = vec![0_u8; usize::from(u16::from_be_bytes(len))];
+    s.read_exact(&mut buf).unwrap();
+    Message::decode(&buf).unwrap()
+}
+
+/// POSTs a query; returns the HTTP status and the DNS answer when there is one.
+fn doh_post(
+    addr: SocketAddr,
+    cert_pem: &str,
+    path: &str,
+    bearer: Option<&str>,
+    name: &str,
+) -> (u16, Option<Message>) {
+    let mut s = tls_connect(addr, cert_pem);
+    let q = query(name);
+    let auth = bearer.map_or_else(String::new, |t| format!("Authorization: Bearer {t}\r\n"));
+    write!(
+        s,
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\n{auth}Content-Type: application/dns-message\r\n\
+         Accept: application/dns-message\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        q.len()
+    )
+    .unwrap();
+    s.write_all(&q).unwrap();
+    let mut raw = Vec::new();
+    // The server closes with or without close_notify; keep what arrived either way.
+    let _ = s.read_to_end(&mut raw);
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let status: u16 = head.split(' ').nth(1).unwrap().parse().unwrap();
+    let body = &raw[split + 4..];
+    (status, Message::decode(body).ok().filter(|_| status == 200))
+}
+
+#[test]
+fn dot_and_doh_answer_queries_through_the_binary() {
+    let env = Env::new(false);
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let cert_pem = cert.cert.pem();
+    let tls = env.dir.path();
+    std::fs::write(tls.join("cert.pem"), &cert_pem).unwrap();
+    std::fs::write(tls.join("key.pem"), cert.signing_key.serialize_pem()).unwrap();
+    env.append_config(&format!(
+        "[dot]\nlisten = [\"127.0.0.1:0\"]\ncert = {c}\nkey = {k}\n\
+         [doh]\nlisten = [\"127.0.0.1:0\"]\ncert = {c}\nkey = {k}\npath = \"/custom-doh\"\n",
+        c = q(&tls.join("cert.pem")),
+        k = q(&tls.join("key.pem")),
+    ));
+    let mut create = env
+        .command(&["user", "create", "dohuser", "--password-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    create
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"long enough password\n")
+        .unwrap();
+    assert!(create.wait().unwrap().success());
+    let out = env.ok(&[
+        "token",
+        "create",
+        "--user",
+        "dohuser",
+        "--name",
+        "doh",
+        "--scope",
+        "dns:query",
+    ]);
+    let token = out.split("shown once): ").nth(1).unwrap().trim().to_owned();
+
+    let server = env.serve();
+    let addr = |k: &str| -> SocketAddr { server.ready[k][0].as_str().unwrap().parse().unwrap() };
+    let expected = Some("192.0.2.7".parse().unwrap());
+
+    assert_eq!(
+        first_a(&dot_ask(addr("dot"), &cert_pem, "www.example.test.")),
+        expected
+    );
+
+    let doh = addr("doh");
+    let (status, answer) = doh_post(
+        doh,
+        &cert_pem,
+        "/custom-doh",
+        Some(&token),
+        "www.example.test.",
+    );
+    assert_eq!(status, 200);
+    assert_eq!(first_a(&answer.unwrap()), expected);
+    // The token in the path works, on the configured path only.
+    let (status, answer) = doh_post(
+        doh,
+        &cert_pem,
+        &format!("/custom-doh/{token}"),
+        None,
+        "www.example.test.",
+    );
+    assert_eq!(status, 200);
+    assert_eq!(first_a(&answer.unwrap()), expected);
+    assert_eq!(
+        doh_post(
+            doh,
+            &cert_pem,
+            "/dns-query",
+            Some(&token),
+            "www.example.test."
+        )
+        .0,
+        404
+    );
+    // No token: refused.
+    assert_eq!(
+        doh_post(doh, &cert_pem, "/custom-doh", None, "www.example.test.").0,
+        401
+    );
+}
+
+/// Sends one JSON request to the API and returns the status line code and body.
+fn api(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    token: &str,
+    body: Option<&str>,
+) -> (u16, String) {
+    let body = body.unwrap_or("");
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(
+        s,
+        "{method} {path} HTTP/1.0\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    let status = out.split(' ').nth(1).unwrap().parse().unwrap();
+    let body = out
+        .split_once("\r\n\r\n")
+        .map_or(String::new(), |(_, b)| b.to_owned());
+    (status, body)
+}
+
+#[test]
+fn api_changes_reach_the_running_server() {
+    let env = Env::new(true);
+    let mut create = env
+        .command(&["user", "create", "root", "--password-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    create
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"long enough password\n")
+        .unwrap();
+    assert!(create.wait().unwrap().success());
+    let out = env.ok(&[
+        "token",
+        "create",
+        "--user",
+        "root",
+        "--name",
+        "t",
+        "--scope",
+        "api:read",
+        "--scope",
+        "api:write",
+        "--scope",
+        "admin",
+    ]);
+    let token = out.split("shown once): ").nth(1).unwrap().trim().to_owned();
+    let anchors = env.dir.path().join("anchors.ds");
+    std::fs::write(
+        &anchors,
+        "20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n",
+    )
+    .unwrap();
+    env.append_config(&format!("[dnssec]\ntrust_anchor_file = {}\n", q(&anchors)));
+    // Drop the base [dnssec] table; the appended one replaces it.
+    let base = std::fs::read_to_string(env.config()).unwrap();
+    std::fs::write(
+        env.config(),
+        base.replacen("[dnssec]\nvalidation = \"off\"\n", "", 1),
+    )
+    .unwrap();
+
+    let mut server = env.serve();
+    let name = "www.example.test.";
+
+    // ACL changes apply to the live engine (and are undone again).
+    let (status, rule) = api(
+        server.api,
+        "POST",
+        "/api/v1/acl",
+        &token,
+        Some(r#"{"cidr":"127.0.0.1/32","action":"refuse"}"#),
+    );
+    assert_eq!(status, 201, "{rule}");
+    assert_eq!(udp_ask(server.udp, name).header.rcode, Rcode::Refused);
+    let id = serde_json::from_str::<serde_json::Value>(&rule).unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        api(
+            server.api,
+            "DELETE",
+            &format!("/api/v1/acl/{id}"),
+            &token,
+            None
+        )
+        .0,
+        204
+    );
+    assert_eq!(udp_ask(server.udp, name).header.rcode, Rcode::NoError);
+
+    // Wired components: no 503 for signing, validation settings, certificates and readiness.
+    assert_eq!(
+        api(
+            server.api,
+            "GET",
+            "/api/v1/zones/example.test/dnssec",
+            &token,
+            None
+        )
+        .0,
+        200
+    );
+    let (status, settings) = api(server.api, "GET", "/api/v1/settings/dnssec", &token, None);
+    assert_eq!(status, 200, "{settings}");
+    let cert = format!(r#"{{"sha256":"{}","label":"x"}}"#, "ab".repeat(32));
+    assert_eq!(
+        api(
+            server.api,
+            "POST",
+            "/api/v1/client-certs",
+            &token,
+            Some(&cert)
+        )
+        .0,
+        201
+    );
+    let (status, ready) = api(server.api, "GET", "/readyz", &token, None);
+    assert_eq!(status, 200);
+    assert!(!ready.contains("dnssec_clock_untrusted"), "{ready}");
+
+    // SIGHUP reloads the trust anchors from the configuration file.
+    server.signal("-HUP");
+    std::thread::sleep(Duration::from_millis(500));
+    server.signal("-TERM");
+    assert!(server.wait_exit().success());
+    let mut log = String::new();
+    server
+        .child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut log)
+        .unwrap();
+    assert!(log.contains("trust anchors reloaded"), "{log}");
 }

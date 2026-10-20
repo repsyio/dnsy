@@ -318,6 +318,7 @@ async fn patch_settings(
     let patch: SettingsPatch = serde_json::from_value(body)
         .map_err(|e| ApiError::Unprocessable(format!("invalid settings patch: {e}")))?;
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     let old = state.settings.snapshot();
     let mut next = old.clone();
     patch.apply(&mut next);

@@ -304,6 +304,29 @@ impl<E: Exchange> Engine<E> {
         self.cache.flush_all();
     }
 
+    /// Re-reads the trust anchors (`[dnssec] trust_anchors` and `trust_anchor_file`) and swaps
+    /// them in, keeping the current mode, negative trust anchors and clock floor; flushes the
+    /// cache. On error the previous anchors stay in effect.
+    ///
+    /// # Errors
+    /// A malformed anchor or an unreadable anchor file.
+    pub fn reload_trust_anchors(
+        &self,
+        cfg: &dnsy_config::Dnssec,
+    ) -> Result<(), dnsy_resolver::forward::DnssecConfigError> {
+        let fresh = DnssecPolicy::from_config(cfg)?;
+        let current = self.dnssec.load_full();
+        let policy = DnssecPolicy {
+            mode: current.mode,
+            validator: fresh.validator,
+            not_before_unix: current.not_before_unix,
+        }
+        .with_negative_trust_anchors(current.validator.anchors().negative_anchors().to_vec());
+        self.dnssec.store(Arc::new(policy));
+        self.cache.flush_all();
+        Ok(())
+    }
+
     /// True while the system clock is earlier than the build time: answers are served as
     /// `Indeterminate`, without AD.
     #[must_use]

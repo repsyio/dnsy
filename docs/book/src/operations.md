@@ -5,12 +5,11 @@
 | Signal | Effect |
 | --- | --- |
 | `SIGTERM`, `SIGINT` | graceful shutdown: listeners stop accepting, in-flight queries finish (5 s), the API closes, the query log is flushed, then the process exits 0 |
-| `SIGHUP` | reload without a restart: zone files, TLS certificates for DoT/DoH, the DoT client CA bundle, blocklists and custom rules, and a pass of DNSSEC re-signing |
+| `SIGHUP` | reload without a restart: zone files, TLS certificates for DoT/DoH, the DoT client CA bundle, blocklists and custom rules, the DNSSEC trust anchors (inline and `trust_anchor_file`, re-read from `dnsy.toml`) and a pass of DNSSEC re-signing |
 
-Zone files and certificates are also watched on disk, so `SIGHUP` is a "do it now". Changes to
-`dnsy.toml` itself (listen addresses, limits, logging) need a restart. A reload that fails keeps
-the previous state and logs the reason. The trust anchor file (`[dnssec] trust_anchor_file`)
-reload hook runs on `SIGHUP` and is applied by the DNSSEC validation wiring.
+Zone files and certificates are also watched on disk, so `SIGHUP` is a "do it now". Other changes to
+`dnsy.toml` (listen addresses, limits, logging, `doh.path`) need a restart; limits, block mode, cache and retention can also be changed through `PATCH /settings` without one. A reload that fails keeps
+the previous state and logs the reason.
 
 ## Logging
 

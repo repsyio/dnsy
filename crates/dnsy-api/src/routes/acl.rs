@@ -207,6 +207,7 @@ async fn create_rule(
         return Err(ApiError::Unprocessable("comment is too long".to_owned()));
     }
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     if state.rules.list().await.map_err(filter_err)?.len() >= MAX_RULES {
         return Err(ApiError::Unprocessable("too many rules".to_owned()));
     }
@@ -239,6 +240,7 @@ async fn delete_rule(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     state.rules.delete(id).await.map_err(filter_err)?;
     apply_acl(&state).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -261,6 +263,7 @@ async fn set_rate_limit(
         )));
     }
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     state
         .rules
         .set_rate_limit_qps(req.qps)

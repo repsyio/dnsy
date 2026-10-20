@@ -291,6 +291,7 @@ async fn create_group(
 ) -> Result<(StatusCode, Json<GroupView>), ApiError> {
     let spec = spec_of(&req.name, req.body)?;
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     let specs = state.groups.list().await.map_err(group_store_err)?;
     if specs.iter().any(|s| s.name == spec.name) {
         return Err(ApiError::Conflict("the group exists".to_owned()));
@@ -336,6 +337,7 @@ async fn replace_group(
 ) -> Result<Json<GroupView>, ApiError> {
     let spec = spec_of(&name, body)?;
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     let (specs, _) = find(&state, &name).await?;
     commit(&state, specs, Some(spec.clone()), None).await?;
     Ok(Json(view(spec, live(&state).as_deref())))
@@ -354,6 +356,7 @@ async fn delete_group(
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     let (specs, _) = find(&state, &name).await?;
     commit(&state, specs, None, Some(&name)).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -375,6 +378,7 @@ async fn add_member(
 ) -> Result<(StatusCode, Json<GroupView>), ApiError> {
     let member = parse_member(&req)?;
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     let (specs, mut spec) = find(&state, &name).await?;
     if spec.members.len() >= MAX_MEMBERS {
         return Err(ApiError::Unprocessable("too many members".to_owned()));
@@ -408,6 +412,7 @@ async fn remove_member(
     Path((name, index)): Path<(String, usize)>,
 ) -> Result<Json<GroupView>, ApiError> {
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     let (specs, mut spec) = find(&state, &name).await?;
     if index >= spec.members.len() {
         return Err(ApiError::NotFound("member not found".to_owned()));

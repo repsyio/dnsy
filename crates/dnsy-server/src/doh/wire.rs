@@ -10,12 +10,13 @@ pub(crate) const MAX_MESSAGE: usize = 65_535;
 const MAX_DNS_PARAM: usize = MAX_MESSAGE.div_ceil(3) * 4;
 /// Longest accepted path token (real tokens are about 60 characters).
 pub(crate) const MAX_TOKEN: usize = 256;
+/// The default `DoH` path (`[doh] path`).
 pub(crate) const BASE_PATH: &str = "/dns-query";
 pub(crate) const MEDIA_TYPE: &str = "application/dns-message";
 
-/// The token in `/dns-query/{token}`. `Ok(None)` for the bare path, `Err` for any other path.
-pub(crate) fn path_token(path: &str) -> Result<Option<&str>, ()> {
-    let Some(rest) = path.strip_prefix(BASE_PATH) else {
+/// The token in `{base}/{token}`. `Ok(None)` for the bare path, `Err` for any other path.
+pub(crate) fn path_token<'a>(base: &str, path: &'a str) -> Result<Option<&'a str>, ()> {
+    let Some(rest) = path.strip_prefix(base) else {
         return Err(());
     };
     match rest.strip_prefix('/') {
@@ -69,13 +70,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn custom_base_path() {
+        assert_eq!(path_token("/doh", "/doh"), Ok(None));
+        assert_eq!(path_token("/doh", "/doh/tok"), Ok(Some("tok")));
+        assert!(path_token("/doh", "/dns-query").is_err());
+    }
+
+    #[test]
     fn path_tokens() {
-        assert_eq!(path_token("/dns-query"), Ok(None));
-        assert_eq!(path_token("/dns-query/abc_D-1"), Ok(Some("abc_D-1")));
-        assert!(path_token("/dns-query/").is_err());
-        assert!(path_token("/dns-query/a/b").is_err());
-        assert!(path_token("/dns-queryx").is_err());
-        assert!(path_token("/other").is_err());
+        assert_eq!(path_token(BASE_PATH, "/dns-query"), Ok(None));
+        assert_eq!(
+            path_token(BASE_PATH, "/dns-query/abc_D-1"),
+            Ok(Some("abc_D-1"))
+        );
+        assert!(path_token(BASE_PATH, "/dns-query/").is_err());
+        assert!(path_token(BASE_PATH, "/dns-query/a/b").is_err());
+        assert!(path_token(BASE_PATH, "/dns-queryx").is_err());
+        assert!(path_token(BASE_PATH, "/other").is_err());
     }
 
     #[test]
