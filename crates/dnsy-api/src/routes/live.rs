@@ -27,6 +27,25 @@ pub(super) fn group_store_err(e: GroupStoreError) -> ApiError {
     internal(e)
 }
 
+/// Mutating handlers check this before persisting anything: without a running engine the change
+/// could not take effect, so they answer 503 instead of reporting success (fail closed).
+pub(super) fn require_engine(state: &ApiState) -> Result<(), ApiError> {
+    state
+        .engine
+        .as_ref()
+        .map(|_| ())
+        .ok_or(ApiError::Unavailable)
+}
+
+/// Same for client-certificate changes, which must reach the `DoT` allowlist.
+pub(super) fn require_cert_reload(state: &ApiState) -> Result<(), ApiError> {
+    state
+        .cert_reload
+        .as_ref()
+        .map(|_| ())
+        .ok_or(ApiError::Unavailable)
+}
+
 /// Rebuilds the ACL from the stored rules and swaps it into the running engine.
 pub(super) async fn apply_acl(state: &ApiState) -> Result<(), ApiError> {
     let rules = state.rules.list().await.map_err(filter_err)?;

@@ -217,6 +217,7 @@ async fn create_blocklist(
     headers: HeaderMap,
     Json(req): Json<CreateBlocklist>,
 ) -> Result<(StatusCode, Json<BlocklistView>), ApiError> {
+    super::live::require_engine(&state)?;
     let interval = req.interval_secs.unwrap_or(DEFAULT_INTERVAL_SECS);
     if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&interval) {
         return Err(ApiError::Unprocessable(format!(
@@ -280,6 +281,7 @@ async fn patch_blocklist(
     Json(req): Json<PatchBlocklist>,
 ) -> Result<Json<BlocklistView>, ApiError> {
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     state
         .sources
         .set_enabled(id, req.enabled)
@@ -309,6 +311,7 @@ async fn delete_blocklist(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     state.sources.delete(id).await.map_err(filter_err)?;
     reload_filter(&state).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -407,6 +410,7 @@ async fn create_rule(
         RuleKindView::Allow => RuleKind::Allow,
     };
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     let existing = state
         .sources
         .custom_rules_with_ids()
@@ -443,6 +447,7 @@ async fn delete_rule(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
+    super::live::require_engine(&state)?;
     state
         .sources
         .delete_custom_rule(id)

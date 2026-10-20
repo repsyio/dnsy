@@ -50,6 +50,8 @@ webpki-roots = { workspace = true }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 dnsy-resolver = { version = "0.1.0", path = "../dnsy-resolver" }
 rcgen = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 dnsy-config = { version = "0.1.0", path = "../dnsy-config" }

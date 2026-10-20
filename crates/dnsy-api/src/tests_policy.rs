@@ -1194,3 +1194,120 @@ async fn cache_settings_patch_applies_live() {
     );
     assert!(ttl(&key) <= 120);
 }
+
+/// Without a running engine or certificate reload hook, every mutating handler answers 503 and
+/// persists nothing, instead of reporting a success that changes nothing in the server.
+#[tokio::test]
+async fn mutations_fail_closed_without_engine_or_cert_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
+    let state = ApiState::new(store);
+    let user = state
+        .users
+        .create("admin", "pw-pw-pw", Role::Admin)
+        .await
+        .unwrap();
+    let token = state
+        .tokens
+        .create(
+            user.id,
+            "t",
+            &[Scope::ApiRead, Scope::ApiWrite, Scope::Admin],
+            None,
+        )
+        .await
+        .unwrap()
+        .0;
+    let app = build(state.clone(), ApiConfig { tls: false }, Router::new());
+    let send = |method: Method, uri: &'static str, body: Option<Value>| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            let b = Request::builder()
+                .method(method)
+                .uri(format!("/api/v1{uri}"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json");
+            let req = b
+                .body(body.map_or_else(Body::empty, |v| Body::from(v.to_string())))
+                .unwrap();
+            let res = app.oneshot(req).await.unwrap();
+            let status = res.status();
+            let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+    let group = json!({"name": "g", "strategy": "failover", "default": true,
+        "members": [{"upstream": "udp://192.0.2.1:53"}]});
+    let cases = [
+        (
+            Method::POST,
+            "/acl",
+            Some(json!({"cidr": "192.0.2.0/24", "action": "refuse"})),
+        ),
+        (Method::DELETE, "/acl/1", None),
+        (Method::PUT, "/acl/rate-limit", Some(json!({"qps": 5}))),
+        (
+            Method::POST,
+            "/rules",
+            Some(json!({"kind": "block", "domain": "r.test"})),
+        ),
+        (Method::DELETE, "/rules/1", None),
+        (
+            Method::POST,
+            "/blocklists",
+            Some(json!({"name": "l", "location": "https://lists.example/hosts.txt"})),
+        ),
+        (
+            Method::PATCH,
+            "/blocklists/1",
+            Some(json!({"enabled": false})),
+        ),
+        (Method::DELETE, "/blocklists/1", None),
+        (Method::POST, "/blocklists/1/refresh", None),
+        (
+            Method::PATCH,
+            "/settings",
+            Some(json!({"limits": {"per_client_qps": 5}})),
+        ),
+        (Method::POST, "/upstream-groups", Some(group.clone())),
+        (
+            Method::PUT,
+            "/upstream-groups/g",
+            Some(json!({"strategy": "failover", "default": true,
+                "members": [{"upstream": "udp://192.0.2.1:53"}]})),
+        ),
+        (Method::DELETE, "/upstream-groups/g", None),
+        (
+            Method::POST,
+            "/upstream-groups/g/upstreams",
+            Some(json!({"upstream": "udp://192.0.2.9:53"})),
+        ),
+        (Method::DELETE, "/upstream-groups/g/upstreams/0", None),
+        (
+            Method::POST,
+            "/client-certs",
+            Some(json!({"sha256": fp(1), "label": "x"})),
+        ),
+        (
+            Method::PATCH,
+            "/client-certs/1",
+            Some(json!({"enabled": false})),
+        ),
+        (Method::DELETE, "/client-certs/1", None),
+    ];
+    for (method, uri, body) in cases {
+        let (status, text) = send(method.clone(), uri, body).await;
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {uri}: {text}"
+        );
+    }
+    assert_eq!(state.rules.list().await.unwrap().len(), 0);
+    assert_eq!(state.client_certs.list().await.unwrap().len(), 0);
+    assert_eq!(state.groups.list().await.unwrap().len(), 0);
+    assert_eq!(state.rules.rate_limit_qps().await.unwrap(), None);
+}

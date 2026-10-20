@@ -21,7 +21,7 @@ there are none). Responses are padded (RFC 8467) when the query carries an EDNS 
 | 400 | bad base64, missing `dns`, not a DNS message, empty body, or more than 65535 octets (body or decoded parameter) |
 | 401 | no token (when required) or a rejected token; `WWW-Authenticate: Bearer` |
 | 403 | valid token without the `dns:query` scope |
-| 404 | any path other than `/dns-query` and `/dns-query/{token}` |
+| 404 | any path other than the configured `[doh] path` (default `/dns-query`) and `{path}/{token}` |
 | 405 | method other than `GET` and `POST` (`Allow: GET, POST`) |
 | 415 | `POST` with a content type other than `application/dns-message` |
 | 429 | too many rejected tokens from this client address (`Retry-After`) |

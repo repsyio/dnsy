@@ -5,6 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dnsy_api::state::CertReload;
+use dnsy_api::validation::ValidationControl;
 use dnsy_api::{ApiConfig, ApiState};
 use dnsy_auth::{ClientCertService, TokenService, UserService};
 use dnsy_config::{Config, Mtls};
@@ -47,13 +49,11 @@ fn spawn_prefetch(engine: &Arc<Engine>, config: &Config) -> Option<JoinHandle<()
     }))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the one place that wires every component and its shutdown"
-)]
-pub(crate) async fn serve(config: Config, args: ServeArgs) -> Result<()> {
+pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -> Result<()> {
     let store = open_store(&config)?;
-    let mut builder = EngineBuilder::from_config(&config, &store).await?;
+    let mut builder = EngineBuilder::from_config(&config, &store)
+        .await?
+        .build_time(crate::build_time());
     let querylog_task = builder.take_querylog_task();
     let engine = Arc::new(builder.build());
     let mut background: Vec<JoinHandle<()>> = Vec::new();
@@ -83,28 +83,12 @@ pub(crate) async fn serve(config: Config, args: ServeArgs) -> Result<()> {
         );
     }
 
-    if config.querylog.enabled && config.querylog.retention_days > 0 {
-        background.push(dnsy_observe::spawn_retention(
-            store.clone(),
-            Duration::from_secs(u64::from(config.querylog.retention_days) * 86_400),
-            RETENTION_INTERVAL,
-        ));
-    }
-
     // DNS transports.
-    let (server_config, mtls) = server_config(&config, &store, &mut background)?;
+    let (server_config, mtls, allowlist) = server_config(&config, &store, &mut background)?;
     let server = Server::start(server_config, Arc::clone(&engine)).await?;
 
     // API.
-    let mut state = ApiState::new(store.clone())
-        .with_cache(Arc::clone(engine.cache()))
-        .with_redact_client_ip(config.querylog.redact_client_ip);
-    if let Some(zones) = &zones {
-        state = state.with_zones(Arc::clone(zones));
-    }
-    if let Some(code) = UserService::new(store.clone()).start_bootstrap().await? {
-        state = state.with_bootstrap(Arc::new(code));
-    }
+    let state = api_state(&config, &engine, &store, allowlist, &mut background).await?;
     let tls = match (&config.api.tls_cert, &config.api.tls_key) {
         (Some(cert), Some(key)) => Some(http::acceptor(cert, key)?),
         _ => None,
@@ -136,11 +120,12 @@ pub(crate) async fn serve(config: Config, args: ServeArgs) -> Result<()> {
             Event::Stop => break,
             Event::Reload => {
                 reload(
+                    &engine,
+                    config_path,
                     zones.as_deref(),
                     mtls.as_deref(),
                     lists.as_ref(),
                     signing.as_ref(),
-                    &config,
                 )
                 .await;
             }
@@ -165,6 +150,43 @@ pub(crate) async fn serve(config: Config, args: ServeArgs) -> Result<()> {
     Ok(())
 }
 
+/// Everything the API needs from the running server: the engine (live policy changes), validation
+/// control, signing, zones, cache, certificate reload and the retention watch.
+async fn api_state(
+    config: &Config,
+    engine: &Arc<dnsy_engine::Engine>,
+    store: &dnsy_store::Store,
+    allowlist: Option<Allowlist>,
+    background: &mut Vec<JoinHandle<()>>,
+) -> Result<ApiState> {
+    let mut state = ApiState::new(store.clone())
+        .with_config(config)
+        .with_engine(Arc::clone(engine))
+        .with_validation(Arc::clone(engine) as Arc<dyn ValidationControl>)
+        .with_dnssec_clock_flag(engine.dnssec_clock_flag())
+        .with_cert_reload(cert_reload(allowlist, store))
+        .with_cache(Arc::clone(engine.cache()))
+        .with_redact_client_ip(config.querylog.redact_client_ip);
+    if let Some(zones) = engine.zone_store() {
+        state = state.with_zones(Arc::clone(zones));
+    }
+    if let Some(signing) = engine.zone_signing() {
+        state = state.with_signing(signing.clone());
+    }
+    if config.querylog.enabled {
+        // Follows `PATCH /settings` changes of `querylog.retention_days`.
+        background.push(dnsy_observe::spawn_retention_watch(
+            store.clone(),
+            state.settings.retention_updates(),
+            RETENTION_INTERVAL,
+        ));
+    }
+    if let Some(code) = UserService::new(store.clone()).start_bootstrap().await? {
+        state = state.with_bootstrap(Arc::new(code));
+    }
+    Ok(state)
+}
+
 /// Rollover timings of `zone` from its signing policy; `None` skips zones that no longer exist.
 fn rollover_timings(zones: &dnsy_zone::ZoneStore, zone: &str) -> Option<RolloverTimings> {
     let name = Name::from_ascii(zone).ok()?.to_lowercase();
@@ -182,11 +204,12 @@ fn server_config(
     config: &Config,
     store: &dnsy_store::Store,
     background: &mut Vec<JoinHandle<()>>,
-) -> Result<(ServerConfig, Option<Arc<MtlsVerifier>>)> {
+) -> Result<(ServerConfig, Option<Arc<MtlsVerifier>>, Option<Allowlist>)> {
     let mut sc = ServerConfig::new(config.dns.udp.clone(), config.dns.tcp.clone());
     sc.tcp_idle = Duration::from_millis(config.limits.tcp_idle_ms);
     sc.max_tcp_conns = usize::try_from(config.limits.max_tcp_conns).unwrap_or(usize::MAX);
     let mut verifier = None;
+    let mut list = None;
     if !config.dot.listen.is_empty() {
         let (cert, key) = tls_files(config.dot.cert.as_ref(), config.dot.key.as_ref(), "dot")?;
         let mut dot = DotConfig::new(config.dot.listen.clone(), cert, key);
@@ -205,7 +228,8 @@ fn server_config(
             background.push(
                 allowlist.spawn_refresh(ClientCertService::new(store.clone()), ALLOWLIST_REFRESH),
             );
-            let v = MtlsVerifier::new(mode, ca, None, Some(allowlist))?;
+            let v = MtlsVerifier::new(mode, ca, None, Some(allowlist.clone()))?;
+            list = Some(allowlist);
             background.push(v.spawn_reload(CA_REFRESH));
             dot = dot.with_mtls(Arc::clone(&v));
             verifier = Some(v);
@@ -217,9 +241,27 @@ fn server_config(
         let auth = Arc::new(TokenAuth(TokenService::new(store.clone())));
         let mut doh = DohConfig::new(config.doh.listen.clone(), cert, key, auth);
         doh.require_token = config.doh.require_token;
+        doh.path.clone_from(&config.doh.path);
         sc.doh = Some(doh);
     }
-    Ok((sc, verifier))
+    Ok((sc, verifier, list))
+}
+
+/// Reloads the `DoT` fingerprint allowlist from the database after a client-certificate change
+/// through the API; that bumps its generation, so open connections are re-checked. Without mTLS
+/// there is no allowlist and nothing to reload.
+fn cert_reload(allowlist: Option<Allowlist>, store: &dnsy_store::Store) -> CertReload {
+    let service = ClientCertService::new(store.clone());
+    Arc::new(move || {
+        let allowlist = allowlist.clone();
+        let service = service.clone();
+        Box::pin(async move {
+            match allowlist {
+                Some(list) => list.refresh(&service).await.map_err(|e| e.to_string()),
+                None => Ok(()),
+            }
+        })
+    })
 }
 
 fn tls_files(
@@ -238,11 +280,12 @@ fn tls_files(
 /// SIGHUP: re-read what lives on disk or in the database. Changes to the configuration file
 /// itself need a restart. TLS certificates reload on their own SIGHUP listener and file watcher.
 async fn reload(
+    engine: &dnsy_engine::Engine,
+    config_path: &Path,
     zones: Option<&dnsy_zone::ZoneStore>,
     mtls: Option<&MtlsVerifier>,
     lists: Option<&dnsy_filter::ListManager>,
     signing: Option<&dnsy_zone::ZoneSigning>,
-    config: &Config,
 ) {
     tracing::info!("reloading (SIGHUP)");
     if let Some(zones) = zones {
@@ -265,14 +308,23 @@ async fn reload(
     if let Some(signing) = signing {
         signing.sign_due().await;
     }
-    reload_trust_anchors(config.dnssec.trust_anchor_file.as_deref());
+    reload_trust_anchors(engine, config_path);
 }
 
-/// Seam for DNSY-37: the validating forwarder re-reads `[dnssec] trust_anchor_file` here.
-/// Until it lands the file is only noted in the log.
-fn reload_trust_anchors(file: Option<&Path>) {
-    if let Some(file) = file {
-        tracing::info!(file = %file.display(), "trust anchor file reload requested (applied once DNSSEC validation is wired)");
+/// Re-reads `[dnssec]` from the configuration file and swaps the trust anchors (inline and
+/// `trust_anchor_file`) into the engine; mode and negative trust anchors keep their run-time
+/// values. A bad file or anchor keeps the previous anchors.
+fn reload_trust_anchors(engine: &dnsy_engine::Engine, config_path: &Path) {
+    let config = match Config::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "configuration reload failed; keeping trust anchors");
+            return;
+        }
+    };
+    match engine.reload_trust_anchors(&config.dnssec) {
+        Ok(()) => tracing::info!("trust anchors reloaded"),
+        Err(e) => tracing::warn!(error = %e, "trust anchor reload failed; keeping previous"),
     }
 }
 

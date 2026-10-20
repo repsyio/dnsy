@@ -99,6 +99,8 @@ pub struct DohConfig {
     /// Private key (PEM).
     pub key: PathBuf,
     pub auth: Arc<dyn DohAuthenticator>,
+    /// Request path (default `/dns-query`); `{path}/{token}` carries a token in the path.
+    pub path: String,
     /// Reject requests without a token (default `true`). A presented token is always verified.
     pub require_token: bool,
     /// Rejected tokens per client IP and window before it gets 429 (default 10).
@@ -132,6 +134,7 @@ impl DohConfig {
             cert,
             key,
             auth,
+            path: wire::BASE_PATH.to_owned(),
             require_token: true,
             max_auth_failures: 10,
             auth_window: Duration::from_secs(60),
@@ -141,6 +144,7 @@ impl DohConfig {
 
 pub(crate) struct State<H> {
     handler: Arc<H>,
+    path: String,
     auth: Arc<dyn DohAuthenticator>,
     require_token: bool,
     throttle: Throttle,
@@ -151,6 +155,7 @@ impl<H> State<H> {
     pub(crate) fn new(config: &DohConfig, handler: Arc<H>, body_timeout: Duration) -> Arc<Self> {
         Arc::new(State {
             handler,
+            path: config.path.clone(),
             auth: Arc::clone(&config.auth),
             require_token: config.require_token,
             throttle: Throttle::new(config.max_auth_failures, config.auth_window),
@@ -280,7 +285,7 @@ async fn route<H: Handler>(
     client: SocketAddr,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    let Ok(path_token) = wire::path_token(req.uri().path()) else {
+    let Ok(path_token) = wire::path_token(&state.path, req.uri().path()) else {
         return reply(StatusCode::NOT_FOUND);
     };
     if req.method() != Method::GET && req.method() != Method::POST {
