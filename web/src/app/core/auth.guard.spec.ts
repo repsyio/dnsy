@@ -36,7 +36,9 @@ describe('authGuard', () => {
   it('auth_guard_allows_signed_in_user_and_caches', async () => {
     const result = run();
     await vi.waitFor(() =>
-      ctrl.expectOne('/api/v1/auth/me').flush({ id: '1', username: 'a', role: 'admin' }),
+      ctrl
+        .expectOne('/api/v1/auth/me')
+        .flush({ id: 1, username: 'a', role: 'admin', created_at: 0, auth: 'session' }),
     );
     expect(await result).toBe(true);
     expect(await run()).toBe(true);

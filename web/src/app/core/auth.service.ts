@@ -1,14 +1,11 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
+import type { components } from '../api/schema';
 import { ApiError } from './api-error';
 import { ApiService } from './api.service';
 
 /** Current principal as returned by `GET /api/v1/auth/me`. */
-export interface Me {
-  id: string;
-  username: string;
-  role: 'admin' | 'operator' | 'viewer';
-}
+export type Me = components['schemas']['Me'];
 
 /** Cookie-session state. The session cookie is HttpOnly; only `/auth/me` tells us who we are. */
 @Injectable({ providedIn: 'root' })
@@ -38,7 +35,12 @@ export class AuthService {
   }
 
   async login(username: string, password: string): Promise<void> {
-    await firstValueFrom(this.api.post<unknown>('/auth/login', { username, password }));
+    await firstValueFrom(
+      this.api.post<unknown>('/auth/login', {
+        username,
+        password,
+      } satisfies components['schemas']['Login']),
+    );
     await this.refresh();
   }
 

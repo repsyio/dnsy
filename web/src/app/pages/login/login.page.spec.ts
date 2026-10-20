@@ -42,7 +42,9 @@ describe('LoginPage', () => {
     await submit('root', 'pw');
     await vi.waitFor(() => ctrl.expectOne('/api/v1/auth/login').flush({}));
     await vi.waitFor(() =>
-      ctrl.expectOne('/api/v1/auth/me').flush({ id: '1', username: 'root', role: 'admin' }),
+      ctrl
+        .expectOne('/api/v1/auth/me')
+        .flush({ id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' }),
     );
     await vi.waitFor(() => expect(nav).toHaveBeenCalledWith('/dashboard'));
   });

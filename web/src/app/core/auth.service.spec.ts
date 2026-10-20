@@ -5,7 +5,7 @@ import { TestBed } from '@angular/core/testing';
 import { ApiError } from './api-error';
 import { AuthService } from './auth.service';
 
-const ME = { id: '1', username: 'root', role: 'admin' };
+const ME = { id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' };
 
 describe('AuthService', () => {
   let auth: AuthService;

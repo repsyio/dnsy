@@ -39,7 +39,9 @@ describe('App routing', () => {
     const harness = await RouterTestingHarness.create();
     const nav = harness.navigateByUrl('/');
     await vi.waitFor(() =>
-      ctrl.expectOne('/api/v1/auth/me').flush({ id: '1', username: 'root', role: 'admin' }),
+      ctrl
+        .expectOne('/api/v1/auth/me')
+        .flush({ id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' }),
     );
     await nav;
     const el = harness.routeNativeElement as HTMLElement;
@@ -52,7 +54,9 @@ describe('App routing', () => {
     const harness = await RouterTestingHarness.create();
     const nav = harness.navigateByUrl('/nope/nothing');
     await vi.waitFor(() =>
-      ctrl.expectOne('/api/v1/auth/me').flush({ id: '1', username: 'root', role: 'viewer' }),
+      ctrl
+        .expectOne('/api/v1/auth/me')
+        .flush({ id: 1, username: 'root', role: 'viewer', created_at: 0, auth: 'session' }),
     );
     await nav;
     expect((harness.routeNativeElement as HTMLElement).textContent).toContain('404');
@@ -64,7 +68,9 @@ describe('App routing', () => {
       const harness = await RouterTestingHarness.create();
       const nav = harness.navigateByUrl('/' + path);
       await vi.waitFor(() =>
-        ctrl.expectOne('/api/v1/auth/me').flush({ id: '1', username: 'root', role: 'admin' }),
+        ctrl
+          .expectOne('/api/v1/auth/me')
+          .flush({ id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' }),
       );
       await nav;
       expect(TestBed.inject(Router).url).toBe('/' + path);
@@ -76,7 +82,9 @@ describe('App routing', () => {
     const harness = await RouterTestingHarness.create();
     const nav = harness.navigateByUrl('/dashboard');
     await vi.waitFor(() =>
-      ctrl.expectOne('/api/v1/auth/me').flush({ id: '1', username: 'root', role: 'admin' }),
+      ctrl
+        .expectOne('/api/v1/auth/me')
+        .flush({ id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' }),
     );
     await nav;
     const btn = (harness.routeNativeElement as HTMLElement).querySelector('button')!;
