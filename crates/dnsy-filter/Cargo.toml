@@ -14,11 +14,18 @@ workspace = true
 dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
+arc-swap = { workspace = true }
 ipnet = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
 rusqlite = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+webpki-roots = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
