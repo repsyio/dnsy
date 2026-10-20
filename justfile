@@ -34,10 +34,23 @@ web:
 openapi:
     @if [ -d crates/dnsy-api ] && grep -q openapi crates/dnsy-api/Cargo.toml 2>/dev/null; then cargo run -p dnsy-api --bin gen-openapi > openapi/dnsy.json; else echo "no OpenAPI spec yet"; fi
 
-# Build rustdoc and the mdBook site into target/site/.
+# Build the site into target/site/: landing (index.html), book (docs/), rustdoc (api/), shared branding/.
 docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="$(realpath -m "${CARGO_TARGET_DIR:-target}")"
+    rm -rf "$target/site"
+    mkdir -p "$target/site"
     cargo doc --workspace --no-deps
-    @if [ -d docs/book ]; then mdbook build docs/book -d ../../target/site/book; else echo "no book yet"; fi
+    cp -r "$target/doc" "$target/site/api"
+    cp -r branding "$target/site/branding"
+    cp docs/landing/index.html "$target/site/index.html"
+    if command -v mdbook >/dev/null 2>&1; then
+      mdbook test docs/book
+      mdbook build docs/book -d "$target/site/docs"
+    else
+      echo "mdbook not installed (cargo install mdbook --version 0.5.4 --locked); skipping the book"
+    fi
 
 # Local merge gate until the pipelines epic exists.
 ci: check test cov web
