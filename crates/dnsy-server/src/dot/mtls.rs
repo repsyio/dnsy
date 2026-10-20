@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -48,6 +49,8 @@ pub struct AllowedCert {
 #[derive(Debug, Clone, Default)]
 pub struct Allowlist {
     entries: Arc<ArcSwap<HashMap<[u8; 32], Option<i64>>>>,
+    /// Bumped on every replacement so open connections know to re-check their certificate.
+    generation: Arc<AtomicU64>,
 }
 
 impl Allowlist {
@@ -63,6 +66,7 @@ impl Allowlist {
             .map(|c| (c.sha256, c.expires_at))
             .collect();
         self.entries.store(Arc::new(map));
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     /// Reloads the enabled, unexpired entries from the database.
@@ -107,6 +111,8 @@ pub struct MtlsVerifier {
     crl: Option<PathBuf>,
     allowlist: Option<Allowlist>,
     inner: ArcSwap<Arc<dyn ClientCertVerifier>>,
+    /// Bumped when the CA bundle or CRL is reloaded.
+    generation: AtomicU64,
 }
 
 impl std::fmt::Debug for MtlsVerifier {
@@ -139,6 +145,7 @@ impl MtlsVerifier {
             crl: crl.map(Path::to_owned),
             allowlist,
             inner: ArcSwap::from_pointee(inner),
+            generation: AtomicU64::new(0),
         }))
     }
 
@@ -149,6 +156,7 @@ impl MtlsVerifier {
     pub fn reload(&self) -> io::Result<()> {
         self.inner
             .store(Arc::new(build(self.mode, &self.ca, self.crl.as_deref())?));
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -169,6 +177,15 @@ impl MtlsVerifier {
     #[must_use]
     pub fn as_verifier(self: &Arc<Self>) -> Arc<dyn ClientCertVerifier> {
         Arc::clone(self) as Arc<dyn ClientCertVerifier>
+    }
+
+    /// Changes whenever the CA, CRL or allowlist changed; open connections re-check on a change.
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+            + self
+                .allowlist
+                .as_ref()
+                .map_or(0, |a| a.generation.load(Ordering::Acquire))
     }
 
     fn inner(&self) -> Arc<dyn ClientCertVerifier> {
@@ -307,4 +324,54 @@ fn subject(der: &[u8]) -> String {
         .map(|c| if c.is_control() { '?' } else { c })
         .take(256)
         .collect()
+}
+
+/// An authenticated `DoT` connection: who it is and whether it is still allowed.
+///
+/// Created right after the handshake. Resumed sessions skip certificate verification, so
+/// resumption is disabled when a verifier is set (see `dot::acceptor`); this re-check is the
+/// second line of defence, and also catches revocation while a connection stays open.
+pub(crate) struct ClientSession {
+    pub(crate) principal: Principal,
+    chain: Vec<CertificateDer<'static>>,
+    verifier: Option<(Arc<MtlsVerifier>, u64)>,
+}
+
+impl ClientSession {
+    /// `None` when the peer presented no certificate. `Err` when the certificate is no longer
+    /// acceptable to `verifier`.
+    pub(crate) fn new(
+        chain: Option<&[CertificateDer<'static>]>,
+        verifier: Option<&Arc<MtlsVerifier>>,
+    ) -> Result<Option<Self>, ()> {
+        let Some(chain) = chain.filter(|c| !c.is_empty()) else {
+            return Ok(None);
+        };
+        let mut session = Self {
+            principal: principal(&chain[0]),
+            chain: chain.to_vec(),
+            verifier: verifier.map(|v| (Arc::clone(v), v.generation().wrapping_sub(1))),
+        };
+        if session.still_permitted() {
+            Ok(Some(session))
+        } else {
+            Err(())
+        }
+    }
+
+    /// Re-verifies the chain against the current CA, CRL and allowlist when any of them
+    /// changed since the last check.
+    pub(crate) fn still_permitted(&mut self) -> bool {
+        let Some((verifier, seen)) = &mut self.verifier else {
+            return true;
+        };
+        let now = verifier.generation();
+        if now == *seen {
+            return true;
+        }
+        *seen = now;
+        verifier
+            .verify_client_cert(&self.chain[0], &self.chain[1..], UnixTime::now())
+            .is_ok()
+    }
 }

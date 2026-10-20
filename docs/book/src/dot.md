@@ -68,6 +68,14 @@ enabled flag and an optional expiry. `Allowlist::refresh` / `spawn_refresh` load
 unexpired entries; a list with no entries admits no certificate. Disabling, deleting or expiring
 an entry takes effect for new handshakes at the next refresh.
 
+### Resumption and open connections
+
+TLS session resumption is disabled whenever mTLS is on (no session cache, no tickets), because a
+resumed session would skip certificate verification. Every handshake re-verifies the chain, the
+CRL and the allowlist. A connection that stays open is re-checked on its next query after the CA,
+CRL or allowlist changed; if the certificate is no longer permitted the connection is closed.
+Enable it with `DotConfig::with_mtls`.
+
 ### Client identity
 
 For a connection with a client certificate every request carries the principal

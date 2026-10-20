@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
 
 /// Records the principal of every request.
 #[derive(Default)]
@@ -134,12 +135,12 @@ fn env() -> Env {
 
 async fn start(env: &Env, verifier: &Arc<MtlsVerifier>) -> (Server, SocketAddr, Arc<Recorder>) {
     let lo: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
-    let mut dot = DotConfig::new(
+    let dot = DotConfig::new(
         vec![lo],
         env.dir.path().join("cert.pem"),
         env.dir.path().join("key.pem"),
-    );
-    dot.client_verifier = Some(verifier.as_verifier());
+    )
+    .with_mtls(Arc::clone(verifier));
     let mut config = ServerConfig::new(vec![], vec![]);
     config.dot = Some(dot);
     let rec = Arc::new(Recorder::default());
@@ -154,9 +155,7 @@ fn verifier(env: &Env, mode: MtlsMode, allow: Option<Allowlist>) -> Arc<MtlsVeri
     MtlsVerifier::new(mode, &env.dir.path().join("client-ca.pem"), None, allow).unwrap()
 }
 
-/// Connects (optionally with a client certificate) and runs one query; `Err` means the
-/// handshake or the exchange was refused.
-async fn query(env: &Env, addr: SocketAddr, client: Option<&Client>) -> std::io::Result<()> {
+fn client_config(env: &Env, client: Option<&Client>) -> Arc<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(env.server_ca.der.clone()).unwrap();
     let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -175,10 +174,21 @@ async fn query(env: &Env, addr: SocketAddr, client: Option<&Client>) -> std::io:
         None => builder.with_no_client_auth(),
     };
     config.alpn_protocols = vec![b"dot".to_vec()];
+    Arc::new(config)
+}
+
+async fn connect(
+    addr: SocketAddr,
+    config: &Arc<rustls::ClientConfig>,
+) -> std::io::Result<TlsStream<TcpStream>> {
     let tcp = TcpStream::connect(addr).await?;
-    let mut tls = TlsConnector::from(Arc::new(config))
+    TlsConnector::from(Arc::clone(config))
         .connect(ServerName::try_from("dns.test").unwrap(), tcp)
-        .await?;
+        .await
+}
+
+/// Sends one query and waits for the reply; `Err` if the server refused or closed.
+async fn ask(tls: &mut TlsStream<TcpStream>) -> std::io::Result<()> {
     let mut q = Message::response_to(&Message::decode(&[0; 12]).unwrap());
     q.header.qr = false;
     q.header.rd = true;
@@ -196,7 +206,16 @@ async fn query(env: &Env, addr: SocketAddr, client: Option<&Client>) -> std::io:
     tokio::time::timeout(Duration::from_secs(5), tls.read_exact(&mut len))
         .await
         .map_err(std::io::Error::other)??;
+    let mut buf = vec![0; usize::from(u16::from_be_bytes(len))];
+    tls.read_exact(&mut buf).await?;
     Ok(())
+}
+
+/// Connects (optionally with a client certificate) and runs one query; `Err` means the
+/// handshake or the exchange was refused.
+async fn query(env: &Env, addr: SocketAddr, client: Option<&Client>) -> std::io::Result<()> {
+    let mut tls = connect(addr, &client_config(env, client)).await?;
+    ask(&mut tls).await
 }
 
 fn allow(certs: &[&Client]) -> Allowlist {
@@ -362,4 +381,69 @@ fn new_rejects_missing_or_empty_ca() {
     let empty: &Path = &dir.path().join("empty.pem");
     std::fs::write(empty, "").unwrap();
     assert!(MtlsVerifier::new(MtlsMode::Required, empty, None, None).is_err());
+}
+
+#[tokio::test]
+async fn removed_cert_cannot_resume_session() {
+    let env = env();
+    let c = client(&env.client_ca, 1, false);
+    let list = allow(&[&c]);
+    let v = verifier(&env, MtlsMode::Required, Some(list.clone()));
+    let (server, addr, _rec) = start(&env, &v).await;
+
+    // One client config keeps its session cache, so the second connect tries to resume.
+    let config = client_config(&env, Some(&c));
+    let mut first = connect(addr, &config).await.unwrap();
+    ask(&mut first).await.unwrap();
+    drop(first);
+
+    list.replace([]);
+    let second = async {
+        let mut tls = connect(addr, &config).await?;
+        ask(&mut tls).await
+    }
+    .await;
+    assert!(second.is_err());
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn open_connection_closed_after_allowlist_removal() {
+    let env = env();
+    let c = client(&env.client_ca, 1, false);
+    let list = allow(&[&c]);
+    let v = verifier(&env, MtlsMode::Required, Some(list.clone()));
+    let (server, addr, rec) = start(&env, &v).await;
+
+    let mut tls = connect(addr, &client_config(&env, Some(&c))).await.unwrap();
+    ask(&mut tls).await.unwrap();
+    ask(&mut tls).await.unwrap();
+
+    list.replace([]);
+    assert!(ask(&mut tls).await.is_err());
+    assert_eq!(rec.0.lock().unwrap().len(), 2);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn open_connection_closed_after_crl_reload() {
+    let env = env();
+    let crl = env.dir.path().join("crl.pem");
+    std::fs::write(&crl, crl_pem(&env.client_ca, &[])).unwrap();
+    let v = MtlsVerifier::new(
+        MtlsMode::Required,
+        &env.dir.path().join("client-ca.pem"),
+        Some(&crl),
+        None,
+    )
+    .unwrap();
+    let (server, addr, _rec) = start(&env, &v).await;
+    let c = client(&env.client_ca, 5, false);
+    let mut tls = connect(addr, &client_config(&env, Some(&c))).await.unwrap();
+    ask(&mut tls).await.unwrap();
+
+    std::fs::write(&crl, crl_pem(&env.client_ca, &[5])).unwrap();
+    v.reload().unwrap();
+    assert!(ask(&mut tls).await.is_err());
+    server.shutdown().await;
 }

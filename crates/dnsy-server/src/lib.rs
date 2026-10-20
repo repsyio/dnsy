@@ -129,6 +129,7 @@ impl Server {
                     Arc::clone(&handler),
                     rx.clone(),
                     limits,
+                    dot.mtls().cloned(),
                 )));
             }
             tasks.push(dot::certs::watch_reloads(store, rx.clone())?);
