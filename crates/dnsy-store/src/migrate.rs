@@ -29,7 +29,11 @@ impl Migration {
 /// Every known migration. Stories add their pre-assigned
 /// `migrations/NNNN_name.sql` here, e.g.
 /// `Migration { version: 1, name: "users", sql: include_str!("../migrations/0001_users.sql") }`.
-pub static MIGRATIONS: &[Migration] = &[];
+pub static MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "users",
+    sql: include_str!("../migrations/0001_users.sql"),
+}];
 
 /// Applied state of one known migration.
 #[derive(Debug, Clone, PartialEq, Eq)]
