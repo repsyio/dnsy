@@ -1,0 +1,61 @@
+import { Routes } from '@angular/router';
+import { authGuard } from './core/auth.guard';
+
+export const routes: Routes = [
+  {
+    path: 'login',
+    title: 'Sign in',
+    loadComponent: () => import('./pages/login/login.page').then((m) => m.LoginPage),
+  },
+  {
+    path: '',
+    canActivate: [authGuard],
+    loadComponent: () => import('./layout/shell').then((m) => m.Shell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
+      {
+        path: 'dashboard',
+        title: 'Dashboard',
+        loadComponent: () =>
+          import('./pages/dashboard/dashboard.page').then((m) => m.DashboardPage),
+      },
+      {
+        path: 'zones',
+        title: 'Zones',
+        loadComponent: () => import('./pages/zones/zones.page').then((m) => m.ZonesPage),
+      },
+      {
+        path: 'filtering',
+        title: 'Filtering',
+        loadComponent: () =>
+          import('./pages/filtering/filtering.page').then((m) => m.FilteringPage),
+      },
+      {
+        path: 'upstreams',
+        title: 'Upstreams',
+        loadComponent: () =>
+          import('./pages/upstreams/upstreams.page').then((m) => m.UpstreamsPage),
+      },
+      {
+        path: 'query-log',
+        title: 'Query log',
+        loadComponent: () => import('./pages/query-log/query-log.page').then((m) => m.QueryLogPage),
+      },
+      {
+        path: 'users',
+        title: 'Users',
+        loadComponent: () => import('./pages/users/users.page').then((m) => m.UsersPage),
+      },
+      {
+        path: 'settings',
+        title: 'Settings',
+        loadComponent: () => import('./pages/settings/settings.page').then((m) => m.SettingsPage),
+      },
+      {
+        path: '**',
+        title: 'Not found',
+        loadComponent: () => import('./pages/not-found/not-found.page').then((m) => m.NotFoundPage),
+      },
+    ],
+  },
+];
