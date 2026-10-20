@@ -1,0 +1,3 @@
+//! DNSY binary.
+
+fn main() {}
