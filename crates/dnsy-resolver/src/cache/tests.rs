@@ -24,6 +24,14 @@ fn cfg() -> CacheConfig {
     CacheConfig {
         min_ttl: 0,
         max_ttl: 86_400,
+        serve_stale: dnsy_config::ServeStale {
+            enabled: false,
+            ..dnsy_config::ServeStale::default()
+        },
+        prefetch: dnsy_config::Prefetch {
+            enabled: false,
+            ..dnsy_config::Prefetch::default()
+        },
         ..CacheConfig::default()
     }
 }
@@ -101,7 +109,7 @@ fn negative(n: &str, t: RecordType, rcode: Rcode, soa_ttl: u32, minimum: u32) ->
 fn fresh(l: CacheLookup) -> Message {
     match l {
         CacheLookup::Fresh { msg, .. } => msg,
-        CacheLookup::Miss => panic!("expected a hit"),
+        other => panic!("expected a hit, got {other:?}"),
     }
 }
 
@@ -791,4 +799,288 @@ fn reconfigure_changes_ttl_bounds_for_later_inserts() {
         t0,
     );
     assert_eq!(fresh(c.get(&k, t0)).answers[0].ttl, 60);
+}
+
+fn stale_cfg() -> CacheConfig {
+    CacheConfig {
+        serve_stale: dnsy_config::ServeStale {
+            enabled: true,
+            max_stale: 1000,
+            answer_ttl: 30,
+            client_timeout_ms: 1800,
+        },
+        ..cfg()
+    }
+}
+
+fn stale(l: CacheLookup) -> (Message, DnssecStatus, Duration) {
+    match l {
+        CacheLookup::Stale {
+            msg,
+            dnssec,
+            stale_for,
+        } => (msg, dnssec, stale_for),
+        other => panic!("expected stale, got {other:?}"),
+    }
+}
+
+#[test]
+fn stale_window_follows_expiry() {
+    let c = Cache::new(&stale_cfg());
+    let t0 = Instant::now();
+    let k = key("www.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 100),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    let (msg, status, age) = stale(c.get(&k, secs_later(t0, 150)));
+    assert_eq!(
+        (msg.answers[0].ttl, status, age),
+        (30, DnssecStatus::Unchecked, Duration::from_secs(50))
+    );
+    assert_eq!(c.stats().entries, 1);
+    // Past max_stale the entry is gone.
+    assert_eq!(c.get(&k, secs_later(t0, 1100)), CacheLookup::Miss);
+    assert_eq!(c.stats().entries, 0);
+}
+
+#[test]
+fn stale_disabled_expires_normally() {
+    let c = Cache::new(&cfg());
+    let t0 = Instant::now();
+    let k = key("www.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 100),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    assert_eq!(c.get(&k, secs_later(t0, 101)), CacheLookup::Miss);
+}
+
+#[test]
+fn stale_nxdomain_answers_other_types_by_name() {
+    let c = Cache::new(&stale_cfg());
+    let t0 = Instant::now();
+    c.insert(
+        key("gone.example.com", RecordType::A),
+        &negative("gone.example.com", RecordType::A, Rcode::NxDomain, 60, 60),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    let (m, _, _) = stale(c.get(
+        &key("gone.example.com", RecordType::Aaaa),
+        secs_later(t0, 90),
+    ));
+    assert_eq!(m.header.rcode, Rcode::NxDomain);
+    assert_eq!(m.questions[0].qtype, RecordType::Aaaa);
+    assert_eq!(m.authority[0].ttl, 30);
+}
+
+#[test]
+fn stale_bogus_and_servfail_never_served() {
+    let c = Cache::new(&stale_cfg());
+    let t0 = Instant::now();
+    let (bogus, sf) = (
+        key("bad.example.com", RecordType::A),
+        key("sf.example.com", RecordType::A),
+    );
+    c.insert(
+        bogus.clone(),
+        &positive("bad.example.com", 100),
+        DnssecStatus::Bogus,
+        t0,
+    );
+    c.insert(
+        sf.clone(),
+        &response("sf.example.com", RecordType::A, Rcode::ServFail),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    let later = secs_later(t0, 200);
+    assert_eq!(c.get(&bogus, later), CacheLookup::Miss);
+    assert_eq!(c.get(&sf, later), CacheLookup::Miss);
+}
+
+#[test]
+fn stale_secure_is_not_reported_validated() {
+    let c = Cache::new(&stale_cfg());
+    let t0 = Instant::now();
+    let k = key("s.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        &positive("s.example.com", 100),
+        DnssecStatus::Secure,
+        t0,
+    );
+    assert_eq!(fresh(c.get(&k, t0)).answers.len(), 1);
+    let (_, d, _) = stale(c.get(&k, secs_later(t0, 101)));
+    assert_eq!(d, DnssecStatus::Indeterminate);
+}
+
+#[test]
+fn refresh_replaces_stale() {
+    let c = Cache::new(&stale_cfg());
+    let t0 = Instant::now();
+    let k = key("www.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 100),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    let t1 = secs_later(t0, 150);
+    stale(c.get(&k, t1));
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 300),
+        DnssecStatus::Unchecked,
+        t1,
+    );
+    assert_eq!(fresh(c.get(&k, t1)).answers[0].ttl, 300);
+    assert_eq!(c.stats().entries, 1);
+}
+
+#[test]
+fn stale_entries_stay_within_the_bound() {
+    let c = Cache::new(&CacheConfig {
+        max_entries: 4,
+        ..stale_cfg()
+    });
+    let t0 = Instant::now();
+    for i in 0..20 {
+        let n = format!("h{i}.example.com");
+        c.insert(
+            key(&n, RecordType::A),
+            &positive(&n, 10),
+            DnssecStatus::Unchecked,
+            t0,
+        );
+    }
+    assert!(c.stats().entries <= 4);
+}
+
+#[test]
+fn refreshes_coalesce_per_key() {
+    let r = Refreshes::new();
+    let (a, b) = (
+        key("a.example.com", RecordType::A),
+        key("b.example.com", RecordType::A),
+    );
+    let g = r.begin(&a).unwrap();
+    assert!(r.begin(&a).is_none());
+    assert!(r.begin(&b).is_some());
+    assert_eq!(r.len(), 1);
+    drop(g);
+    assert!(r.is_empty());
+    assert!(r.begin(&a).is_some());
+}
+
+fn prefetch_cfg() -> CacheConfig {
+    CacheConfig {
+        prefetch: dnsy_config::Prefetch {
+            enabled: true,
+            min_hits: 3,
+            remaining_ttl_pct: 10,
+        },
+        ..cfg()
+    }
+}
+
+#[test]
+fn prefetch_triggers_for_popular_entry_once() {
+    let c = Cache::new(&prefetch_cfg());
+    let t0 = Instant::now();
+    let k = key("www.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 100),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    for _ in 0..3 {
+        fresh(c.get(&k, t0));
+    }
+    assert!(
+        !c.prefetch_due(&k, secs_later(t0, 50)),
+        "plenty of TTL left"
+    );
+    let late = secs_later(t0, 92);
+    fresh(c.get(&k, late));
+    assert!(c.prefetch_due(&k, late));
+    assert!(!c.prefetch_due(&k, late), "only once per entry");
+    // A refresh is a new entry and can be prefetched again once popular.
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 100),
+        DnssecStatus::Unchecked,
+        late,
+    );
+    assert!(!c.prefetch_due(&k, secs_later(late, 95)));
+}
+
+#[test]
+fn prefetch_not_triggered_below_min_hits() {
+    let c = Cache::new(&prefetch_cfg());
+    let t0 = Instant::now();
+    let k = key("www.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 100),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    fresh(c.get(&k, t0));
+    fresh(c.get(&k, t0));
+    assert!(!c.prefetch_due(&k, secs_later(t0, 95)));
+}
+
+#[test]
+fn prefetch_disabled_and_bogus_and_expired_never_due() {
+    let t0 = Instant::now();
+    let k = key("www.example.com", RecordType::A);
+    let off = Cache::new(&cfg());
+    off.insert(
+        k.clone(),
+        &positive("www.example.com", 100),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    for _ in 0..10 {
+        fresh(off.get(&k, t0));
+    }
+    assert!(!off.prefetch_due(&k, secs_later(t0, 95)));
+
+    let c = Cache::new(&prefetch_cfg());
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 100),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    for _ in 0..5 {
+        fresh(c.get(&k, t0));
+    }
+    assert!(!c.prefetch_due(&k, secs_later(t0, 100)), "expired");
+    assert!(!c.prefetch_due(&key("none.example.com", RecordType::A), t0));
+    let bogus = key("bad.example.com", RecordType::A);
+    c.insert(
+        bogus.clone(),
+        &positive("bad.example.com", 100),
+        DnssecStatus::Bogus,
+        t0,
+    );
+    assert!(!c.prefetch_due(&bogus, secs_later(t0, 95)));
+}
+
+#[test]
+fn stale_and_prefetch_counters() {
+    let c = Cache::new(&cfg());
+    c.note_stale_served();
+    c.note_prefetch();
+    c.note_prefetch();
+    let s = c.stats();
+    assert_eq!((s.stale_served, s.prefetches), (1, 2));
 }

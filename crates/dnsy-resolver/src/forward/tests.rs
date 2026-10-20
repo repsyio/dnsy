@@ -129,7 +129,7 @@ async fn fetch_sends_do_and_cd_and_memoises_unchecked() {
     };
     match rig.cache.get(&key, Instant::now()) {
         CacheLookup::Fresh { dnssec, .. } => assert_eq!(dnssec, DnssecStatus::Unchecked),
-        CacheLookup::Miss => panic!("fetch result not memoised"),
+        other => panic!("fetch result not memoised: {other:?}"),
     }
     let validated = CacheKey {
         cd_bit: false,
