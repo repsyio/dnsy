@@ -213,6 +213,20 @@ impl SessionService {
             .await?;
         Ok(())
     }
+
+    /// Destroy every session of `user` (after a password or role change).
+    ///
+    /// # Errors
+    /// A store failure.
+    pub async fn destroy_all_for_user(&self, user: UserId) -> Result<(), AuthError> {
+        self.store
+            .write(move |tx| {
+                tx.execute("DELETE FROM sessions WHERE user_id = ?1", [user.0])?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -229,6 +243,41 @@ mod tests {
         let users = UserService::new(store.clone());
         let u = users.create("alice", "pw", Role::Admin).await.unwrap();
         (SessionService::new(store), users, u.id, dir)
+    }
+
+    #[tokio::test]
+    async fn destroy_all_for_user_only_hits_that_user() {
+        let (s, users, alice, _d) = setup().await;
+        let bob = users.create("bob", "pw", Role::Viewer).await.unwrap().id;
+        let a1 = s.create_at(alice, unix_now()).await.unwrap();
+        let a2 = s.create_at(alice, unix_now()).await.unwrap();
+        let b1 = s.create_at(bob, unix_now()).await.unwrap();
+        s.destroy_all_for_user(alice).await.unwrap();
+        assert!(s.validate(&a1).await.is_err());
+        assert!(s.validate(&a2).await.is_err());
+        s.validate(&b1).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn password_change_destroys_sessions() {
+        let (s, users, alice, _d) = setup().await;
+        let id = s.create_at(alice, unix_now()).await.unwrap();
+        users.set_password(alice, "new-password").await.unwrap();
+        assert!(matches!(
+            s.validate(&id).await,
+            Err(AuthError::InvalidSession)
+        ));
+    }
+
+    #[tokio::test]
+    async fn role_change_destroys_sessions_but_noop_keeps_them() {
+        let (s, users, alice, _d) = setup().await;
+        users.create("root", "pw", Role::Admin).await.unwrap();
+        let id = s.create_at(alice, unix_now()).await.unwrap();
+        users.update_role(alice, Role::Admin).await.unwrap();
+        s.validate(&id).await.unwrap();
+        users.update_role(alice, Role::Viewer).await.unwrap();
+        assert!(s.validate(&id).await.is_err());
     }
 
     #[tokio::test]

@@ -399,9 +399,11 @@ name = "dnsy-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "dnsy-auth",
  "dnsy-core",
  "dnsy-store",
+ "rand",
  "rust-embed",
  "serde",
  "serde_json",

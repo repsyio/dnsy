@@ -183,6 +183,9 @@ impl UserService {
                     "UPDATE users SET role = ?1, updated_at = unixepoch() WHERE id = ?2",
                     params![role_str(role), id.0],
                 )?;
+                if user.role != role {
+                    tx.execute("DELETE FROM sessions WHERE user_id = ?1", [id.0])?;
+                }
                 Ok(Ok(User { role, ..user }))
             })
             .await?
@@ -201,6 +204,7 @@ impl UserService {
                     "UPDATE users SET password_hash = ?1, updated_at = unixepoch() WHERE id = ?2",
                     params![hash, id.0],
                 )?;
+                tx.execute("DELETE FROM sessions WHERE user_id = ?1", [id.0])?;
                 Ok(if n == 0 {
                     Err(UserError::NotFound)
                 } else {
