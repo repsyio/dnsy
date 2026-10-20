@@ -810,6 +810,10 @@ fn api(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario reads top to bottom"
+)]
 fn api_changes_reach_the_running_server() {
     let env = Env::new(true);
     let mut create = env

@@ -1306,8 +1306,8 @@ async fn mutations_fail_closed_without_engine_or_cert_reload() {
             "{method} {uri}: {text}"
         );
     }
-    assert!(state.rules.list().await.unwrap().is_empty());
-    assert!(state.client_certs.list().await.unwrap().is_empty());
-    assert!(state.groups.list().await.unwrap().is_empty());
+    assert_eq!(state.rules.list().await.unwrap().len(), 0);
+    assert_eq!(state.client_certs.list().await.unwrap().len(), 0);
+    assert_eq!(state.groups.list().await.unwrap().len(), 0);
     assert_eq!(state.rules.rate_limit_qps().await.unwrap(), None);
 }

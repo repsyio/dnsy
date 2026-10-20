@@ -88,31 +88,7 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
     let server = Server::start(server_config, Arc::clone(&engine)).await?;
 
     // API.
-    let mut state = ApiState::new(store.clone())
-        .with_config(&config)
-        .with_engine(Arc::clone(&engine))
-        .with_validation(Arc::clone(&engine) as Arc<dyn ValidationControl>)
-        .with_dnssec_clock_flag(engine.dnssec_clock_flag())
-        .with_cert_reload(cert_reload(allowlist, &store))
-        .with_cache(Arc::clone(engine.cache()))
-        .with_redact_client_ip(config.querylog.redact_client_ip);
-    if let Some(zones) = &zones {
-        state = state.with_zones(Arc::clone(zones));
-    }
-    if let Some(signing) = &signing {
-        state = state.with_signing(signing.clone());
-    }
-    if config.querylog.enabled {
-        // Follows `PATCH /settings` changes of `querylog.retention_days`.
-        background.push(dnsy_observe::spawn_retention_watch(
-            store.clone(),
-            state.settings.retention_updates(),
-            RETENTION_INTERVAL,
-        ));
-    }
-    if let Some(code) = UserService::new(store.clone()).start_bootstrap().await? {
-        state = state.with_bootstrap(Arc::new(code));
-    }
+    let state = api_state(&config, &engine, &store, allowlist, &mut background).await?;
     let tls = match (&config.api.tls_cert, &config.api.tls_key) {
         (Some(cert), Some(key)) => Some(http::acceptor(cert, key)?),
         _ => None,
@@ -172,6 +148,43 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
     }
     tracing::info!("stopped");
     Ok(())
+}
+
+/// Everything the API needs from the running server: the engine (live policy changes), validation
+/// control, signing, zones, cache, certificate reload and the retention watch.
+async fn api_state(
+    config: &Config,
+    engine: &Arc<dnsy_engine::Engine>,
+    store: &dnsy_store::Store,
+    allowlist: Option<Allowlist>,
+    background: &mut Vec<JoinHandle<()>>,
+) -> Result<ApiState> {
+    let mut state = ApiState::new(store.clone())
+        .with_config(config)
+        .with_engine(Arc::clone(engine))
+        .with_validation(Arc::clone(engine) as Arc<dyn ValidationControl>)
+        .with_dnssec_clock_flag(engine.dnssec_clock_flag())
+        .with_cert_reload(cert_reload(allowlist, store))
+        .with_cache(Arc::clone(engine.cache()))
+        .with_redact_client_ip(config.querylog.redact_client_ip);
+    if let Some(zones) = engine.zone_store() {
+        state = state.with_zones(Arc::clone(zones));
+    }
+    if let Some(signing) = engine.zone_signing() {
+        state = state.with_signing(signing.clone());
+    }
+    if config.querylog.enabled {
+        // Follows `PATCH /settings` changes of `querylog.retention_days`.
+        background.push(dnsy_observe::spawn_retention_watch(
+            store.clone(),
+            state.settings.retention_updates(),
+            RETENTION_INTERVAL,
+        ));
+    }
+    if let Some(code) = UserService::new(store.clone()).start_bootstrap().await? {
+        state = state.with_bootstrap(Arc::new(code));
+    }
+    Ok(state)
 }
 
 /// Rollover timings of `zone` from its signing policy; `None` skips zones that no longer exist.
