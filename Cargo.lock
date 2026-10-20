@@ -456,6 +456,7 @@ dependencies = [
 name = "dnsy-dnssec"
 version = "0.1.0"
 dependencies = [
+ "dnsy-core",
  "dnsy-proto",
  "ring",
  "zeroize",
