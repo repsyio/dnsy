@@ -1,0 +1,15 @@
+---
+source: crates/dnsy-proto/src/rdata/tests.rs
+expression: out
+---
+A 192.0.2.1
+Aaaa 2001:db8::1
+Ns ns1.example.com.
+Cname www.example.com.
+Ptr host.example.com.
+Mx 10 mail.example.com.
+Txt "v=spf1 -all" "say \"hi\" \\ \001"
+Soa ns1.example.com. hostmaster.example.com. 2026102001 7200 3600 1209600 300
+Srv 1 5 5060 sip.example.com.
+Caa 0 issue "letsencrypt.org"
+Unknown(65280) \# 4 DEADBEEF

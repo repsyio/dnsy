@@ -10,6 +10,7 @@
 mod error;
 mod header;
 mod name;
+mod rdata;
 mod reader;
 mod types;
 mod writer;
@@ -17,6 +18,7 @@ mod writer;
 pub use error::{NameError, WireError};
 pub use header::{Counts, HEADER_LEN, Header};
 pub use name::{Labels, Name};
+pub use rdata::{RData, RdataParseError, Soa};
 pub use reader::WireReader;
 pub use types::{Class, Opcode, Rcode, RecordType};
 pub use writer::WireWriter;
