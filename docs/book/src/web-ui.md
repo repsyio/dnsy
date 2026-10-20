@@ -4,8 +4,9 @@ The web interface is an Angular single-page app in `web/`. It is built to `web/d
 and embedded into the binary by `dnsy-api` (feature `embed-ui`), which serves it from `/` with a
 single-page-app fallback.
 
-This page covers the shell and the zones pages; the other pages (dashboard, filtering, upstreams,
-query log, users, settings) arrive with later stories and are placeholders for now.
+This page covers the shell, the zones pages and the admin pages (filtering, ACL, upstreams, client
+certificates, cache, settings); the other pages (dashboard, query log, users) arrive with later
+stories and are placeholders for now.
 
 ## Stack
 
@@ -160,3 +161,39 @@ Accessibility: every control has a label, dialogs trap focus, close on Escape an
 their opener, table actions carry descriptive `aria-label`s, and errors are announced through
 `role="alert"`. Forms collapse to one column and tables scroll horizontally below 640 px, so the
 pages work at 360 px.
+
+## Admin pages
+
+Each page is its own lazy-loaded folder under `web/src/app/features/` (`filtering`, `acl`,
+`upstreams`, `certs`, `settings`, `cache`) with a typed service over `ApiService`. All of them use
+the Nox mascot components for loading, empty and error states (the error state has a retry button),
+confirm every destructive action in a focus-trapping dialog, label every control, announce errors
+through `role="alert"` and collapse to one column with horizontally scrolling tables, so they work
+at 360 px. Server rejections (409, 422) are shown next to the form that caused them.
+
+| Route           | Folder      | What it does                                                                                    |
+| --------------- | ----------- | ----------------------------------------------------------------------------------------------- |
+| `/filtering`    | `filtering` | Blocklist sources and custom block/allow rules, see [Filtering](filtering.md#web-ui)            |
+| `/acl`          | `acl`       | CIDR allow/refuse/drop rules (IP blocking) and the per-client rate limit                        |
+| `/upstreams`    | `upstreams` | Upstream groups: strategy, members, add/remove, health                                          |
+| `/client-certs` | `certs`     | DoT mutual-TLS fingerprint allowlist with labels and expiry                                     |
+| `/cache`        | `cache`     | Live cache statistics, flush by name (optionally with subdomains) and flush everything          |
+| `/settings`     | `settings`  | Block mode, per-client rate limit, query log retention, cache TTL clamp, serve-stale, prefetch |
+
+- **ACL**: the address field accepts IPv4 or IPv6, with or without a prefix length, and is
+  validated in the browser (`cidr.ts`) before the request is sent; the server validates again. The
+  default action is shown read-only. Rules that match a client certificate (created through the
+  API) are listed and can be removed.
+- **Upstreams**: members show an up/down badge, latency and consecutive failures from
+  `GET /upstream-groups/{name}/health`; when that endpoint is unavailable (503) the member shows
+  "unknown". Changing the strategy sends the group back with its current members, weights and
+  domains.
+- **Client certificates**: the fingerprint is normalised (colons, spaces, case) and must be 64 hex
+  digits; the optional expiry is the end of the chosen day in UTC. Entries can be disabled without
+  removal. The certificate itself is never uploaded, so there is no show-once secret.
+- **Cache**: statistics refresh every 5 seconds and stop when the page closes; if a refresh fails
+  the last values stay on screen with a warning. "Flush entire cache" always opens a confirmation
+  dialog first; flushing a single name reports how many entries were removed.
+- **Settings**: one form, one `PATCH /settings`. Numbers and the TTL clamp (minimum not above
+  maximum) are checked locally; the server's validation message is shown in an alert under the
+  form. The API exposes no secrets (tokens, passwords, keys), so the page has no fields for them.

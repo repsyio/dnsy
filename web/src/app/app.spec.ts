@@ -47,7 +47,7 @@ describe('App routing', () => {
     const el = harness.routeNativeElement as HTMLElement;
     expect(TestBed.inject(Router).url).toBe('/dashboard');
     expect(el.textContent).toContain('Dashboard');
-    expect(NAV_ITEMS.length).toBe(7);
+    expect(NAV_ITEMS.length).toBe(10);
   });
 
   it('unknown path under the shell renders the 404 page', async () => {
@@ -62,21 +62,29 @@ describe('App routing', () => {
     expect((harness.routeNativeElement as HTMLElement).textContent).toContain('404');
   });
 
-  it.each(['dashboard', 'zones', 'filtering', 'upstreams', 'query-log', 'users', 'settings'])(
-    'lazy-loads the %s page',
-    async (path) => {
-      const harness = await RouterTestingHarness.create();
-      const nav = harness.navigateByUrl('/' + path);
-      await vi.waitFor(() =>
-        ctrl
-          .expectOne('/api/v1/auth/me')
-          .flush({ id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' }),
-      );
-      await nav;
-      expect(TestBed.inject(Router).url).toBe('/' + path);
-      expect((harness.routeNativeElement as HTMLElement).querySelector('h1')).toBeTruthy();
-    },
-  );
+  it.each([
+    'dashboard',
+    'zones',
+    'filtering',
+    'upstreams',
+    'query-log',
+    'users',
+    'settings',
+    'acl',
+    'client-certs',
+    'cache',
+  ])('lazy-loads the %s page', async (path) => {
+    const harness = await RouterTestingHarness.create();
+    const nav = harness.navigateByUrl('/' + path);
+    await vi.waitFor(() =>
+      ctrl
+        .expectOne('/api/v1/auth/me')
+        .flush({ id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' }),
+    );
+    await nav;
+    expect(TestBed.inject(Router).url).toBe('/' + path);
+    expect((harness.routeNativeElement as HTMLElement).querySelector('h1')).toBeTruthy();
+  });
 
   it('sign out posts logout and returns to login', async () => {
     const harness = await RouterTestingHarness.create();

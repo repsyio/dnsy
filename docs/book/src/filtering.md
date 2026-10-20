@@ -87,3 +87,18 @@ immediately (the ACL is rebuilt and swapped, the blocklist filter is rebuilt off
 block mode is a runtime setting (`PATCH /settings`, `filter.block_mode`). Creating a source whose
 location is a file path or a non-public address needs the `admin` scope and `allow_private`; see
 URL safety above.
+
+## Web UI
+
+The Filtering page (`/filtering`) manages both halves of the policy without touching the config
+file:
+
+- **Blocklist sources**: add a source by name, URL or file path and format (`auto`, `hosts`,
+  `domains`, `adblock`); the table shows the entry count, the last fetch time and status, and lets
+  you enable or disable a source, refresh it now (the outcome and entry count are shown) or remove
+  it after confirming.
+- **Custom rules**: add a `block` or `allow` rule for a domain (it covers the name and everything below it); remove a rule after
+  confirming. Allow rules win over blocklists, as described above.
+
+The API has no endpoint to test a domain against the filters, so the page has no "test a domain"
+box; query the server with `dig` instead.
