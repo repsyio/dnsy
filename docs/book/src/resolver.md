@@ -1,6 +1,40 @@
 # Resolver, upstreams and cache
 
-Stub: upstream selection and load balancing. The cache is described below.
+Upstream selection and load balancing are described under [Upstream groups](#upstream-groups). The
+cache is described below.
+
+## Upstream groups
+
+Upstreams are organised into named groups, stored in the `upstream_groups` and `upstreams` tables
+(migration `0005`). On the first start, when no group exists, `[resolver] upstreams` seeds one
+round-robin group named `default`; after that the stored groups are authoritative and config
+changes do not overwrite them. Exactly one group is the default and receives every query that no
+domain pattern matches.
+
+**Strategies.** Each group has one strategy that orders its healthy members; a query walks that
+order until a member answers.
+
+| Strategy | Order |
+| --- | --- |
+| `round_robin` | rotating start, one step per query |
+| `weighted` | random, each member chosen with probability proportional to its weight (>= 1) |
+| `lowest_latency` | ascending EWMA latency (alpha 0.3); members not yet measured go first |
+| `failover` | configured order; later members only when earlier ones are down or fail |
+
+**Routing.** A group may list domain patterns (`corp.example` or `*.corp.example`). Both forms
+match the name itself and everything below it, case-insensitively. The pattern with the most
+labels wins; a pattern may belong to one group only.
+
+**Health.** Transport failures (timeout, I/O, TLS, malformed or mismatched response) count against
+an upstream; any DNS response, whatever its RCODE, counts as success and resets the count. After 3
+consecutive failures the upstream is ejected for 5 s; each further failed probe doubles the
+ejection (10 s, 20 s, ... up to 5 min). Ejected members are skipped. An active probe (a root NS
+query, issued by `GroupSet::run_probes` once the backoff has elapsed) re-admits an upstream on
+success. If every member of the chosen group is ejected the query fails with
+`NoAvailableUpstream`.
+
+**Determinism.** `GroupSet` takes a `Clock` and an `Rng`, so tests drive time and randomness
+explicitly.
 
 ## Cache
 
