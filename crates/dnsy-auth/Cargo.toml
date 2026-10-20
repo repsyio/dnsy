@@ -9,3 +9,17 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+argon2 = { workspace = true }
+dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
+dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
+rand = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
