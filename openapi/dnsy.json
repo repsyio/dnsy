@@ -9,6 +9,203 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/acl": {
+      "get": {
+        "tags": [
+          "acl"
+        ],
+        "operationId": "get_acl",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AclOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "acl"
+        ],
+        "operationId": "create_rule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAclRule"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AclRuleView"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An identical rule exists",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/acl/rate-limit": {
+      "put": {
+        "tags": [
+          "acl"
+        ],
+        "operationId": "set_rate_limit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RateLimit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimit"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/acl/{id}": {
+      "delete": {
+        "tags": [
+          "acl"
+        ],
+        "operationId": "delete_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Rule id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/auth/bootstrap": {
       "post": {
         "tags": [
@@ -260,6 +457,277 @@
         ]
       }
     },
+    "/api/v1/blocklists": {
+      "get": {
+        "tags": [
+          "blocklists"
+        ],
+        "operationId": "list_blocklists",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BlocklistView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "blocklists"
+        ],
+        "operationId": "create_blocklist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBlocklist"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlocklistView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A file path or private target needs the admin scope",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Name or location exists",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid source or SSRF target refused",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blocklists/{id}": {
+      "delete": {
+        "tags": [
+          "blocklists"
+        ],
+        "operationId": "delete_blocklist",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Source id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted; its entries leave the filter"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "blocklists"
+        ],
+        "operationId": "patch_blocklist",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Source id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchBlocklist"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlocklistView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blocklists/{id}/refresh": {
+      "post": {
+        "tags": [
+          "blocklists"
+        ],
+        "operationId": "refresh_blocklist",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Source id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The fetch failed; the previous list stays active",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No blocklist manager is running",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/cache": {
       "get": {
         "tags": [
@@ -436,6 +904,198 @@
           },
           "503": {
             "description": "No cache is running",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/client-certs": {
+      "get": {
+        "tags": [
+          "client-certs"
+        ],
+        "operationId": "list_certs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientCertView"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "client-certs"
+        ],
+        "operationId": "create_cert",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateClientCert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created and active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientCertView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The fingerprint is already listed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/client-certs/{id}": {
+      "delete": {
+        "tags": [
+          "client-certs"
+        ],
+        "operationId": "delete_cert",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Certificate id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed; open connections are re-checked"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "client-certs"
+        ],
+        "operationId": "patch_cert",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Certificate id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchClientCert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientCertView"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -725,6 +1385,223 @@
           },
           "429": {
             "description": "Too many live-tail connections",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/rules": {
+      "get": {
+        "tags": [
+          "rules"
+        ],
+        "operationId": "list_rules",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RuleView"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "rules"
+        ],
+        "operationId": "create_rule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRule"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created and active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleView"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/rules/{id}": {
+      "delete": {
+        "tags": [
+          "rules"
+        ],
+        "operationId": "delete_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Rule id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "get_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "patch_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings now in effect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown field or invalid value; nothing changed",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1299,6 +2176,443 @@
             "description": "Revoked"
           },
           "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/upstream-groups": {
+      "get": {
+        "tags": [
+          "upstreams"
+        ],
+        "operationId": "list_groups",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GroupView"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "upstreams"
+        ],
+        "operationId": "create_group",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroup"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The group exists",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/upstream-groups/{name}": {
+      "get": {
+        "tags": [
+          "upstreams"
+        ],
+        "operationId": "get_group",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "upstreams"
+        ],
+        "operationId": "replace_group",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "upstreams"
+        ],
+        "operationId": "delete_group",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Would leave no default group",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/upstream-groups/{name}/health": {
+      "get": {
+        "tags": [
+          "upstreams"
+        ],
+        "operationId": "group_health",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HealthView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is not running upstream groups",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/upstream-groups/{name}/upstreams": {
+      "post": {
+        "tags": [
+          "upstreams"
+        ],
+        "operationId": "add_member",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/upstream-groups/{name}/upstreams/{index}": {
+      "delete": {
+        "tags": [
+          "upstreams"
+        ],
+        "operationId": "remove_member",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "description": "Member index as listed",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A group keeps at least one member",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2482,6 +3796,149 @@
   },
   "components": {
     "schemas": {
+      "AclOverview": {
+        "type": "object",
+        "description": "Rules and the rate limit.",
+        "required": [
+          "default_action",
+          "rules",
+          "rate_limit_qps"
+        ],
+        "properties": {
+          "default_action": {
+            "$ref": "#/components/schemas/Action",
+            "description": "Applied to clients no rule matches."
+          },
+          "rate_limit_qps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Queries per second per client; 0 means unlimited.",
+            "minimum": 0
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AclRuleView"
+            }
+          }
+        }
+      },
+      "AclRuleView": {
+        "type": "object",
+        "description": "A stored rule.",
+        "required": [
+          "id",
+          "action",
+          "comment"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "cidr": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Network the rule matches (host bits cleared), for address rules."
+          },
+          "client_cert_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SHA-256 fingerprint (hex) of an mTLS client certificate, for identity rules."
+          },
+          "comment": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "Action": {
+        "type": "string",
+        "description": "What to do with a matching client.",
+        "enum": [
+          "allow",
+          "refuse",
+          "drop"
+        ]
+      },
+      "BlockModeView": {
+        "type": "string",
+        "description": "How blocked names are answered.",
+        "enum": [
+          "null_ip",
+          "nxdomain",
+          "refused"
+        ]
+      },
+      "BlocklistView": {
+        "type": "object",
+        "description": "A blocklist source and the status of its last fetch.",
+        "required": [
+          "id",
+          "name",
+          "location",
+          "format",
+          "enabled",
+          "interval_secs",
+          "allow_private",
+          "entries"
+        ],
+        "properties": {
+          "allow_private": {
+            "type": "boolean",
+            "description": "Private and loopback targets (and file paths) are allowed for this source."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries loaded from the last successful fetch.",
+            "minimum": 0
+          },
+          "format": {
+            "$ref": "#/components/schemas/Format"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "interval_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_fetched": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds of the last fetch attempt."
+          },
+          "last_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Outcome of the last fetch attempt."
+          },
+          "location": {
+            "type": "string",
+            "description": "http(s) URL or file path."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "Bootstrap": {
         "type": "object",
         "description": "First-admin creation.",
@@ -2501,6 +3958,79 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "CachePatch": {
+        "type": "object",
+        "properties": {
+          "max_ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Not below `min_ttl`.",
+            "minimum": 0
+          },
+          "min_ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "prefetch": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TogglePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serve_stale": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TogglePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "CacheSettings": {
+        "type": "object",
+        "description": "Cache settings.",
+        "required": [
+          "min_ttl",
+          "max_ttl",
+          "serve_stale",
+          "prefetch"
+        ],
+        "properties": {
+          "max_ttl": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Highest TTL (seconds) given to cached positive answers.",
+            "minimum": 0
+          },
+          "min_ttl": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lowest TTL (seconds) given to cached positive answers.",
+            "minimum": 0
+          },
+          "prefetch": {
+            "$ref": "#/components/schemas/Toggle"
+          },
+          "serve_stale": {
+            "$ref": "#/components/schemas/Toggle"
           }
         }
       },
@@ -2589,6 +4119,194 @@
           }
         }
       },
+      "ClientCertView": {
+        "type": "object",
+        "description": "An allowed client certificate.",
+        "required": [
+          "id",
+          "sha256",
+          "label",
+          "enabled",
+          "created_at",
+          "expired"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "`expires_at` has passed."
+          },
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds; the certificate is refused from then on."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "label": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "SHA-256 fingerprint of the DER certificate, lowercase hex."
+          }
+        }
+      },
+      "CreateAclRule": {
+        "type": "object",
+        "description": "New rule: exactly one of `cidr` and `client_cert_sha256`.",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "cidr": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Address or network, e.g. `203.0.113.7` or `10.0.0.0/8` (longest prefix wins)."
+          },
+          "client_cert_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SHA-256 fingerprint (64 hex digits) of an mTLS client certificate."
+          },
+          "comment": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateBlocklist": {
+        "type": "object",
+        "description": "New source.",
+        "required": [
+          "name",
+          "location"
+        ],
+        "properties": {
+          "allow_private": {
+            "type": "boolean",
+            "description": "Allow private, loopback and link-local targets. Needs the `admin` scope."
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Default true."
+          },
+          "format": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Format"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "interval_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds between refreshes, 60 to 2,592,000; default 86,400.",
+            "minimum": 0
+          },
+          "location": {
+            "type": "string",
+            "description": "`http://` or `https://` URL, or a file path (file paths need the `admin` scope)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Unique, 1 to 128 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateClientCert": {
+        "type": "object",
+        "description": "New allowed certificate.",
+        "required": [
+          "sha256",
+          "label"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds in the future; omit for no expiry."
+          },
+          "label": {
+            "type": "string",
+            "description": "1 to 128 characters."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "SHA-256 fingerprint: 64 hex digits, optionally colon separated."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateGroup": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/GroupBody"
+          },
+          {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "1 to 64 characters of `[A-Za-z0-9._-]`."
+              }
+            }
+          }
+        ],
+        "description": "New group."
+      },
+      "CreateRule": {
+        "type": "object",
+        "description": "New custom rule.",
+        "required": [
+          "kind",
+          "domain"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "description": "Domain name, e.g. `ads.example.com`; subdomains match too."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RuleKindView"
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateToken": {
         "type": "object",
         "description": "New token for the caller.",
@@ -2676,6 +4394,34 @@
           }
         }
       },
+      "FilterPatch": {
+        "type": "object",
+        "properties": {
+          "block_mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BlockModeView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "FilterSettings": {
+        "type": "object",
+        "description": "Filtering settings.",
+        "required": [
+          "block_mode"
+        ],
+        "properties": {
+          "block_mode": {
+            "$ref": "#/components/schemas/BlockModeView"
+          }
+        }
+      },
       "Flushed": {
         "type": "object",
         "description": "Outcome of a flush.",
@@ -2690,6 +4436,151 @@
             "minimum": 0
           }
         }
+      },
+      "Format": {
+        "type": "string",
+        "description": "List file format.",
+        "enum": [
+          "auto",
+          "hosts",
+          "domains",
+          "adblock"
+        ]
+      },
+      "GroupBody": {
+        "type": "object",
+        "description": "Group definition for create and replace.",
+        "required": [
+          "strategy",
+          "members"
+        ],
+        "properties": {
+          "default": {
+            "type": "boolean",
+            "description": "Receives queries no domain pattern matches. Exactly one group is the default."
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Patterns such as `corp.example` or `*.corp.example`."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberInput"
+            }
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/StrategyView"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GroupView": {
+        "type": "object",
+        "description": "A group with its members and, when the server is running, their health.",
+        "required": [
+          "name",
+          "strategy",
+          "default",
+          "domains",
+          "members"
+        ],
+        "properties": {
+          "default": {
+            "type": "boolean"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "health": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/HealthView"
+            }
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberView"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/StrategyView"
+          }
+        }
+      },
+      "HealthView": {
+        "type": "object",
+        "description": "Live state of one member.",
+        "required": [
+          "upstream",
+          "available",
+          "consecutive_failures"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "Not ejected by the passive health check."
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "latency_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Smoothed round-trip time; absent until measured."
+          },
+          "upstream": {
+            "type": "string"
+          }
+        }
+      },
+      "LimitSettings": {
+        "type": "object",
+        "description": "Limits.",
+        "required": [
+          "per_client_qps"
+        ],
+        "properties": {
+          "per_client_qps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Queries per second per client; 0 means unlimited.",
+            "minimum": 0
+          }
+        }
+      },
+      "LimitsPatch": {
+        "type": "object",
+        "properties": {
+          "per_client_qps": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "0 to 1,000,000; 0 disables the limit.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "LogPageBody": {
         "type": "object",
@@ -2817,6 +4708,79 @@
         ],
         "description": "The caller as seen by `GET /auth/me`."
       },
+      "MemberInput": {
+        "type": "object",
+        "description": "A member as written by a client.",
+        "required": [
+          "upstream"
+        ],
+        "properties": {
+          "upstream": {
+            "type": "string",
+            "description": "`udp://host[:port]`, `tcp://host[:port]` or `tls://host[:port][#sni]`."
+          },
+          "weight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Used by the `weighted` strategy; 1 to 1000, default 1.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "MemberView": {
+        "type": "object",
+        "description": "A member of a group.",
+        "required": [
+          "index",
+          "upstream",
+          "weight"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Position in the group, for `DELETE /upstream-groups/{name}/upstreams/{index}`.",
+            "minimum": 0
+          },
+          "upstream": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PatchBlocklist": {
+        "type": "object",
+        "description": "Fields of a source that can change.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PatchClientCert": {
+        "type": "object",
+        "description": "Fields that can change.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "Problem": {
         "type": "object",
         "description": "RFC 9457 problem document.",
@@ -2855,6 +4819,52 @@
             "description": "URI identifying the problem type."
           }
         }
+      },
+      "QueryLogPatch": {
+        "type": "object",
+        "properties": {
+          "retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1 to 3650.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "QueryLogSettings": {
+        "type": "object",
+        "description": "Query log settings.",
+        "required": [
+          "retention_days"
+        ],
+        "properties": {
+          "retention_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days of history kept.",
+            "minimum": 0
+          }
+        }
+      },
+      "RateLimit": {
+        "type": "object",
+        "description": "Per-client rate limit.",
+        "required": [
+          "qps"
+        ],
+        "properties": {
+          "qps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Queries per second per client; 0 disables limiting. At most 1,000,000.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "Ready": {
         "type": "object",
@@ -2972,6 +4982,57 @@
           }
         }
       },
+      "RefreshResult": {
+        "type": "object",
+        "description": "Result of a manual refresh.",
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "entries": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Block plus allow entries now loaded (only when `updated`).",
+            "minimum": 0
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`updated` or `not_modified`."
+          }
+        }
+      },
+      "RuleKindView": {
+        "type": "string",
+        "description": "Custom rule kind.",
+        "enum": [
+          "block",
+          "allow"
+        ]
+      },
+      "RuleView": {
+        "type": "object",
+        "description": "A custom rule: the domain and everything below it. Allow beats block.",
+        "required": [
+          "id",
+          "kind",
+          "domain"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RuleKindView"
+          }
+        }
+      },
       "SeriesPoint": {
         "type": "object",
         "description": "One timeseries bucket.",
@@ -3006,6 +5067,77 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "SettingsPatch": {
+        "type": "object",
+        "description": "Partial update: omitted fields keep their value.",
+        "properties": {
+          "cache": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CachePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FilterPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limits": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LimitsPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "querylog": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/QueryLogPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SettingsView": {
+        "type": "object",
+        "description": "The settings that can change at runtime.",
+        "required": [
+          "filter",
+          "querylog",
+          "limits",
+          "cache"
+        ],
+        "properties": {
+          "cache": {
+            "$ref": "#/components/schemas/CacheSettings"
+          },
+          "filter": {
+            "$ref": "#/components/schemas/FilterSettings"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/LimitSettings"
+          },
+          "querylog": {
+            "$ref": "#/components/schemas/QueryLogSettings"
           }
         }
       },
@@ -3081,6 +5213,16 @@
             "description": "`ok` or `ready`."
           }
         }
+      },
+      "StrategyView": {
+        "type": "string",
+        "description": "How a group orders its members.",
+        "enum": [
+          "round_robin",
+          "weighted",
+          "lowest_latency",
+          "failover"
+        ]
       },
       "SummaryBody": {
         "type": "object",
@@ -3193,6 +5335,30 @@
             "minimum": 0
           }
         }
+      },
+      "Toggle": {
+        "type": "object",
+        "description": "A feature switch.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TogglePatch": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "TokenInfo": {
         "type": "object",
