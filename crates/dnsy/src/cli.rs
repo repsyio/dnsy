@@ -95,7 +95,7 @@ pub enum UserCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum TokenCommand {
-    /// Create an API or DoH token; the secret is printed once.
+    /// Create an API or `DoH` token; the secret is printed once.
     Create {
         /// Owner.
         #[arg(long)]

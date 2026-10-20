@@ -19,6 +19,11 @@ const ZONE: &str = r#"{
   "dnssec": {"enabled": SIGNED}
 }"#;
 
+/// A path as a TOML basic string.
+fn q(p: &Path) -> String {
+    serde_json::to_string(p.to_str().unwrap()).unwrap()
+}
+
 struct Env {
     dir: TempDir,
 }
@@ -34,11 +39,11 @@ impl Env {
         )
         .unwrap();
         let config = format!(
-            "[server]\ndata_dir = {data:?}\n[dns]\nudp = [\"127.0.0.1:0\"]\ntcp = [\"127.0.0.1:0\"]\n\
-             [api]\nlisten = [\"127.0.0.1:0\"]\n[zones]\ndir = {zones:?}\n\
+            "[server]\ndata_dir = {data}\n[dns]\nudp = [\"127.0.0.1:0\"]\ntcp = [\"127.0.0.1:0\"]\n\
+             [api]\nlisten = [\"127.0.0.1:0\"]\n[zones]\ndir = {zones}\n\
              [dnssec]\nvalidation = \"off\"\n",
-            data = dir.path().join("data"),
-            zones = zones,
+            data = q(&dir.path().join("data")),
+            zones = q(&zones),
         );
         std::fs::write(dir.path().join("dnsy.toml"), config).unwrap();
         Env { dir }
@@ -204,10 +209,11 @@ fn config_check_reports_errors() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("bogus_key"));
 
     let zones = env.dir.path().join("zones");
+    let zones_q = q(&zones);
     std::fs::write(
         env.config(),
         format!(
-            "[zones]\ndir = {zones:?}\n[dot]\nlisten = [\"127.0.0.1:0\"]\ncert = \"/nonexistent/c.pem\"\nkey = \"/nonexistent/k.pem\"\n"
+            "[zones]\ndir = {zones_q}\n[dot]\nlisten = [\"127.0.0.1:0\"]\ncert = \"/nonexistent/c.pem\"\nkey = \"/nonexistent/k.pem\"\n"
         ),
     )
     .unwrap();
@@ -216,7 +222,7 @@ fn config_check_reports_errors() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("dot.cert"));
 
     std::fs::write(zones.join("broken.json"), "{ nope").unwrap();
-    std::fs::write(env.config(), format!("[zones]\ndir = {zones:?}\n")).unwrap();
+    std::fs::write(env.config(), format!("[zones]\ndir = {}\n", q(&zones))).unwrap();
     let out = env.run(&["config", "check"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("broken.json"));
 
@@ -590,11 +596,11 @@ fn serve_starts_dot_with_mtls_and_doh() {
     std::fs::write(tls.join("cert.pem"), cert.cert.pem()).unwrap();
     std::fs::write(tls.join("key.pem"), cert.signing_key.serialize_pem()).unwrap();
     env.append_config(&format!(
-        "[dot]\nlisten = [\"127.0.0.1:0\"]\ncert = {c:?}\nkey = {k:?}\nmtls = \"required\"\nclient_ca = {c:?}\n\
-         [doh]\nlisten = [\"127.0.0.1:0\"]\ncert = {c:?}\nkey = {k:?}\n\
-         [api]\nlisten = [\"127.0.0.1:0\"]\ntls_cert = {c:?}\ntls_key = {k:?}\n",
-        c = tls.join("cert.pem"),
-        k = tls.join("key.pem"),
+        "[dot]\nlisten = [\"127.0.0.1:0\"]\ncert = {c}\nkey = {k}\nmtls = \"required\"\nclient_ca = {c}\n\
+         [doh]\nlisten = [\"127.0.0.1:0\"]\ncert = {c}\nkey = {k}\n\
+         [api]\nlisten = [\"127.0.0.1:0\"]\ntls_cert = {c}\ntls_key = {k}\n",
+        c = q(&tls.join("cert.pem")),
+        k = q(&tls.join("key.pem")),
     ));
     // Duplicate [api] table from the base config is a TOML error: drop the base one.
     let base = std::fs::read_to_string(env.config()).unwrap();

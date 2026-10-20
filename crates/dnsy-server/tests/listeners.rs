@@ -255,8 +255,8 @@ async fn shutdown_drains() {
 struct Dropper;
 
 impl Handler for Dropper {
-    async fn handle(&self, _ctx: RequestContext, query: Message) -> Message {
-        Message::response_to(&query)
+    fn handle(&self, _ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send {
+        std::future::ready(Message::response_to(&query))
     }
 
     async fn respond(&self, ctx: RequestContext, query: Message) -> Option<Message> {
