@@ -1,0 +1,203 @@
+//! Authentication and authorisation for API handlers.
+//!
+//! A handler takes `RequireScope<Read>`, `RequireScope<Write>` or `RequireScope<AdminScope>`.
+//! Credentials, in order: `Authorization: Bearer <token>`, then the `dnsy_session` cookie.
+//! Cookie credentials on unsafe methods must also carry an `X-CSRF-Token` header equal to
+//! the `dnsy_csrf` cookie (double submit). Bearer requests need no CSRF token.
+//!
+//! All credential handling lives in [`Authenticator::authenticate`], the single place to
+//! extend (per-username throttling, session invalidation on password change).
+
+use std::marker::PhantomData;
+
+use axum::extract::{FromRef, FromRequestParts};
+use axum::http::request::Parts;
+use axum::http::{HeaderMap, Method, header};
+use dnsy_auth::TokenVerifier;
+use dnsy_core::{Role, Scope, TokenId, UserId};
+use subtle::ConstantTimeEq;
+
+use crate::error::ApiError;
+use crate::state::ApiState;
+
+pub const SESSION_COOKIE: &str = "dnsy_session";
+pub const CSRF_COOKIE: &str = "dnsy_csrf";
+pub const CSRF_HEADER: &str = "x-csrf-token";
+
+/// How a request proved who it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMethod {
+    Token(TokenId),
+    Session,
+}
+
+/// The authenticated caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthUser {
+    pub user: UserId,
+    pub role: Role,
+    pub method: AuthMethod,
+}
+
+/// Marker for a scope, so the requirement is visible in a handler's signature.
+pub trait ScopeMarker {
+    const SCOPE: Scope;
+}
+
+/// `api:read`.
+pub struct Read;
+/// `api:write`.
+pub struct Write;
+/// `admin`.
+pub struct AdminScope;
+
+impl ScopeMarker for Read {
+    const SCOPE: Scope = Scope::ApiRead;
+}
+impl ScopeMarker for Write {
+    const SCOPE: Scope = Scope::ApiWrite;
+}
+impl ScopeMarker for AdminScope {
+    const SCOPE: Scope = Scope::Admin;
+}
+
+/// Extractor: authenticated caller holding scope `S` (token scope or role permission).
+pub struct RequireScope<S: ScopeMarker>(pub AuthUser, PhantomData<S>);
+
+impl<S: ScopeMarker, T> FromRequestParts<T> for RequireScope<S>
+where
+    ApiState: FromRef<T>,
+    T: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &T) -> Result<Self, ApiError> {
+        let state = ApiState::from_ref(state);
+        let user = Authenticator::new(&state)
+            .authenticate(&parts.headers, &parts.method, S::SCOPE)
+            .await?;
+        Ok(RequireScope(user, PhantomData))
+    }
+}
+
+/// Resolves credentials to an [`AuthUser`].
+pub struct Authenticator<'a> {
+    state: &'a ApiState,
+}
+
+impl<'a> Authenticator<'a> {
+    #[must_use]
+    pub fn new(state: &'a ApiState) -> Authenticator<'a> {
+        Authenticator { state }
+    }
+
+    /// # Errors
+    /// 401 without or with bad credentials, 403 for a missing scope or CSRF mismatch.
+    pub async fn authenticate(
+        &self,
+        headers: &HeaderMap,
+        method: &Method,
+        needed: Scope,
+    ) -> Result<AuthUser, ApiError> {
+        if let Some(value) = headers.get(header::AUTHORIZATION) {
+            let token = value
+                .to_str()
+                .ok()
+                .and_then(|v| {
+                    let (scheme, rest) = v.split_once(' ')?;
+                    scheme.eq_ignore_ascii_case("bearer").then_some(rest.trim())
+                })
+                .ok_or(ApiError::Unauthorized)?;
+            return self.by_token(token, needed).await;
+        }
+        let session = cookie(headers, SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
+        self.by_session(session, headers, method, needed).await
+    }
+
+    async fn by_token(&self, token: &str, needed: Scope) -> Result<AuthUser, ApiError> {
+        let principal = self.state.tokens.verify(token, needed).await?;
+        let dnsy_core::Principal::Token { token, user } = principal else {
+            return Err(ApiError::Unauthorized);
+        };
+        let role = self.state.users.get(user).await?.role;
+        Ok(AuthUser {
+            user,
+            role,
+            method: AuthMethod::Token(token),
+        })
+    }
+
+    async fn by_session(
+        &self,
+        id: &str,
+        headers: &HeaderMap,
+        method: &Method,
+        needed: Scope,
+    ) -> Result<AuthUser, ApiError> {
+        let session = self.state.sessions.validate(id).await?;
+        let user = self.state.users.get(session.user).await?;
+        if !user.role.allows(needed) {
+            return Err(ApiError::Forbidden("the role lacks the required scope"));
+        }
+        if !is_safe(method) && !csrf_matches(headers) {
+            return Err(ApiError::Forbidden("missing or invalid CSRF token"));
+        }
+        Ok(AuthUser {
+            user: user.id,
+            role: user.role,
+            method: AuthMethod::Session,
+        })
+    }
+}
+
+fn is_safe(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn csrf_matches(headers: &HeaderMap) -> bool {
+    let (Some(cookie_value), Some(header_value)) = (
+        cookie(headers, CSRF_COOKIE),
+        headers.get(CSRF_HEADER).and_then(|v| v.to_str().ok()),
+    ) else {
+        return false;
+    };
+    !cookie_value.is_empty() && bool::from(cookie_value.as_bytes().ct_eq(header_value.as_bytes()))
+}
+
+/// Value of cookie `name` from the `Cookie` header(s).
+fn cookie<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k.trim() == name).then(|| v.trim())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cookie_parsing() {
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, "a=1; dnsy_csrf=tok; b=2".parse().unwrap());
+        assert_eq!(cookie(&h, "dnsy_csrf"), Some("tok"));
+        assert_eq!(cookie(&h, "c"), None);
+    }
+
+    #[test]
+    fn csrf_requires_both_and_equal() {
+        let mut h = HeaderMap::new();
+        assert!(!csrf_matches(&h));
+        h.insert(header::COOKIE, "dnsy_csrf=tok".parse().unwrap());
+        assert!(!csrf_matches(&h));
+        h.insert(CSRF_HEADER, "other".parse().unwrap());
+        assert!(!csrf_matches(&h));
+        h.insert(CSRF_HEADER, "tok".parse().unwrap());
+        assert!(csrf_matches(&h));
+    }
+}
