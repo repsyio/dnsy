@@ -234,6 +234,12 @@ impl<E: Exchange> Engine<E> {
         self.dnssec.load().mode
     }
 
+    /// The current DNSSEC policy: mode, trust anchors and negative trust anchors.
+    #[must_use]
+    pub fn dnssec_policy(&self) -> Arc<DnssecPolicy> {
+        self.dnssec.load_full()
+    }
+
     /// Switches the validation mode; a change flushes the cache, whose entries carry statuses
     /// computed under the old mode.
     pub fn set_dnssec_mode(&self, mode: Validation) {

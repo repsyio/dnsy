@@ -480,3 +480,43 @@ Every query event carries its validation status (`secure`, `insecure`, `bogus`,
 `indeterminate`, `unchecked`), whether the answer came from the upstream or the cache. The
 query log stores it and the statistics count it per status (`by_dnssec`, with `secure` and
 `bogus` totals).
+
+## Managing DNSSEC through the API
+
+The REST API (see [REST API](rest-api.md#dnssec)) drives everything above without editing files.
+All changing calls need the `admin` scope.
+
+**Enable signing.** `PUT /api/v1/zones/example.com./dnssec` with `{"enabled": true}` writes the
+`dnssec` block of the zone file (defaults: algorithm 13, one CSK, NSEC3 with zero iterations, 14 day
+signatures refreshed 5 days before expiry), creates the keys and signs the zone, so the next
+DO query already gets signed answers. Only algorithms 13 and 15 are accepted. Other policy fields
+(`key_layout`, `denial`, `nsec3`, `signature_validity_days`, `refresh_days`, `dnskey_ttl`) can be
+sent in the same or a later call; a field left out keeps its value. The algorithm of existing keys
+changes only through a rollover with a new `algorithm`.
+
+**Publish the DS.** `GET .../dnssec/ds` returns the DS records (SHA-256 and SHA-384) of the
+published and active KSKs or CSKs, plus the DNSKEY records for registrars that take keys. Send
+`Accept: text/plain` for lines to paste into a registrar form. The digests are computed from the
+same DNSKEY the zone serves.
+
+**Roll a key.** `POST .../dnssec/keys/{id}/rollover` takes the id of an active key, generates its
+successor and publishes it (202). A ZSK rollover finishes by itself once the DNSKEY TTL and
+propagation time have passed. A KSK or CSK rollover waits: publish the new key's DS at the parent
+(`GET .../dnssec/ds` lists it already), then call `POST .../dnssec/keys/{new id}/ds-confirmed`.
+`GET .../dnssec` reports the state as `idle`, `in_progress` or `awaiting_ds_confirmation`. One
+rollover per role runs at a time; a second request is 409.
+
+**Signed export.** `GET .../export?signed=true` downloads the zone as a BIND file with the DNSKEY,
+RRSIG, NSEC or NSEC3 and NSEC3PARAM records of the current signed snapshot.
+
+**Validation at run time.** `GET/PATCH /api/v1/settings/dnssec` shows and changes the validation
+mode and the negative trust anchors (RFC 7646) without a restart. Names are lowercased and
+de-duplicated; the root is refused because it would disable validation (use mode `off`). Any change
+flushes the cache, since cached entries carry statuses computed under the old settings. Trust
+anchors are read-only: they come from the configuration, and the API lists them with their key
+tags. Changes are not saved to the configuration file. `GET /api/v1/dnssec/status` adds the
+answer counts by DNSSEC status for the last 24 hours and whether the clock is trusted.
+
+**Secrets.** Private keys stay in the key store. No API response, error body or log line contains
+them, and the OpenAPI schemas have no field for them. `keys_encrypted` in the zone's DNSSEC view
+tells whether new keys are encrypted at rest; when it is false, set a key passphrase.

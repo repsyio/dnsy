@@ -37,6 +37,21 @@ impl TrustAnchors {
         self.negative = names.into_iter().collect();
     }
 
+    /// The DS anchors with the zone each belongs to.
+    pub fn ds_anchors(&self) -> &[(Name, Ds)] {
+        &self.ds
+    }
+
+    /// The DNSKEY anchors with the zone each belongs to.
+    pub fn key_anchors(&self) -> &[(Name, Dnskey)] {
+        &self.keys
+    }
+
+    /// The negative trust anchors.
+    pub fn negative_anchors(&self) -> &[Name] {
+        &self.negative
+    }
+
     /// True when there is no positive (DS or DNSKEY) anchor.
     pub fn is_empty(&self) -> bool {
         self.ds.is_empty() && self.keys.is_empty()
@@ -110,6 +125,9 @@ mod tests {
         assert_eq!(ta.ds_at(&Name::root()).count(), 1);
         assert_eq!(ta.keys_at(&n("example.")).count(), 1);
         assert_eq!(ta.keys_at(&Name::root()).count(), 0);
+        assert_eq!(ta.ds_anchors().len(), 1);
+        assert_eq!(ta.key_anchors().len(), 1);
+        assert_eq!(ta.negative_anchors(), []);
     }
 
     #[test]
@@ -123,5 +141,6 @@ mod tests {
         ta.set_negative([n("other.test.")]);
         assert!(!ta.is_negative(&n("broken.example.")));
         assert!(ta.is_negative(&n("x.other.test.")));
+        assert_eq!(ta.negative_anchors(), [n("other.test.")]);
     }
 }

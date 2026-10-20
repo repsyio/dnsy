@@ -9,6 +9,7 @@ mod routes;
 mod security;
 pub mod state;
 mod ui;
+pub mod validation;
 
 use axum::Json;
 use axum::Router;

@@ -252,6 +252,23 @@ export interface paths {
         patch: operations["patch_cert"];
         trace?: never;
     };
+    "/api/v1/dnssec/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Validation counters of the last 24 hours and whether the clock is trusted. */
+        get: operations["dnssec_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/querylog": {
         parameters: {
             query?: never;
@@ -339,6 +356,27 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["patch_settings"];
+        trace?: never;
+    };
+    "/api/v1/settings/dnssec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Validation mode, negative trust anchors and the (read-only) trust anchors. */
+        get: operations["get_validation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change the validation mode or the negative trust anchors at run time. A change flushes the
+         *     resolver cache.
+         */
+        patch: operations["patch_validation"];
         trace?: never;
     };
     "/api/v1/stats/summary": {
@@ -632,6 +670,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/zones/{name}/dnssec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A zone's DNSSEC policy, keys and rollover state. */
+        get: operations["get_dnssec"];
+        /**
+         * Enable, disable or change a zone's signing policy. Writes the zone file's `dnssec` block;
+         *     enabling creates the keys and signs the zone before the response is sent.
+         */
+        put: operations["put_dnssec"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/zones/{name}/dnssec/ds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * DS records (SHA-256 and SHA-384) and DNSKEY records of the zone's KSKs and CSKs, for the
+         *     parent zone or registrar. JSON by default; `Accept: text/plain` returns zone-file lines.
+         */
+        get: operations["ds_export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/zones/{name}/dnssec/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The zone's keys (public metadata only), including removed ones. */
+        get: operations["list_keys"];
+        put?: never;
+        /**
+         * Generate a key in the `generated` state (not yet published). The zone needs signing
+         *     enabled.
+         */
+        post: operations["generate_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/zones/{name}/dnssec/keys/{id}/ds-confirmed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record that the key's DS is published at the parent; a KSK or CSK rollover waits for this. */
+        post: operations["confirm_ds"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/zones/{name}/dnssec/keys/{id}/rollover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a rollover of the role of an active key: a new key is generated and published, and
+         *     the rollover state machine moves it along. KSK and CSK rollovers wait for
+         *     `ds-confirmed`.
+         */
+        post: operations["start_rollover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/zones/{name}/export": {
         parameters: {
             query?: never;
@@ -639,7 +777,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Download the zone as a BIND master file. */
+        /** Download the zone as a BIND master file, unsigned or (`signed=true`) with its DNSSEC records. */
         get: operations["export_zone"];
         put?: never;
         post?: never;
@@ -944,6 +1082,124 @@ export interface components {
             /** @description The secret. Store it now; it cannot be retrieved again. */
             token: string;
         };
+        /**
+         * @description Authenticated denial of existence.
+         * @enum {string}
+         */
+        DenialBody: "nsec" | "nsec3";
+        /** @description A DNSKEY record, for registrars that take keys instead of digests. */
+        DnskeyRecordView: {
+            /** Format: int32 */
+            algorithm: number;
+            /** Format: int32 */
+            flags: number;
+            /** Format: int64 */
+            key_id: number;
+            /** Format: int32 */
+            key_tag: number;
+            /** Format: int32 */
+            protocol: number;
+            /** @description Base64 public key. */
+            public_key: string;
+            /** @description The record in presentation format. */
+            record: string;
+        };
+        /**
+         * @description Signing policy of a zone. Omitted fields keep their current value (the defaults for a zone
+         *     that never had a policy).
+         */
+        DnssecPolicyInput: {
+            /**
+             * Format: int32
+             * @description 13 (ECDSAP256SHA256) or 15 (Ed25519). Existing keys are replaced only by a rollover.
+             */
+            algorithm?: number | null;
+            denial?: components["schemas"]["DenialBody"] | null;
+            /** Format: int32 */
+            dnskey_ttl?: number | null;
+            /** @description Sign the zone. Turning it on creates the zone's keys. */
+            enabled: boolean;
+            key_layout?: components["schemas"]["KeyLayoutBody"] | null;
+            nsec3?: components["schemas"]["Nsec3Body"] | null;
+            /** Format: int32 */
+            refresh_days?: number | null;
+            /** Format: int32 */
+            signature_validity_days?: number | null;
+        };
+        /** @description Validation counters and clock trust. */
+        DnssecStatus: {
+            /** Format: int64 */
+            bogus: number;
+            /** @description False while the system clock is before the build time: validation is suspended. */
+            clock_trusted: boolean;
+            /**
+             * @description Answers in the window by DNSSEC status (`unchecked`, `secure`, `insecure`, `bogus`,
+             *     `indeterminate`).
+             */
+            counters: {
+                [key: string]: number;
+            };
+            /** Format: int64 */
+            secure: number;
+            /** @description Zones with signing enabled. */
+            signed_zones: number;
+            validation?: components["schemas"]["ValidationMode"] | null;
+            /**
+             * Format: int64
+             * @description Window of the counters, milliseconds, ending now.
+             */
+            window_ms: number;
+        };
+        /** @description A zone's DNSSEC state. */
+        DnssecView: {
+            /** Format: int32 */
+            algorithm: number;
+            denial: components["schemas"]["DenialBody"];
+            /** Format: int32 */
+            dnskey_ttl: number;
+            enabled: boolean;
+            key_layout: components["schemas"]["KeyLayoutBody"];
+            /** @description Keys that are not removed. */
+            keys: components["schemas"]["KeyView"][];
+            /** @description Private keys are encrypted at rest (a key passphrase is configured). */
+            keys_encrypted: boolean;
+            /**
+             * Format: int64
+             * @description Unix time from which signatures are refreshed; `None` while the zone is unsigned.
+             */
+            next_resign?: number | null;
+            nsec3: components["schemas"]["Nsec3Body"];
+            /** Format: int32 */
+            refresh_days: number;
+            rollover: components["schemas"]["RolloverView"];
+            /** Format: int32 */
+            signature_validity_days: number;
+        };
+        /** @description What to hand the registrar. */
+        DsExport: {
+            dnskey: components["schemas"]["DnskeyRecordView"][];
+            /** @description SHA-256 first, then SHA-384, for each published or active KSK or CSK. */
+            ds: components["schemas"]["DsRecordView"][];
+            zone: string;
+        };
+        /** @description A DS record to publish at the parent. */
+        DsRecordView: {
+            /** Format: int32 */
+            algorithm: number;
+            /** @description Upper-case hex. */
+            digest: string;
+            /**
+             * Format: int32
+             * @description 2 (SHA-256) or 4 (SHA-384).
+             */
+            digest_type: number;
+            /** Format: int64 */
+            key_id: number;
+            /** Format: int32 */
+            key_tag: number;
+            /** @description The record in presentation format. */
+            record: string;
+        };
         FilterPatch: {
             block_mode?: components["schemas"]["BlockModeView"] | null;
         };
@@ -964,6 +1220,16 @@ export interface components {
          * @enum {string}
          */
         Format: "auto" | "hosts" | "domains" | "adblock";
+        /** @description A new key. */
+        GenerateKeyInput: {
+            /**
+             * Format: int32
+             * @description 13 or 15; defaults to the zone policy's algorithm.
+             */
+            algorithm?: number | null;
+            /** @description `csk`, `ksk` or `zsk`. */
+            role: components["schemas"]["KeyRoleBody"];
+        };
         /** @description Group definition for create and replace. */
         GroupBody: {
             /** @description Receives queries no domain pattern matches. Exactly one group is the default. */
@@ -994,6 +1260,44 @@ export interface components {
              */
             latency_ms?: number | null;
             upstream: string;
+        };
+        /**
+         * @description Whether one key signs everything or keys are split into KSK and ZSK.
+         * @enum {string}
+         */
+        KeyLayoutBody: "csk" | "ksk_zsk";
+        /**
+         * @description Key role.
+         * @enum {string}
+         */
+        KeyRoleBody: "csk" | "ksk" | "zsk";
+        /** @description Public metadata of a key. There is no private key field. */
+        KeyView: {
+            /** Format: int64 */
+            active_at?: number | null;
+            /** Format: int32 */
+            algorithm: number;
+            /** Format: int64 */
+            created_at: number;
+            /**
+             * Format: int64
+             * @description When the operator confirmed the DS at the parent (KSK and CSK).
+             */
+            ds_confirmed_at?: number | null;
+            /** Format: int64 */
+            id: number;
+            /** Format: int32 */
+            key_tag: number;
+            /** Format: int64 */
+            published_at?: number | null;
+            /** Format: int64 */
+            removed_at?: number | null;
+            /** Format: int64 */
+            retired_at?: number | null;
+            /** @description `csk`, `ksk` or `zsk`. */
+            role: string;
+            /** @description `generated`, `published`, `active`, `retired` or `removed`. */
+            state: string;
         };
         /** @description Limits. */
         LimitSettings: {
@@ -1067,6 +1371,19 @@ export interface components {
             upstream: string;
             /** Format: int32 */
             weight: number;
+        };
+        /** @description NSEC3 parameters (RFC 5155, RFC 9276). */
+        Nsec3Body: {
+            /** @description Accept a non-zero iteration count despite RFC 9276. */
+            allow_nonzero_iterations?: boolean;
+            /**
+             * Format: int32
+             * @description Extra hash iterations; 0 unless `allow_nonzero_iterations` is set.
+             */
+            iterations?: number;
+            opt_out?: boolean;
+            /** @description Salt in hexadecimal; empty for none. */
+            salt?: string;
         };
         /** @description Fields of a source that can change. */
         PatchBlocklist: {
@@ -1170,6 +1487,26 @@ export interface components {
             entries?: number | null;
             /** @description `updated` or `not_modified`. */
             outcome: string;
+        };
+        /** @description Rollover options. */
+        RolloverInput: {
+            /**
+             * Format: int32
+             * @description Algorithm of the new key (13 or 15); defaults to the rolled key's algorithm.
+             */
+            algorithm?: number | null;
+        };
+        /** @description Where the key rollover stands. */
+        RolloverView: {
+            /**
+             * Format: int64
+             * @description The incoming key.
+             */
+            new_key_id?: number | null;
+            /** @description Role being rolled over. */
+            role?: string | null;
+            /** @description `idle`, `in_progress` or `awaiting_ds_confirmation`. */
+            state: string;
         };
         /**
          * @description Custom rule kind.
@@ -1324,6 +1661,20 @@ export interface components {
             count: number;
             key: string;
         };
+        /** @description A configured trust anchor (read-only; set in the configuration file). */
+        TrustAnchorView: {
+            /** Format: int32 */
+            algorithm: number;
+            digest?: string | null;
+            /** Format: int32 */
+            digest_type?: number | null;
+            /** Format: int32 */
+            key_tag: number;
+            /** @description `ds` or `dnskey`. */
+            kind: string;
+            /** @description Zone the anchor belongs to (`.` for the root). */
+            owner: string;
+        };
         /** @description Fields to change; absent fields stay as they are. */
         UpdateUser: {
             /** @description Reset the password (at least 8 characters); ends all of the user's sessions. */
@@ -1349,6 +1700,28 @@ export interface components {
              */
             role: string;
             username: string;
+        };
+        /**
+         * @description Validation mode.
+         * @enum {string}
+         */
+        ValidationMode: "off" | "permissive" | "strict";
+        /**
+         * @description Validation settings changes. Applied at once; not persisted across restarts (the
+         *     configuration file is the source at startup). Changing the mode or the negative trust
+         *     anchors flushes the cache.
+         */
+        ValidationPatch: {
+            /** @description Replaces the whole list; `[]` clears it. */
+            negative_trust_anchors?: string[] | null;
+            validation?: components["schemas"]["ValidationMode"] | null;
+        };
+        /** @description Validation settings. */
+        ValidationSettings: {
+            /** @description Names at or below which validation is skipped (RFC 7646). */
+            negative_trust_anchors: string[];
+            trust_anchors: components["schemas"]["TrustAnchorView"][];
+            validation: components["schemas"]["ValidationMode"];
         };
         /** @description Build information. */
         Version: {
@@ -2206,6 +2579,25 @@ export interface operations {
             };
         };
     };
+    dnssec_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnssecStatus"];
+                };
+            };
+        };
+    };
     search_log: {
         parameters: {
             query?: {
@@ -2487,6 +2879,72 @@ export interface operations {
             };
             /** @description Unknown field or invalid value; nothing changed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_validation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationSettings"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    patch_validation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ValidationPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationSettings"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3599,9 +4057,344 @@ export interface operations {
             };
         };
     };
-    export_zone: {
+    get_dnssec: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnssecView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_dnssec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DnssecPolicyInput"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnssecView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    ds_export: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description DS and DNSKEY records; `text/plain` (zone-file lines) when asked for by `Accept` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DsExport"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    generate_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateKeyInput"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    confirm_ds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+                /** @description Published KSK or CSK */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recorded */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    start_rollover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+                /** @description Active key to replace */
+                id: number;
+            };
+            cookie?: never;
+        };
+        /** @description Optional */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RolloverInput"];
+            };
+        };
+        responses: {
+            /** @description The incoming key */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    export_zone: {
+        parameters: {
+            query?: {
+                /** @description Export the signed zone: adds DNSKEY, RRSIG, NSEC or NSEC3 and NSEC3PARAM records. */
+                signed?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Zone name */
@@ -3629,6 +4422,15 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `signed=true` for a zone that is not signed */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

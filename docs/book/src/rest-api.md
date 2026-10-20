@@ -67,7 +67,7 @@ answer 503 when no zones directory is attached.
 | `POST /api/v1/zones/{name}/records` | write | `{name, type, ttl?, value}`; 201 with the record |
 | `PUT /api/v1/zones/{name}/records/{id}` | write | replace a record |
 | `DELETE /api/v1/zones/{name}/records/{id}` | write | delete a record (204) |
-| `GET /api/v1/zones/{name}/export` | read | BIND master file, `text/dns; charset=utf-8`, `Content-Disposition: attachment; filename="<zone>.zone"` |
+| `GET /api/v1/zones/{name}/export` | read | BIND master file, `text/dns; charset=utf-8`, `Content-Disposition: attachment; filename="<zone>.zone"`. `?signed=true` adds DNSKEY, RRSIG, NSEC or NSEC3 and NSEC3PARAM records (`<zone>.signed.zone`); 409 when the zone is not signed |
 
 A record `id` is a hash of its absolute lowercase owner name, type and value, so it is stable
 across reloads and changes when any of those change. Record `name` may be `@`, relative to the
@@ -95,6 +95,33 @@ the header the write goes through. Writes are serialised, and write responses ca
 
 Export file names come from the validated zone name, so the `Content-Disposition` header cannot be
 influenced beyond `[a-z0-9.-]`.
+## DNSSEC
+
+Signing and validation control. Zone routes answer 503 without a zone signer, settings routes
+without the engine. Every route that changes something needs the `admin` scope (the `admin` role);
+`operator` tokens and viewers get 403. See [DNSSEC](dnssec.md) for the concepts.
+
+| Endpoint | Scope | Purpose |
+| --- | --- | --- |
+| `GET /api/v1/zones/{name}/dnssec` | read | policy (`enabled`, `algorithm`, `key_layout`, `denial`, `nsec3`, validity, refresh, DNSKEY TTL), keys that are not removed, `next_resign`, `rollover` and `keys_encrypted` |
+| `PUT /api/v1/zones/{name}/dnssec` | admin | `{enabled, ...}`: enable, disable or change the policy; fields left out keep their value. Writes the zone file's `dnssec` block. Enabling creates the keys and signs the zone before the response. Algorithms other than 13 and 15, bad NSEC3 parameters and bad validity settings are 422 |
+| `GET /api/v1/zones/{name}/dnssec/keys` | read | all keys of the zone, removed ones included (public metadata only) |
+| `POST /api/v1/zones/{name}/dnssec/keys` | admin | `{role, algorithm?}` generates a key in state `generated`; 201. The zone needs signing enabled (409) |
+| `POST /api/v1/zones/{name}/dnssec/keys/{id}/rollover` | admin | `{algorithm?}` (body optional) starts a rollover of an active key's role; 202 with the incoming key. 409 when that role already has a rollover or the key is not active |
+| `POST /api/v1/zones/{name}/dnssec/keys/{id}/ds-confirmed` | admin | records that the key's DS is at the parent; 204. Lets a KSK or CSK rollover proceed |
+| `GET /api/v1/zones/{name}/dnssec/ds` | read | DS records (SHA-256 then SHA-384) and DNSKEY records of the published and active KSKs and CSKs. JSON, or `Accept: text/plain` for zone-file lines |
+| `GET /api/v1/settings/dnssec` | read | `validation` (`off`, `permissive`, `strict`), `negative_trust_anchors`, and the read-only `trust_anchors` (owner, key tag, algorithm, digest type, digest) |
+| `PATCH /api/v1/settings/dnssec` | admin | `{validation?, negative_trust_anchors?}`; applied at once. A change flushes the resolver cache. The list replaces the old one; the root cannot be an anchor (422) |
+| `GET /api/v1/dnssec/status` | read | validation mode, `clock_trusted`, answer counts by DNSSEC status for the last 24 hours, `secure`, `bogus`, `signed_zones` |
+
+Key responses carry `id`, `role`, `algorithm`, `key_tag`, `state` and the state timestamps
+(`created_at`, `published_at`, `active_at`, `retired_at`, `removed_at`, `ds_confirmed_at`). No route,
+response, error body, log line or OpenAPI schema carries private key material or the key
+passphrase; the tests check the responses and the logs against the stored key blobs.
+
+Run-time changes through `PATCH /settings/dnssec` are not written back to the configuration file;
+a restart returns to the `[dnssec]` section.
+
 ## Query log, stats and cache
 
 | Endpoint | Auth | Purpose |
