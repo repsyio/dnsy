@@ -35,3 +35,33 @@ evicted and counted.
 **Flush and statistics.** The cache can be flushed entirely or by name (optionally the whole
 subtree below it). Statistics report entries, capacity, hits, misses, inserts, evictions and
 expired entries; the serve-stale and prefetch counters stay at zero until those features land.
+
+## Upstream client
+
+`dnsy-resolver` talks to upstream resolvers through `UpstreamClient::query(&Upstream, &Message)`.
+An upstream is written as a URL:
+
+| Form | Transport |
+| --- | --- |
+| `udp://host[:port]` | UDP (default port 53); a truncated answer (TC) is retried over TCP |
+| `tcp://host[:port]` | TCP with 2-byte framing (default port 53) |
+| `tls://host[:port][#sni]` | DNS over TLS, RFC 7858 (default port 853) |
+
+IPv6 literals use brackets, for example `tcp://[2001:db8::1]:53`.
+
+Behaviour:
+
+- Every attempt uses a fresh random query ID. UDP queries use a new socket on an OS-chosen random
+  source port, connected to the upstream so datagrams from other sources are dropped.
+- A response is accepted only when the ID, the QR bit, the opcode and the question match the query.
+  Mismatching UDP datagrams are ignored until the attempt times out; a mismatch on a stream
+  transport is an error.
+- Each attempt has a timeout (default 2 s). The TCP retry after TC is a new attempt.
+- Queries advertise an EDNS UDP payload of 1232. The caller's DO bit, CD bit and EDNS options are
+  forwarded unchanged.
+- DoT server certificates are always verified with rustls. By default the bundled Mozilla (webpki)
+  roots are trusted; a configured CA set (`TlsRoots::Custom`) replaces them. The certificate must be
+  valid for the host, or for the `#sni` name when given.
+- DoT keeps one connection per upstream and reuses it. A connection idle longer than `dot_idle`
+  (default 30 s) is closed and replaced on the next query; a connection the peer has closed is
+  replaced transparently.
