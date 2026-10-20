@@ -1,0 +1,7 @@
+target/
+web/node_modules
+web/dist
+web/.angular
+graphify-out/
+*.db
+.claude/worktrees/

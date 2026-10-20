@@ -1,0 +1,4 @@
+msrv = "1.99"
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
