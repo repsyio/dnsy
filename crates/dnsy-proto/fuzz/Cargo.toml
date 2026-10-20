@@ -1,0 +1,23 @@
+[package]
+name = "dnsy-proto-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone: not a member of the main workspace, so libfuzzer-sys never reaches its lockfile.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dnsy-proto = { path = ".." }
+
+[[bin]]
+name = "fuzz_decode"
+path = "fuzz_targets/fuzz_decode.rs"
+test = false
+doc = false
+bench = false
