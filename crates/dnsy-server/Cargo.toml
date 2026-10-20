@@ -14,8 +14,15 @@ workspace = true
 dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
 dnsy-engine = { version = "0.1.0", path = "../dnsy-engine" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
+arc-swap = { workspace = true }
+notify = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
+rcgen = { workspace = true }
+tempfile = { workspace = true }

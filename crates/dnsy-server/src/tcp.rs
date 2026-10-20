@@ -1,5 +1,6 @@
 //! TCP listener: RFC 1035 2-byte framing, RFC 7766 pipelining with out-of-order responses.
 
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -7,13 +8,14 @@ use std::time::{Duration, Instant};
 
 use dnsy_core::Transport;
 use dnsy_engine::{Handler, RequestContext};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use dnsy_proto::Edns;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::query::{Incoming, encode_response, parse};
+use crate::query::{Incoming, encode_response, pad_response, parse};
 
 /// Concurrent requests per connection; the reader stops reading when reached (back-pressure).
 const MAX_IN_FLIGHT_PER_CONN: usize = 32;
@@ -28,9 +30,44 @@ pub(crate) struct Limits {
 pub(crate) async fn serve<H: Handler>(
     listener: TcpListener,
     handler: Arc<H>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
     limits: Limits,
 ) {
+    let wrap = |stream: TcpStream| std::future::ready(Some(stream));
+    serve_with(listener, handler, shutdown, limits, Flavor::PLAIN, wrap).await;
+}
+
+/// What differs between plain TCP and `DoT` once the stream is established.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Flavor {
+    pub transport: Transport,
+    /// Pad responses (RFC 7830/8467) to clients that sent a Padding option.
+    pub pad: bool,
+}
+
+impl Flavor {
+    pub(crate) const PLAIN: Flavor = Flavor {
+        transport: Transport::Tcp,
+        pad: false,
+    };
+}
+
+/// Accept loop shared by TCP and `DoT`. `wrap` turns an accepted socket into the byte stream the
+/// framing runs on (the identity for TCP, the TLS handshake for `DoT`); `None` closes the socket.
+/// It runs inside the connection task, after the connection slot is taken.
+pub(crate) async fn serve_with<H, S, F, Fut>(
+    listener: TcpListener,
+    handler: Arc<H>,
+    mut shutdown: watch::Receiver<bool>,
+    limits: Limits,
+    flavor: Flavor,
+    wrap: F,
+) where
+    H: Handler,
+    S: AsyncRead + AsyncWrite + Send + 'static,
+    F: Fn(TcpStream) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Option<S>> + Send,
+{
     let slots = Arc::new(Semaphore::new(limits.max_conns));
     let mut conns = JoinSet::new();
     loop {
@@ -53,8 +90,11 @@ pub(crate) async fn serve<H: Handler>(
         };
         let handler = Arc::clone(&handler);
         let shutdown = shutdown.clone();
+        let wrap = wrap.clone();
         conns.spawn(async move {
-            connection(stream, client, handler, shutdown, limits).await;
+            if let Some(stream) = wrap(stream).await {
+                connection(stream, client, handler, shutdown, limits, flavor).await;
+            }
             drop(permit);
         });
     }
@@ -64,14 +104,15 @@ pub(crate) async fn serve<H: Handler>(
     .await;
 }
 
-async fn connection<H: Handler>(
-    stream: TcpStream,
+async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
+    stream: S,
     client: SocketAddr,
     handler: Arc<H>,
     mut shutdown: watch::Receiver<bool>,
     limits: Limits,
+    flavor: Flavor,
 ) {
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(MAX_IN_FLIGHT_PER_CONN);
     let idle = limits.idle;
     let writer_task = tokio::spawn(async move {
@@ -115,12 +156,15 @@ async fn connection<H: Handler>(
                 let handler = Arc::clone(&handler);
                 let ctx = RequestContext {
                     client,
-                    transport: Transport::Tcp,
+                    transport: flavor.transport,
                     principal: None,
                     received_at: Instant::now(),
                 };
                 requests.spawn(async move {
-                    let response = handler.handle(ctx, query.clone()).await;
+                    let mut response = handler.handle(ctx, query.clone()).await;
+                    if flavor.pad && query.edns.as_ref().is_some_and(Edns::has_padding) {
+                        pad_response(&mut response);
+                    }
                     if let Some(bytes) = encode_response(&query, &response, usize::from(u16::MAX)) {
                         let _ = tx.send(bytes).await;
                     }

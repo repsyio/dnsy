@@ -426,10 +426,17 @@ dependencies = [
 name = "dnsy-server"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "dnsy-core",
  "dnsy-engine",
  "dnsy-proto",
+ "notify",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 
