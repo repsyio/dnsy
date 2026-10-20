@@ -1,6 +1,6 @@
 //! Transport-independent query parsing and UDP sizing.
 
-use dnsy_proto::{Message, Rcode};
+use dnsy_proto::{Edns, EdnsOption, Message, PADDING_BLOCK, Rcode};
 
 /// Largest UDP response we send, whatever the client advertises (avoids fragmentation).
 pub const MAX_UDP_PAYLOAD: usize = 1232;
@@ -51,4 +51,28 @@ pub(crate) fn encode_response(
         failure.header.rcode = Rcode::ServFail;
         failure.encode(limit).ok()
     })
+}
+
+/// Pads `response` with an EDNS Padding option so its encoded size is a multiple of
+/// [`PADDING_BLOCK`] (RFC 8467 section 4.1). Adds the OPT record when missing; no-op if the response cannot encode.
+pub(crate) fn pad_response(response: &mut Message) {
+    let edns = response.edns.get_or_insert_with(Edns::default);
+    edns.options
+        .retain(|o| !matches!(o, EdnsOption::Padding(_)));
+    let Ok(len) = response.encode(usize::from(u16::MAX)).map(|b| b.len()) else {
+        return;
+    };
+    let rem = len % PADDING_BLOCK;
+    if rem == 0 {
+        return;
+    }
+    let mut need = PADDING_BLOCK - rem;
+    if need < 4 {
+        need += PADDING_BLOCK; // an option header alone takes 4 octets
+    }
+    if let Some(edns) = response.edns.as_mut()
+        && let Ok(n) = u16::try_from(need - 4)
+    {
+        edns.options.push(EdnsOption::Padding(n));
+    }
 }
