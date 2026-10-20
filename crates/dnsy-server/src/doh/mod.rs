@@ -314,7 +314,10 @@ async fn route<H: Handler>(
         principal,
         received_at: Instant::now(),
     };
-    let mut response = state.handler.handle(ctx, query.clone()).await;
+    let Some(mut response) = state.handler.respond(ctx, query.clone()).await else {
+        // HTTP cannot stay silent: a dropped query becomes a bare 403.
+        return reply(StatusCode::FORBIDDEN);
+    };
     if query.edns.as_ref().is_some_and(Edns::has_padding) {
         pad_response(&mut response);
     }

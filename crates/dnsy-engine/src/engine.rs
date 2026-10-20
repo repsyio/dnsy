@@ -595,4 +595,8 @@ impl<E: Exchange + 'static> Handler for Engine<E> {
             None => finish(&query, error_response(&query, Rcode::Refused, None)),
         }
     }
+
+    async fn respond(&self, ctx: RequestContext, query: Message) -> Option<Message> {
+        self.process(&ctx, &query).await
+    }
 }

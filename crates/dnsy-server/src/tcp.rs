@@ -169,7 +169,9 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
                     received_at: Instant::now(),
                 };
                 requests.spawn(async move {
-                    let mut response = handler.handle(ctx, query.clone()).await;
+                    let Some(mut response) = handler.respond(ctx, query.clone()).await else {
+                        return;
+                    };
                     if flavor.pad && query.edns.as_ref().is_some_and(Edns::has_padding) {
                         pad_response(&mut response);
                     }
