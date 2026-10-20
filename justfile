@@ -41,3 +41,7 @@ docs:
 
 # Local merge gate until the pipelines epic exists.
 ci: check test cov web
+
+# Validate branding SVGs (wellformedness, viewBox, no external refs, size budget).
+check-svg:
+    ./scripts/check-svg.sh branding
