@@ -137,8 +137,12 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
     for task in api_tasks {
         let _ = task.await;
     }
-    for task in &background {
+    // Everything that holds the engine must be gone before the query log can finish: the router
+    // (through the API state) and the background tasks.
+    drop(app);
+    for task in background {
         task.abort();
+        let _ = task.await;
     }
     drop(engine);
     if let Some(task) = querylog_task

@@ -295,8 +295,12 @@ impl ZoneStore {
     pub fn watch(self: &Arc<Self>) -> Result<ZoneWatcher, ZoneError> {
         let (tx, rx) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
-            // The receiver only disappears while the watcher is being dropped.
-            let _ = tx.send(ev.is_ok());
+            // Reading the zone files (which a reload does) produces access events; reacting to
+            // them would make every reload trigger the next one.
+            if ev.as_ref().map_or(true, |e| !e.kind.is_access()) {
+                // The receiver only disappears while the watcher is being dropped.
+                let _ = tx.send(ev.is_ok());
+            }
         })
         .map_err(notify_err)?;
         watcher

@@ -1,0 +1,26 @@
+[package]
+name = "dnsy-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "End-to-end harness and suites that run the real dnsy binary"
+
+[lints]
+workspace = true
+
+[dependencies]
+dnsy-dnssec = { version = "0.1.0", path = "../../crates/dnsy-dnssec" }
+dnsy-proto = { version = "0.1.0", path = "../../crates/dnsy-proto" }
+base64 = { workspace = true }
+rcgen = { workspace = true }
+reqwest = { workspace = true, features = ["http2", "json"] }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }

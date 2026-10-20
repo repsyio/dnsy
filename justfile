@@ -20,18 +20,19 @@ build:
     cd web && pnpm install --frozen-lockfile && pnpm build
     cargo build --release -p dnsy --features embed-ui
 
-# Run the Rust test suite.
+# Run the Rust test suite (the end-to-end crate has its own recipe: `just e2e`).
 test:
-    cargo nextest run --workspace --no-tests=pass
+    cargo nextest run --workspace --exclude dnsy-e2e --no-tests=pass
 
 # Line coverage gates: workspace >= 80%, dnsy-proto and dnsy-dnssec >= 90% once they have code.
 cov:
-    cargo llvm-cov nextest --workspace --no-tests=pass --fail-under-lines 80
+    cargo llvm-cov nextest --workspace --exclude dnsy-e2e --no-tests=pass --fail-under-lines 80
     ./scripts/cov-crate-gates.sh 90 dnsy-proto dnsy-dnssec
 
-# End-to-end suite (crate tests/e2e, added by the e2e stories).
+# End-to-end suite (crate tests/e2e): builds the dnsy binary, then runs the harness tests in parallel.
 e2e:
-    @if [ -d tests/e2e ]; then cargo nextest run -p dnsy-e2e --no-tests=pass; else echo "no e2e suite yet"; fi
+    cargo build -p dnsy
+    cargo nextest run -p dnsy-e2e
 
 # Web UI: install, lint, unit tests with coverage, build, types drift (no-op without node/pnpm or web/).
 web:
@@ -73,7 +74,7 @@ docs:
     fi
 
 # Local merge gate until the pipelines epic exists.
-ci: check test cov web
+ci: check test cov web e2e
 
 # Validate branding SVGs (wellformedness, viewBox, no external refs, size budget).
 check-svg:

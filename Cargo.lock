@@ -604,6 +604,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dnsy-e2e"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "dnsy-dnssec",
+ "dnsy-proto",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "rustls-pki-types",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "dnsy-engine"
 version = "0.1.0"
 dependencies = [
@@ -1723,6 +1741,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -1736,6 +1755,8 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
