@@ -32,6 +32,7 @@ export const NAV_ITEMS = [
   { path: '/acl', label: 'ACL' },
   { path: '/client-certs', label: 'Client certs' },
   { path: '/cache', label: 'Cache' },
+  { path: '/dnssec', label: 'DNSSEC' },
   { path: '/settings', label: 'Settings' },
   { path: '/tokens', label: 'Tokens' },
   { path: '/profile', label: 'Profile' },

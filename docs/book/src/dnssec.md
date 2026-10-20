@@ -520,3 +520,13 @@ answer counts by DNSSEC status for the last 24 hours and whether the clock is tr
 **Secrets.** Private keys stay in the key store. No API response, error body or log line contains
 them, and the OpenAPI schemas have no field for them. `keys_encrypted` in the zone's DNSSEC view
 tells whether new keys are encrypted at rest; when it is false, set a key passphrase.
+
+## Managing DNSSEC in the web UI
+
+The web UI drives the same API (see [Web UI](web-ui.md#dnssec)). The zone's **DNSSEC** tab enables
+or disables signing, shows keys with their timers and starts rollovers, and lists the DS records
+to paste at the registrar (SHA-256 first). Enabling and rollovers ask for confirmation and explain
+the registrar steps, because a missing or stale DS makes validating resolvers fail the zone. The
+**DNSSEC** page under the main navigation sets the validation mode (`strict`, `permissive`, `off`;
+weaker modes ask for confirmation), manages negative trust anchors and lists the configured trust
+anchors read-only.

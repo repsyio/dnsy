@@ -84,6 +84,12 @@ export const routes: Routes = [
         loadComponent: () => import('./features/certs/certs.page').then((m) => m.CertsPage),
       },
       {
+        path: 'dnssec',
+        title: 'DNSSEC validation',
+        loadComponent: () =>
+          import('./features/dnssec/validation.page').then((m) => m.ValidationPage),
+      },
+      {
         path: 'cache',
         title: 'Cache',
         loadComponent: () => import('./features/cache/cache.page').then((m) => m.CachePage),

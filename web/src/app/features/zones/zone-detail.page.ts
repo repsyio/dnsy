@@ -19,6 +19,7 @@ import {
   MascotSuccessComponent,
 } from '../../shared/mascot';
 import { ConfirmDialog } from './confirm-dialog';
+import { ZoneDnssecTab } from '../dnssec/zone-dnssec-tab';
 import { RecordEditor } from './record-editor';
 import { RECORD_TYPES } from './record-validation';
 import type { RecordDraft } from './record-validation';
@@ -40,6 +41,7 @@ interface Conflict {
     RouterLink,
     ConfirmDialog,
     RecordEditor,
+    ZoneDnssecTab,
     MascotEmptyComponent,
     MascotErrorComponent,
     MascotLoadingComponent,
@@ -124,18 +126,43 @@ interface Conflict {
           >
             <button
               id="tab-records"
-              class="nav-link nav-link-active"
+              class="nav-link"
               role="tab"
               type="button"
-              aria-selected="true"
+              [class.nav-link-active]="tab() === 'records'"
+              [attr.aria-selected]="tab() === 'records'"
               aria-controls="panel-records"
+              (click)="tab.set('records')"
             >
               Records
             </button>
-            <!-- DNSY-52 adds its DNSSEC tab button and panel here. -->
+            <button
+              id="tab-dnssec"
+              class="nav-link"
+              role="tab"
+              type="button"
+              [class.nav-link-active]="tab() === 'dnssec'"
+              [attr.aria-selected]="tab() === 'dnssec'"
+              aria-controls="panel-dnssec"
+              (click)="tab.set('dnssec')"
+            >
+              DNSSEC
+            </button>
           </div>
 
-          <section id="panel-records" class="panel" role="tabpanel" aria-labelledby="tab-records">
+          @if (tab() === 'dnssec') {
+            <section id="panel-dnssec" class="panel" role="tabpanel" aria-labelledby="tab-dnssec">
+              <app-zone-dnssec-tab [zone]="name()" (changed)="load(true)" />
+            </section>
+          }
+
+          <section
+            id="panel-records"
+            class="panel"
+            role="tabpanel"
+            aria-labelledby="tab-records"
+            [hidden]="tab() !== 'records'"
+          >
             <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <label class="field-label" for="type-filter">Filter by type</label>
@@ -298,6 +325,7 @@ export class ZoneDetailPage {
 
   protected readonly pageSize = PAGE_SIZE;
   protected readonly types = RECORD_TYPES;
+  protected readonly tab = signal<'records' | 'dnssec'>('records');
   protected readonly status = signal<Status>('loading');
   protected readonly loadError = signal('Could not load the zone.');
   protected readonly zone = signal<ZoneDetail | null>(null);
@@ -322,6 +350,7 @@ export class ZoneDetailPage {
       this.name();
       untracked(() => {
         this.offset.set(0);
+        this.tab.set('records');
         this.typeFilter.set('');
         this.load();
       });
