@@ -8,6 +8,9 @@ This page covers the shell, the zones pages and the admin pages (filtering, ACL,
 certificates, cache, settings); the other pages (dashboard, query log, users) arrive with later
 stories and are placeholders for now.
 
+This page covers the shell, the dashboard and the zones pages; the other pages (filtering,
+upstreams, query log, users, settings) arrive with later stories and are placeholders for now.
+
 ## Stack
 
 - Angular (standalone components, signals, zoneless change detection, esbuild `application` builder),
@@ -197,3 +200,27 @@ at 360 px. Server rejections (409, 422) are shown next to the form that caused t
 - **Settings**: one form, one `PATCH /settings`. Numbers and the TTL clamp (minimum not above
   maximum) are checked locally; the server's validation message is shown in an alert under the
   form. The API exposes no secrets (tokens, passwords, keys), so the page has no fields for them.
+
+## Dashboard
+
+`/dashboard` (`web/src/app/features/dashboard/`) summarises the selected range, fetched in one go
+from the stats API:
+
+- **Tiles**: queries, blocked share, cache hit ratio (with stale answers), cache entries and
+  capacity, average latency, DNSSEC secure share and bogus count, and upstream health (available
+  members over all members of all groups). The cache, DNSSEC and upstream tiles degrade to `-` when
+  their endpoint fails (for example no cache is running); the others are required.
+- **Range selector**: `1h` (1 minute buckets), `24h` (15 minutes, the default) and `7d` (2 hours).
+- **Chart**: queries per bucket as an area line with the cache-answered share overlaid, drawn as
+  plain SVG (`chart.ts`). Axes scale to the data (rounded up to 1, 2 or 5 times a power of ten) and
+  quiet buckets are zero-filled. No inline styles are used, so the strict CSP holds. The SVG has a
+  text alternative (title with total and peak) and a "Show table" toggle that renders every bucket as
+  a table.
+- **Top lists**: top domains, top blocked and top clients (10 each) with proportional bars.
+- **Auto-refresh**: every 30 seconds, with a Pause/Resume button. Switching range reloads at once and
+  discards responses for a range that is no longer selected.
+- **States**: the loading, empty (no queries in the range) and error (with Retry) mascots; an alert
+  banner when `GET /dnssec/status` reports an untrusted clock (validation suspended).
+
+The layout is a two-column tile grid that grows to four columns, and a single column of lists below
+the `lg` breakpoint, so it works at 360 px.
