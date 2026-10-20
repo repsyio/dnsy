@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNSY</title>
+<meta name="description" content="DNSY: a single-binary Rust DNS server with DoT, DoH, DNSSEC and a Tron-styled web UI.">
+<link rel="icon" href="branding/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="branding/tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; text-align: center; padding: 2rem 1rem;
+    background: var(--dnsy-bg) linear-gradient(var(--dnsy-grid) 1px, transparent 1px) 0 0 / 48px 48px;
+    color: var(--dnsy-text); font-family: var(--dnsy-font-body);
+  }
+  main { max-width: 40rem; }
+  svg { width: 9rem; height: 9rem; animation: float 5s ease-in-out infinite; }
+  .pupil { animation: look 6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  h1 { font-family: var(--dnsy-font-display); font-size: 3rem; letter-spacing: 0.2em; color: var(--dnsy-cyan); text-shadow: var(--dnsy-glow-md); margin: 1rem 0 0.25rem; }
+  p { color: var(--dnsy-muted); line-height: 1.6; }
+  nav { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+  a { color: var(--dnsy-cyan); border: 1px solid var(--dnsy-cyan); padding: 0.6rem 1.2rem; text-decoration: none; box-shadow: var(--dnsy-glow-sm); font-family: var(--dnsy-font-display); }
+  a:hover, a:focus-visible { box-shadow: var(--dnsy-glow-lg); color: var(--dnsy-text); }
+  @keyframes float { 50% { transform: translateY(-8px); } }
+  @keyframes look { 0%, 100% { transform: translateX(0); } 40% { transform: translateX(-1.5px); } 70% { transform: translateX(1.5px); } }
+  @media (prefers-reduced-motion: reduce) { svg, .pupil { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <svg viewBox="0 0 64 64" role="img" aria-label="Nox, the DNSY owl mascot"><defs><filter id="g" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g filter="url(#g)"><path d="M12 8 L24 16 H40 L52 8 V34 L44 52 L32 58 L20 52 L12 34 Z" fill="#05080d" stroke="#19e6ff" stroke-width="2.5" stroke-linejoin="round"/><circle cx="23" cy="28" r="6" fill="none" stroke="#19e6ff" stroke-width="2"/><circle cx="41" cy="28" r="6" fill="#19e6ff" fill-opacity=".25" stroke="#19e6ff" stroke-width="2"/><circle class="pupil" cx="23" cy="28" r="2.4" fill="#19e6ff"/><circle class="pupil" cx="41" cy="28" r="2.4" fill="#19e6ff"/><path d="M28 38 H36 L32 46 Z" fill="#ff8a1f"/></g></svg>
+  <h1>DNSY</h1>
+  <p>A single-binary DNS server in Rust. UDP, TCP, DoT with mTLS, DoH with tokens, a validating forwarder, DNSSEC signing, filtering and a web UI.</p>
+  <nav>
+    <a href="docs/">Documentation</a>
+    <a href="api/dnsy_core/">API docs</a>
+    <a href="https://github.com/repsyio/dnsy">GitHub</a>
+  </nav>
+</main>
+</body>
+</html>

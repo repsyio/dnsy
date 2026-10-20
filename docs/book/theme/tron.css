@@ -1,0 +1,71 @@
+/* Tron theme for the DNSY book. Tokens come from branding/tokens.css; `just docs` publishes
+   branding/ at the site root, so the book (served from /docs/) reaches it at ../branding/. */
+@import url("../branding/tokens.css");
+
+.navy, .light, .rust, .coal, .ayu {
+  --bg: var(--dnsy-bg);
+  --fg: var(--dnsy-text);
+  --sidebar-bg: var(--dnsy-surface);
+  --sidebar-fg: var(--dnsy-text);
+  --sidebar-non-existant: var(--dnsy-muted);
+  --sidebar-active: var(--dnsy-cyan);
+  --sidebar-spacer: var(--dnsy-grid);
+  --scrollbar: var(--dnsy-muted);
+  --icons: var(--dnsy-muted);
+  --icons-hover: var(--dnsy-cyan);
+  --links: var(--dnsy-cyan);
+  --inline-code-color: var(--dnsy-orange);
+  --theme-popup-bg: var(--dnsy-surface);
+  --theme-popup-border: var(--dnsy-cyan);
+  --theme-hover: var(--dnsy-grid);
+  --quote-bg: var(--dnsy-surface);
+  --quote-border: var(--dnsy-cyan);
+  --warning-border: var(--dnsy-orange);
+  --table-border-color: var(--dnsy-grid);
+  --table-header-bg: var(--dnsy-surface);
+  --table-alternate-bg: var(--dnsy-surface);
+  --searchbar-border-color: var(--dnsy-cyan);
+  --searchbar-bg: var(--dnsy-surface);
+  --searchbar-fg: var(--dnsy-text);
+  --searchbar-shadow-color: var(--dnsy-cyan-glow);
+  --searchresults-header-fg: var(--dnsy-muted);
+  --searchresults-border-color: var(--dnsy-grid);
+  --searchresults-li-bg: var(--dnsy-surface);
+  --search-mark-bg: var(--dnsy-orange);
+  --color-scheme: dark;
+}
+
+html { font-family: var(--dnsy-font-body); }
+body {
+  background-color: var(--dnsy-bg);
+  background-image:
+    linear-gradient(var(--dnsy-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--dnsy-grid) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+.content main { background: var(--dnsy-bg); padding: 1rem 1.5rem; box-shadow: var(--dnsy-glow-sm); }
+
+h1, h2, h3, .menu-title { font-family: var(--dnsy-font-display); letter-spacing: 0.04em; }
+h1 { color: var(--dnsy-cyan); text-shadow: var(--dnsy-glow-sm); }
+a:hover { text-shadow: var(--dnsy-glow-sm); }
+
+#menu-bar { border-bottom: 1px solid var(--dnsy-cyan); box-shadow: var(--dnsy-glow-sm); }
+.menu-title { color: var(--dnsy-cyan); display: inline-flex; align-items: center; gap: 0.6rem; }
+.menu-title::before {
+  content: "";
+  width: 2rem;
+  height: 2rem;
+  background: url("../branding/mascot/nox-idle.svg") center / contain no-repeat;
+}
+
+.chapter li.chapter-item a.active { color: var(--dnsy-cyan); text-shadow: var(--dnsy-glow-sm); }
+code, pre { font-family: var(--dnsy-font-mono); }
+pre { border: 1px solid var(--dnsy-grid); }
+table td, table th { border-color: var(--dnsy-grid); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .menu-title::before { animation: nox-glow 4s ease-in-out infinite; }
+}
+@keyframes nox-glow {
+  50% { filter: drop-shadow(0 0 6px var(--dnsy-cyan)); }
+}

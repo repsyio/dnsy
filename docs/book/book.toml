@@ -1,0 +1,15 @@
+[book]
+title = "DNSY"
+description = "DNSY documentation: a single-binary Rust DNS server."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../../target/book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+additional-css = ["theme/tron.css"]
+git-repository-url = "https://github.com/repsyio/dnsy"
+site-url = "/docs/"
