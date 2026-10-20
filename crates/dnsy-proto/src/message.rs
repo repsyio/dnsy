@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::{
-    Class, Counts, HEADER_LEN, Header, Name, RData, Rcode, RecordType, WireError, WireReader,
-    WireWriter,
+    Class, Counts, Edns, EdnsOption, HEADER_LEN, Header, Name, PADDING_BLOCK, RData, Rcode,
+    RecordType, WireError, WireReader, WireWriter,
 };
 
 /// A question section entry.
@@ -28,8 +28,8 @@ pub struct Record {
 
 /// A complete DNS message.
 ///
-/// An OPT pseudo-record stays in `additional` until EDNS support lifts it into its own field; on
-/// encode it is always written last and is never dropped by truncation.
+/// The OPT pseudo-record lives in `edns`, never in `additional`: decode lifts it out, encode writes
+/// it last and never drops it when truncating. `header.rcode` is the full extended rcode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub header: Header,
@@ -37,6 +37,7 @@ pub struct Message {
     pub answers: Vec<Record>,
     pub authority: Vec<Record>,
     pub additional: Vec<Record>,
+    pub edns: Option<Edns>,
 }
 
 /// Why a message could not be decoded.
@@ -48,6 +49,8 @@ pub enum DecodeError {
     Wire(WireError),
     /// Octets left over after the last section.
     TrailingData,
+    /// More than one OPT record, or an OPT record not owned by the root name.
+    BadOpt,
 }
 
 impl fmt::Display for DecodeError {
@@ -56,6 +59,7 @@ impl fmt::Display for DecodeError {
             Self::ShortHeader => f.write_str("message shorter than the header"),
             Self::Wire(e) => write!(f, "{e}"),
             Self::TrailingData => f.write_str("trailing data after the last section"),
+            Self::BadOpt => f.write_str("duplicate or misnamed OPT record"),
         }
     }
 }
@@ -79,6 +83,8 @@ pub enum EncodeError {
     BadRdata(WireError),
     /// The header, questions and OPT alone exceed the size limit.
     DoesNotFit,
+    /// The rcode does not fit in the 12 bits the header and OPT can carry.
+    BadRcode,
 }
 
 impl fmt::Display for EncodeError {
@@ -88,6 +94,7 @@ impl fmt::Display for EncodeError {
             Self::RdataTooLong => f.write_str("RDATA longer than 65535 octets"),
             Self::BadRdata(e) => write!(f, "unencodable RDATA: {e}"),
             Self::DoesNotFit => f.write_str("header, questions and OPT exceed the size limit"),
+            Self::BadRcode => f.write_str("rcode wider than 12 bits"),
         }
     }
 }
@@ -109,18 +116,31 @@ impl Message {
         let questions = (0..counts.questions)
             .map(|_| read_question(&mut r))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut section = |n: u16| {
-            (0..n)
-                .map(|_| read_record(&mut r))
-                .collect::<Result<Vec<_>, _>>()
+        let mut edns = None;
+        let mut section = |n: u16, lift_opt: bool| {
+            let mut records = Vec::new();
+            for _ in 0..n {
+                match read_record(&mut r, lift_opt)? {
+                    Parsed::Record(rec) => records.push(rec),
+                    Parsed::Opt(opt) if edns.is_none() => edns = Some(opt),
+                    Parsed::Opt(_) => return Err(DecodeError::BadOpt),
+                }
+            }
+            Ok::<_, DecodeError>(records)
         };
-        let answers = section(counts.answers)?;
-        let authority = section(counts.authority)?;
-        let additional = section(counts.additional)?;
+        let answers = section(counts.answers, false)?;
+        let authority = section(counts.authority, false)?;
+        let additional = section(counts.additional, true)?;
         if r.remaining() != 0 {
             return Err(DecodeError::TrailingData);
         }
+        let mut header = header;
+        if let Some(e) = &edns {
+            header.rcode =
+                Rcode::from(u16::from(e.ext_rcode) << 4 | u16::from(u16::from(header.rcode) & 0xF));
+        }
         Ok(Message {
+            edns,
             header,
             questions,
             answers,
@@ -157,6 +177,7 @@ impl Message {
             .flat_map(|(s, records)| records.iter().map(move |r| (s, r)))
             .filter(|(s, r)| !is_opt(*s, r))
             .collect();
+        let rcode = u16::from(self.header.rcode);
         let mut ends = Vec::with_capacity(body.len());
         for (_, rec) in &body {
             write_record(&mut w, rec, true)?;
@@ -164,13 +185,10 @@ impl Message {
         }
         let mut opt = WireWriter::new();
         let mut opt_count = 0u16;
-        for rec in self
-            .additional
-            .iter()
-            .filter(|r| r.rtype == RecordType::Opt)
-        {
-            write_record(&mut opt, rec, false)?;
-            opt_count += 1;
+        if let Some(edns) = &self.edns {
+            let ext = u8::try_from(rcode >> 4).map_err(|_| EncodeError::BadRcode)?;
+            edns.encode(ext, &mut opt)?;
+            opt_count = 1;
         }
         let opt = opt.finish();
         let full = w.finish();
@@ -214,6 +232,7 @@ impl Message {
             }
         }
         let mut header = self.header;
+        header.rcode = Rcode::from(rcode & 0xF);
         header.tc |= body[keep..].iter().any(|(s, _)| *s != ADDITIONAL);
 
         let mut out = Vec::with_capacity(cut + opt.len());
@@ -242,7 +261,54 @@ impl Message {
             answers: Vec::new(),
             authority: Vec::new(),
             additional: Vec::new(),
+            edns: None,
         }
+    }
+
+    /// A BADVERS response to a query whose EDNS version is not supported (RFC 6891 6.1.3):
+    /// version 0 OPT, the query's questions, and no data.
+    pub fn badvers_for(query: &Message) -> Message {
+        let mut response = Message::response_to(query);
+        response.header.rcode = Rcode::BadVers;
+        response.edns = Some(Edns::default());
+        response
+    }
+
+    /// Adds an Extended DNS Error (RFC 8914) to the response, creating the OPT record when absent.
+    /// Several errors may be attached; each call appends one.
+    pub fn set_ede(&mut self, code: u16, text: &str) {
+        self.edns
+            .get_or_insert_with(Edns::default)
+            .options
+            .push(EdnsOption::ExtendedError {
+                code,
+                text: text.to_owned(),
+            });
+    }
+
+    /// Like [`Message::encode`], but pads the OPT record so the message is a multiple of
+    /// [`PADDING_BLOCK`] octets (RFC 8467). Callers use it for DoT and DoH responses when the query
+    /// carried a Padding option ([`Edns::has_padding`]). Messages without OPT, and messages whose
+    /// padded size would exceed `max_len`, get as much padding as fits.
+    pub fn encode_padded(&self, max_len: usize) -> Result<Vec<u8>, EncodeError> {
+        let mut unpadded = self.clone();
+        if let Some(e) = &mut unpadded.edns {
+            e.options.retain(|o| !matches!(o, EdnsOption::Padding(_)));
+        }
+        let plain = unpadded.encode(max_len)?;
+        let Some(edns) = &mut unpadded.edns else {
+            return Ok(plain);
+        };
+        let max_len = max_len.min(usize::from(u16::MAX));
+        let with_option = plain.len() + 4;
+        let pad = (PADDING_BLOCK - with_option % PADDING_BLOCK) % PADDING_BLOCK;
+        let Some(room) = max_len.checked_sub(with_option) else {
+            return Ok(plain);
+        };
+        edns.options.push(EdnsOption::Padding(
+            u16::try_from(pad.min(room)).unwrap_or(0),
+        ));
+        unpadded.encode(max_len)
     }
 
     /// A FORMERR response for a malformed query, echoing its id and, when it parses, the first
@@ -266,6 +332,7 @@ impl Message {
             answers: Vec::new(),
             authority: Vec::new(),
             additional: Vec::new(),
+            edns: None,
         };
         let mut response = Message::response_to(&query);
         response.header.rcode = Rcode::FormErr;
@@ -285,20 +352,36 @@ fn read_question(r: &mut WireReader<'_>) -> Result<Question, DecodeError> {
     })
 }
 
-fn read_record(r: &mut WireReader<'_>) -> Result<Record, DecodeError> {
+enum Parsed {
+    Record(Record),
+    Opt(Edns),
+}
+
+fn read_record(r: &mut WireReader<'_>, lift_opt: bool) -> Result<Parsed, DecodeError> {
     let name = r.read_name()?;
     let rtype = RecordType::from(r.read_u16()?);
-    let class = Class::from(r.read_u16()?);
+    let raw_class = r.read_u16()?;
+    let class = Class::from(raw_class);
     let ttl = r.read_u32()?;
     let len = usize::from(r.read_u16()?);
+    if lift_opt && rtype == RecordType::Opt {
+        if !name.is_root() {
+            return Err(DecodeError::BadOpt);
+        }
+        return Ok(Parsed::Opt(Edns::decode(
+            raw_class,
+            ttl,
+            r.read_bytes(len)?,
+        )?));
+    }
     let data = RData::decode(rtype, r, len)?;
-    Ok(Record {
+    Ok(Parsed::Record(Record {
         name,
         rtype,
         class,
         ttl,
         data,
-    })
+    }))
 }
 
 fn write_record(w: &mut WireWriter, rec: &Record, compress_owner: bool) -> Result<(), EncodeError> {

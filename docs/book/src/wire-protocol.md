@@ -25,6 +25,20 @@ This page describes how it treats packets on the wire.
   answers. The OPT record is never dropped. TC is set when an answer or authority RRset had to go;
   losing only additional data does not set TC (RFC 2181 section 9).
 
+## EDNS0
+
+- The OPT pseudo-record is lifted out of the additional section into `Message::edns` (UDP payload
+  size, DO bit, version, options). More than one OPT, or an OPT not owned by the root name, makes
+  the packet malformed (FORMERR).
+- `Message::header.rcode` is the full 12-bit rcode: the header's four bits merged with the OPT's
+  upper eight on decode, split again on encode. A query with an EDNS version other than 0 is
+  answered with `Message::badvers_for` (BADVERS, version 0 OPT, no data).
+- Options: Padding, client subnet, cookie, Extended DNS Error and unknown options (kept raw).
+- `Message::set_ede(code, text)` attaches an Extended DNS Error (RFC 8914), creating the OPT with
+  a 1232-octet payload size if needed; the codes live in the `ede` module.
+- For DoT and DoH, `Message::encode_padded` pads the response to a multiple of 468 octets
+  (RFC 8467) when the query carried a Padding option (`Edns::has_padding`).
+
 ## Fuzzing
 
 A `cargo-fuzz` target lives in `crates/dnsy-proto/fuzz/` (not run by `just ci`):

@@ -33,16 +33,10 @@ fn rec(name: &str, data: RData) -> Record {
     }
 }
 
-fn opt(payload: u16) -> Record {
-    Record {
-        name: Name::root(),
-        rtype: RecordType::Opt,
-        class: Class::from(payload),
-        ttl: 0,
-        data: RData::Opaque {
-            rtype: 41,
-            data: Vec::new(),
-        },
+fn opt(payload: u16) -> Edns {
+    Edns {
+        udp_payload: payload,
+        ..Edns::default()
     }
 }
 
@@ -57,6 +51,7 @@ fn message(id: u16) -> Message {
         answers: Vec::new(),
         authority: Vec::new(),
         additional: Vec::new(),
+        edns: None,
     }
 }
 
@@ -143,7 +138,7 @@ fn roundtrip_known_packets() {
     let a = Message::decode(&f[0].1).unwrap();
     assert_eq!(a.header.id, 0x1234);
     assert_eq!(a.answers[0].data, RData::A(Ipv4Addr::new(93, 184, 215, 14)));
-    assert_eq!(a.additional[0], opt(1232));
+    assert_eq!(a.edns, Some(opt(1232)));
     let aaaa = Message::decode(&f[1].1).unwrap();
     assert_eq!(
         aaaa.answers[0].data,
@@ -212,7 +207,7 @@ fn big_answer() -> Message {
         "ns1.example.com",
         RData::A(Ipv4Addr::new(192, 0, 2, 53)),
     ));
-    msg.additional.push(opt(1232));
+    msg.edns = Some(opt(1232));
     msg
 }
 
@@ -229,8 +224,8 @@ fn truncation_sets_tc_and_fits() {
         let got = Message::decode(&wire).unwrap();
         assert!(got.header.tc, "{max}");
         assert_eq!(got.questions, msg.questions);
-        assert_eq!(got.additional.last(), Some(&opt(1232)), "OPT kept at {max}");
-        assert!(got.authority.is_empty() && got.additional.len() == 1);
+        assert_eq!(got.edns, Some(opt(1232)), "OPT kept at {max}");
+        assert!(got.authority.is_empty() && got.additional.is_empty());
         // Interleaved RRsets mean only "all 60" or "none" are whole-RRset prefixes.
         assert!(got.answers.is_empty(), "{max}: {}", got.answers.len());
     }
@@ -252,7 +247,7 @@ fn truncation_sets_tc_and_fits() {
     let wire = no_glue.encode(small.len() - 1).unwrap();
     let got = Message::decode(&wire).unwrap();
     assert!(!got.header.tc);
-    assert_eq!(got.additional, vec![opt(1232)]);
+    assert_eq!(got.edns, Some(opt(1232)));
     assert_eq!(got.authority.len(), 1);
 
     // Header, question and OPT alone larger than the limit.
@@ -331,7 +326,7 @@ fn response_to_copies_query_identity() {
     query.header.cd = true;
     query.header.rd = false;
     query.header.opcode = Opcode::Notify;
-    query.additional.push(opt(4096));
+    query.edns = Some(opt(4096));
     let resp = Message::response_to(&query);
     assert_eq!(resp.header.id, 99);
     assert!(resp.header.qr && resp.header.cd && !resp.header.rd && !resp.header.ra);
@@ -636,9 +631,10 @@ fn prop_message_roundtrip() {
             answers: rng.records(),
             authority: rng.records(),
             additional: rng.records(),
+            edns: None,
         };
         if rng.below(2) == 0 {
-            msg.additional.push(opt(rng.u16()));
+            msg.edns = Some(opt(rng.u16()));
         }
         let wire = msg.encode(usize::MAX).unwrap();
         assert_eq!(Message::decode(&wire).unwrap(), msg);
@@ -650,9 +646,7 @@ fn prop_message_roundtrip() {
             assert_eq!(got.questions, msg.questions);
             assert!(msg.answers.starts_with(&got.answers));
             assert!(msg.authority.starts_with(&got.authority));
-            let kept_opt = got.additional.iter().filter(|r| r.rtype == RecordType::Opt);
-            let want_opt = msg.additional.iter().filter(|r| r.rtype == RecordType::Opt);
-            assert!(kept_opt.eq(want_opt));
+            assert_eq!(got.edns, msg.edns);
             if got.answers.len() < msg.answers.len() || got.authority.len() < msg.authority.len() {
                 assert!(got.header.tc);
             }
