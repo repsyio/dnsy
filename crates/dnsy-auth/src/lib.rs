@@ -7,6 +7,7 @@
 //! sessions and throttles failed logins.
 
 mod bootstrap;
+mod client_certs;
 mod error;
 mod password;
 mod sessions;
@@ -14,6 +15,7 @@ mod tokens;
 mod users;
 
 pub use bootstrap::BootstrapCode;
+pub use client_certs::{ClientCert, ClientCertService};
 pub use error::{AuthError, UserError};
 pub use sessions::{
     ABSOLUTE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, MAX_FAILURES, Session, SessionService,

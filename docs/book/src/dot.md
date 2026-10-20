@@ -36,6 +36,40 @@ warning is logged (without key material).
 
 ## mTLS
 
-Client certificate authentication (`dot.mtls`, `dot.client_ca`) is delivered by a separate story.
-The listener already accepts a rustls client certificate verifier through
-`DotConfig::client_verifier`; without one, no client certificate is requested.
+```toml
+[dot]
+mtls = "required"                  # off | optional | required
+client_ca = "/etc/dnsy/clients-ca.pem"   # PEM bundle of CAs that issue client certificates
+```
+
+- `off`: no client certificate is requested.
+- `optional`: clients may connect without a certificate; a presented certificate must be valid.
+- `required`: a handshake without a valid certificate is refused (with TLS 1.3 the client sees
+  the failure on its first read, not in `connect`).
+
+Validation is rustls' `WebPkiClientVerifier`: the chain must lead to `client_ca`, and the
+certificate must be within its validity period. `client_ca` must be set whenever `mtls` is not
+`off`.
+
+### Revocation (CRL)
+
+The embedding code can pass a PEM file of CRLs to `MtlsVerifier::new`. Revoked certificates are
+refused. `MtlsVerifier::reload` (or `spawn_reload(interval)`) re-reads the CA bundle and CRL
+file; if the new files are unreadable, empty or contain no CRL, the previous state is kept and a
+warning is logged. With a CRL configured, a certificate whose issuer is not covered by a CRL is
+refused.
+
+### Fingerprint allowlist
+
+When an `Allowlist` is attached, a certificate that passes chain validation must also be on the
+list, otherwise the handshake fails. Entries are stored in the `client_certs` table (migration
+`0008`) and managed through `ClientCertService`: SHA-256 of the DER certificate, a label, an
+enabled flag and an optional expiry. `Allowlist::refresh` / `spawn_refresh` load the enabled,
+unexpired entries; a list with no entries admits no certificate. Disabling, deleting or expiring
+an entry takes effect for new handshakes at the next refresh.
+
+### Client identity
+
+For a connection with a client certificate every request carries the principal
+`ClientCert { sha256, subject }`: the fingerprint and a short `CN=... SAN=...` string, available
+to ACLs and the query log. Raw certificates are never logged.

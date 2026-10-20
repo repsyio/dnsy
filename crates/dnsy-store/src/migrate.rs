@@ -65,6 +65,11 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "blocklists",
         sql: include_str!("../migrations/0007_blocklists.sql"),
     },
+    Migration {
+        version: 8,
+        name: "client_certs",
+        sql: include_str!("../migrations/0008_client_certs.sql"),
+    },
 ];
 
 /// Applied state of one known migration.

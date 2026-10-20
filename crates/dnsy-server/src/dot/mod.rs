@@ -6,6 +6,7 @@
 //! through [`DotConfig::client_verifier`]; this module only forwards it to rustls.
 
 pub(crate) mod certs;
+pub mod mtls;
 
 use std::io;
 use std::net::SocketAddr;
@@ -34,7 +35,7 @@ pub struct DotConfig {
     /// Private key (PEM).
     pub key: PathBuf,
     /// Client certificate verifier; `None` means no client authentication. The mTLS story
-    /// supplies a `WebPkiClientVerifier` here.
+    /// supplies an [`mtls::MtlsVerifier`] here.
     pub client_verifier: Option<Arc<dyn ClientCertVerifier>>,
 }
 
@@ -91,7 +92,15 @@ pub(crate) async fn serve<H: Handler>(
         let acceptor = acceptor.clone();
         async move {
             match tokio::time::timeout(idle, acceptor.accept(stream)).await {
-                Ok(Ok(tls)) => Some(tls),
+                Ok(Ok(tls)) => {
+                    let principal = tls
+                        .get_ref()
+                        .1
+                        .peer_certificates()
+                        .and_then(|chain| chain.first())
+                        .map(|leaf| mtls::principal(leaf));
+                    Some((tls, principal))
+                }
                 Ok(Err(e)) => {
                     tracing::debug!(error = %e, "dot handshake failed");
                     None
