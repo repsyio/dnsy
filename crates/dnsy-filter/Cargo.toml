@@ -12,11 +12,13 @@ workspace = true
 
 [dependencies]
 dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
+dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
 ipnet = { workspace = true }
 rusqlite = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
