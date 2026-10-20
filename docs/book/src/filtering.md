@@ -54,4 +54,27 @@ When the query carried EDNS, the response includes an Extended DNS Error (RFC 89
 
 ### Limits
 
-Memory and input are bounded while building a filter: at most 5,000,000 entries (block plus allow, duplicates not counted) and 64 MiB per list source by default, and lines over 2048 bytes are skipped without being buffered. Exceeding a limit fails the build with an error, so the previous filter stays in use. There is no regular-expression support. Loading lists from files or URLs on a schedule, and their persistence, arrive with DNSY-27.
+Memory and input are bounded while building a filter: at most 5,000,000 entries (block plus allow, duplicates not counted) and 64 MiB per list source by default, and lines over 2048 bytes are skipped without being buffered. Exceeding a limit fails the build with an error, so the previous filter stays in use. There is no regular-expression support.
+
+## List sources
+
+A source is a local file path or an `http(s)` URL, with a name, a format (`auto`, `hosts`, `domains`, `adblock`), an enabled flag and a refresh interval in seconds. Sources and custom rules are stored in the `blocklists` and `custom_rules` tables (migration `0007`); on first start, `[filter] blocklists` seeds the table and `refresh_interval` becomes each seeded source's interval. Any other scheme (`ftp://`, `file://`) and URLs with embedded credentials are refused.
+
+### Refresh and atomic swap
+
+Each refresh fetches one source, then builds a complete new filter from every loaded list plus the custom rules on a blocking thread, and swaps it in with a single pointer store. Queries read the active filter without locking. If the fetch fails, the list holds no usable entry (for example an HTML error page), or the build exceeds a limit, nothing changes: the previous filter and the previous copy of that list stay active, and the failure is recorded in the source's `last_status` (`ok`, `not modified` or `error: ...`).
+
+URL sources use `ETag` / `Last-Modified` for conditional requests (`If-None-Match`, `If-Modified-Since`); a `304` keeps the held list. Validators are only sent while the process holds the matching copy in memory, so after a restart the first fetch is unconditional. Persisted `etag`, `last_modified`, `last_fetched` and `entries` are informational.
+
+### Schedule
+
+A source is refreshed when it has never been fetched or its due time has passed. After a success the next refresh is due `interval` plus up to 10% random jitter later, so lists do not refresh in lockstep; after a failure the retry comes after at most five minutes (plus jitter). The scheduler takes an injectable `Clock`, so tests drive it without sleeping.
+
+### URL safety (SSRF)
+
+- Only `http` and `https`. TLS certificates are verified against the built-in web PKI roots; no proxy from the environment is used.
+- The host is resolved once and every address must be public. Loopback, private, link-local (including cloud metadata `169.254.169.254`), unique-local, carrier-grade NAT, multicast, reserved and documentation ranges are refused, as are IPv6 forms that embed them (IPv4-mapped, NAT64, 6to4). The connection is pinned to the checked addresses, so a second lookup cannot return a different answer.
+- Redirects are followed by hand, at most 5, each hop re-checked; a redirect to another scheme or from `https` to `http` is refused.
+- A source with `allow_private` set skips the address check, for lists served from the local network. It is off by default.
+- At most 50 MB per list (checked against `Content-Length` and while streaming; compressed encodings are not requested) and 30 s for the whole fetch, including redirects.
+- Files are read with the same size cap.

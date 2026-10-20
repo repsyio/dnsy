@@ -60,6 +60,11 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "dnssec_keys",
         sql: include_str!("../migrations/0006_dnssec_keys.sql"),
     },
+    Migration {
+        version: 7,
+        name: "blocklists",
+        sql: include_str!("../migrations/0007_blocklists.sql"),
+    },
 ];
 
 /// Applied state of one known migration.

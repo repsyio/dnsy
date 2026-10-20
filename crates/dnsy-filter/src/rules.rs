@@ -13,6 +13,8 @@ pub enum FilterError {
     Duplicate,
     #[error("rule not found")]
     NotFound,
+    #[error("invalid list source: {0}")]
+    Invalid(String),
     #[error("stored rule is corrupt")]
     Corrupt,
     #[error(transparent)]
@@ -34,7 +36,7 @@ pub struct RuleStore {
     store: Store,
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
