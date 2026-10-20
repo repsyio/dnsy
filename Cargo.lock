@@ -502,6 +502,7 @@ dependencies = [
  "dnsy-filter",
  "dnsy-observe",
  "dnsy-proto",
+ "dnsy-resolver",
  "dnsy-server",
  "dnsy-store",
  "dnsy-zone",

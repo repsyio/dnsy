@@ -9,7 +9,7 @@ use dnsy_api::{ApiConfig, ApiState};
 use dnsy_auth::{ClientCertService, TokenService, UserService};
 use dnsy_config::{Config, Mtls};
 use dnsy_dnssec::RolloverTimings;
-use dnsy_engine::EngineBuilder;
+use dnsy_engine::{Engine, EngineBuilder};
 use dnsy_proto::Name;
 use dnsy_server::{
     Allowlist, DohConfig, DotConfig, MtlsMode, MtlsVerifier, Server, ServerConfig, TokenAuth,
@@ -35,6 +35,22 @@ const RETENTION_INTERVAL: Duration = Duration::from_secs(3600);
 /// Longest wait for the query log's final flush.
 const FLUSH_WAIT: Duration = Duration::from_secs(10);
 
+/// Starts the cache prefetch workers when `[cache.prefetch]` is enabled; the task is aborted with
+/// the other background tasks on shutdown.
+fn spawn_prefetch(engine: &Arc<Engine>, config: &Config) -> Option<JoinHandle<()>> {
+    if !config.cache.enabled || !config.cache.prefetch.enabled {
+        return None;
+    }
+    let engine = Arc::clone(engine);
+    Some(tokio::spawn(async move {
+        Box::pin(engine.run_prefetch()).await;
+    }))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the one place that wires every component and its shutdown"
+)]
 pub(crate) async fn serve(config: Config, args: ServeArgs) -> Result<()> {
     let store = open_store(&config)?;
     let mut builder = EngineBuilder::from_config(&config, &store).await?;
@@ -42,6 +58,7 @@ pub(crate) async fn serve(config: Config, args: ServeArgs) -> Result<()> {
     let engine = Arc::new(builder.build());
     let mut background: Vec<JoinHandle<()>> = Vec::new();
 
+    background.extend(spawn_prefetch(&engine, &config));
     // Blocklists: refresh on schedule.
     let lists = engine.list_manager().cloned();
     if let Some(lists) = lists.clone() {
@@ -330,5 +347,48 @@ impl Signals {
     async fn next(&mut self) -> Event {
         let _ = tokio::signal::ctrl_c().await;
         Event::Stop
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dnsy_resolver::{UpstreamClient, UpstreamConfig};
+
+    fn engine(config: &Config) -> Arc<Engine> {
+        let client = UpstreamClient::new(UpstreamConfig::default()).unwrap();
+        Arc::new(EngineBuilder::new(config, client).build())
+    }
+
+    async fn started(engine: &Engine) -> bool {
+        for _ in 0..100 {
+            if engine.prefetch_running() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn prefetch_task_runs_when_enabled_and_stops_on_abort() {
+        let config = Config::default();
+        assert!(config.cache.prefetch.enabled);
+        let engine = engine(&config);
+        let task = spawn_prefetch(&engine, &config).expect("spawned");
+        assert!(started(&engine).await);
+        task.abort();
+        let _ = task.await;
+        assert!(!engine.prefetch_running());
+    }
+
+    #[tokio::test]
+    async fn prefetch_task_not_started_when_disabled() {
+        let mut config = Config::default();
+        config.cache.prefetch.enabled = false;
+        assert!(spawn_prefetch(&engine(&config), &config).is_none());
+        let mut config = Config::default();
+        config.cache.enabled = false;
+        assert!(spawn_prefetch(&engine(&config), &config).is_none());
     }
 }

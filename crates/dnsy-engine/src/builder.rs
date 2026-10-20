@@ -295,6 +295,7 @@ impl<E: Exchange> EngineBuilder<E> {
             now: self.now,
             stale_wait: self.stale_wait,
             refreshes: Refreshes::new(),
+            prefetch_workers: std::sync::atomic::AtomicUsize::new(0),
             prefetch_tx,
             prefetch_rx: tokio::sync::Mutex::new(prefetch_rx),
             acl: ArcSwap::from_pointee(self.acl),

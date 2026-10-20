@@ -87,9 +87,12 @@ validator allowed. A successful refresh replaces the stale entry.
 hits and whose remaining lifetime has fallen to `remaining_ttl_pct` percent is refreshed in the
 background, once per entry, so popular names never expire under load. The client that triggers it
 is answered from the cache as usual. Refreshes go through the normal forwarding and DNSSEC
-validation path, share the one-refresh-per-key rule with serve-stale, wait in a queue of 64 (extra
-ones are dropped and the entry simply expires) and run four at a time. `Engine::run_prefetch` is
-the worker loop; the binary spawns it next to the listeners. A failed prefetch keeps the existing
+validation path, wait in a queue of 64 (extra ones are dropped and the entry simply expires; jobs older than 30 s
+are skipped) and run four at a time. A queued job holds no refresh slot: a worker claims the key's
+slot only when it starts, and skips the job if a client-driven refresh already holds it, so a
+backlog never keeps a client from refreshing a stale entry. `Engine::run_prefetch` is the worker
+loop; `dnsy serve` spawns it when prefetch is enabled, and nothing is queued while it is not
+running. A failed prefetch keeps the existing
 entry.
 
 **Clock.** Cache operations take the current time as an argument, and the engine's time source can

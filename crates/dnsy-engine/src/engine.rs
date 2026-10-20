@@ -15,7 +15,7 @@
 //! its own (CD) cache entry.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -31,7 +31,7 @@ use dnsy_proto::{EDNS_VERSION, Edns, Message, Name, Opcode, Question, Rcode, Rec
 use dnsy_resolver::forward::{DnssecPolicy, UpstreamFetcher, cap_ttls, dnssec_query, unix_now};
 use dnsy_resolver::groups::{Exchange, GroupError, GroupSet};
 use dnsy_resolver::{
-    Cache, CacheKey, CacheLookup, RefreshGuard, Refreshes, Upstream, UpstreamClient, UpstreamError,
+    Cache, CacheKey, CacheLookup, Refreshes, Upstream, UpstreamClient, UpstreamError,
 };
 use dnsy_zone::{ZoneSigning, ZoneStore};
 use tokio::sync::{Semaphore, mpsc};
@@ -50,10 +50,30 @@ pub(crate) const PREFETCH_QUEUE: usize = 64;
 /// The time source the cache is driven by.
 pub(crate) type Now = Arc<dyn Fn() -> Instant + Send + Sync>;
 
-/// One background refresh of a popular entry. Holding the guard keeps the key's slot.
+/// A queued job older than this is dropped unrun: the entry it meant to renew is long gone.
+const PREFETCH_MAX_WAIT: Duration = Duration::from_secs(30);
+
+/// One background refresh of a popular entry. It holds no refresh slot while it waits: the
+/// worker claims the key's slot only when it starts, so a queued job never blocks a client.
 pub(crate) struct PrefetchJob {
     key: CacheKey,
-    _guard: RefreshGuard,
+    queued_at: Instant,
+}
+
+/// Marks the prefetch workers as running for as long as it lives.
+struct WorkersRunning<'a>(&'a AtomicUsize);
+
+impl<'a> WorkersRunning<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for WorkersRunning<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// The request pipeline. Built by [`crate::EngineBuilder`]; policy snapshots (ACL,
@@ -82,6 +102,8 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) stale_wait: Duration,
     /// Refreshes in flight, per key (serve-stale and prefetch share it).
     pub(crate) refreshes: Arc<Refreshes>,
+    /// Running [`Engine::run_prefetch`] calls; with none, nothing is queued.
+    pub(crate) prefetch_workers: AtomicUsize,
     pub(crate) prefetch_tx: mpsc::Sender<PrefetchJob>,
     pub(crate) prefetch_rx: tokio::sync::Mutex<mpsc::Receiver<PrefetchJob>>,
 }
@@ -483,16 +505,20 @@ impl<E: Exchange> Engine<E> {
 
     /// Queues a background refresh when the live entry for `key` is popular and close to expiry.
     fn queue_prefetch(&self, key: &CacheKey) {
-        if !self.cache.prefetch_due(key, (self.now)()) {
+        if !self.prefetch_running() || !self.cache.prefetch_due(key, (self.now)()) {
             return;
         }
-        if let Some(guard) = self.refreshes.begin(key) {
-            // A full queue drops the job (and frees the slot): the entry simply expires.
-            let _ = self.prefetch_tx.try_send(PrefetchJob {
-                key: key.clone(),
-                _guard: guard,
-            });
-        }
+        // A full queue drops the job: the entry simply expires. No slot is held meanwhile.
+        let _ = self.prefetch_tx.try_send(PrefetchJob {
+            key: key.clone(),
+            queued_at: Instant::now(),
+        });
+    }
+
+    /// Whether a [`Engine::run_prefetch`] loop is running (prefetches are queued only then).
+    #[must_use]
+    pub fn prefetch_running(&self) -> bool {
+        self.prefetch_workers.load(Ordering::SeqCst) > 0
     }
 
     /// Runs the prefetch workers: four refreshes at a time, forever. The
@@ -500,6 +526,7 @@ impl<E: Exchange> Engine<E> {
     /// takes the normal path (validation included), so a prefetch never stores more than a
     /// client-driven miss would.
     pub async fn run_prefetch(&self) {
+        let _running = WorkersRunning::new(&self.prefetch_workers);
         tokio::join!(
             self.prefetch_worker(),
             self.prefetch_worker(),
@@ -513,6 +540,13 @@ impl<E: Exchange> Engine<E> {
             let job = self.prefetch_rx.lock().await.recv().await;
             let Some(job) = job else {
                 return;
+            };
+            if job.queued_at.elapsed() > PREFETCH_MAX_WAIT {
+                continue;
+            }
+            // A client-driven refresh of the same key is already in flight: nothing to add.
+            let Some(_slot) = self.refreshes.begin(&job.key) else {
+                continue;
             };
             self.prefetch(&job.key).await;
         }
