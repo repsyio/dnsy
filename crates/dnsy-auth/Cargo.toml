@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 argon2 = { workspace = true }
+base64 = { workspace = true }
 dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
 rand = { workspace = true }
