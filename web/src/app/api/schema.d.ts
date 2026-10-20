@@ -4,6 +4,54 @@
  */
 
 export interface paths {
+    "/api/v1/acl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_acl"];
+        put?: never;
+        post: operations["create_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/acl/rate-limit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["set_rate_limit"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/acl/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_rule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/bootstrap": {
         parameters: {
             query?: never;
@@ -89,6 +137,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/blocklists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_blocklists"];
+        put?: never;
+        post: operations["create_blocklist"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/blocklists/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_blocklist"];
+        options?: never;
+        head?: never;
+        patch: operations["patch_blocklist"];
+        trace?: never;
+    };
+    "/api/v1/blocklists/{id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refresh_blocklist"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cache": {
         parameters: {
             query?: never;
@@ -122,6 +218,38 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/client-certs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_certs"];
+        put?: never;
+        post: operations["create_cert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/client-certs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_cert"];
+        options?: never;
+        head?: never;
+        patch: operations["patch_cert"];
         trace?: never;
     };
     "/api/v1/querylog": {
@@ -163,6 +291,54 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_rules"];
+        put?: never;
+        post: operations["create_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_rule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_settings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["patch_settings"];
         trace?: never;
     };
     "/api/v1/stats/summary": {
@@ -280,6 +456,86 @@ export interface paths {
         post?: never;
         /** Revoke a token (own tokens; admins any). */
         delete: operations["revoke_token"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upstream-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_groups"];
+        put?: never;
+        post: operations["create_group"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upstream-groups/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_group"];
+        put: operations["replace_group"];
+        post?: never;
+        delete: operations["delete_group"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upstream-groups/{name}/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["group_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upstream-groups/{name}/upstreams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["add_member"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upstream-groups/{name}/upstreams/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["remove_member"];
         options?: never;
         head?: never;
         patch?: never;
@@ -467,6 +723,64 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Rules and the rate limit. */
+        AclOverview: {
+            /** @description Applied to clients no rule matches. */
+            default_action: components["schemas"]["Action"];
+            /**
+             * Format: int32
+             * @description Queries per second per client; 0 means unlimited.
+             */
+            rate_limit_qps: number;
+            rules: components["schemas"]["AclRuleView"][];
+        };
+        /** @description A stored rule. */
+        AclRuleView: {
+            action: components["schemas"]["Action"];
+            /** @description Network the rule matches (host bits cleared), for address rules. */
+            cidr?: string | null;
+            /** @description SHA-256 fingerprint (hex) of an mTLS client certificate, for identity rules. */
+            client_cert_sha256?: string | null;
+            comment: string;
+            /** Format: int64 */
+            id: number;
+        };
+        /**
+         * @description What to do with a matching client.
+         * @enum {string}
+         */
+        Action: "allow" | "refuse" | "drop";
+        /**
+         * @description How blocked names are answered.
+         * @enum {string}
+         */
+        BlockModeView: "null_ip" | "nxdomain" | "refused";
+        /** @description A blocklist source and the status of its last fetch. */
+        BlocklistView: {
+            /** @description Private and loopback targets (and file paths) are allowed for this source. */
+            allow_private: boolean;
+            enabled: boolean;
+            /**
+             * Format: int64
+             * @description Entries loaded from the last successful fetch.
+             */
+            entries: number;
+            format: components["schemas"]["Format"];
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            interval_secs: number;
+            /**
+             * Format: int64
+             * @description Unix seconds of the last fetch attempt.
+             */
+            last_fetched?: number | null;
+            /** @description Outcome of the last fetch attempt. */
+            last_status?: string | null;
+            /** @description http(s) URL or file path. */
+            location: string;
+            name: string;
+        };
         /** @description First-admin creation. */
         Bootstrap: {
             /** @description The one-time code printed to stderr at startup. */
@@ -474,6 +788,32 @@ export interface components {
             /** @description At least 8 characters. */
             password: string;
             username: string;
+        };
+        CachePatch: {
+            /**
+             * Format: int32
+             * @description Not below `min_ttl`.
+             */
+            max_ttl?: number | null;
+            /** Format: int32 */
+            min_ttl?: number | null;
+            prefetch?: components["schemas"]["TogglePatch"] | null;
+            serve_stale?: components["schemas"]["TogglePatch"] | null;
+        };
+        /** @description Cache settings. */
+        CacheSettings: {
+            /**
+             * Format: int32
+             * @description Highest TTL (seconds) given to cached positive answers.
+             */
+            max_ttl: number;
+            /**
+             * Format: int32
+             * @description Lowest TTL (seconds) given to cached positive answers.
+             */
+            min_ttl: number;
+            prefetch: components["schemas"]["Toggle"];
+            serve_stale: components["schemas"]["Toggle"];
         };
         /** @description Live cache counters. */
         CacheStatsBody: {
@@ -507,6 +847,73 @@ export interface components {
             /** @description At least 8 characters. */
             new_password: string;
         };
+        /** @description An allowed client certificate. */
+        ClientCertView: {
+            /** Format: int64 */
+            created_at: number;
+            enabled: boolean;
+            /** @description `expires_at` has passed. */
+            expired: boolean;
+            /**
+             * Format: int64
+             * @description Unix seconds; the certificate is refused from then on.
+             */
+            expires_at?: number | null;
+            /** Format: int64 */
+            id: number;
+            label: string;
+            /** @description SHA-256 fingerprint of the DER certificate, lowercase hex. */
+            sha256: string;
+        };
+        /** @description New rule: exactly one of `cidr` and `client_cert_sha256`. */
+        CreateAclRule: {
+            action: components["schemas"]["Action"];
+            /** @description Address or network, e.g. `203.0.113.7` or `10.0.0.0/8` (longest prefix wins). */
+            cidr?: string | null;
+            /** @description SHA-256 fingerprint (64 hex digits) of an mTLS client certificate. */
+            client_cert_sha256?: string | null;
+            comment?: string;
+        };
+        /** @description New source. */
+        CreateBlocklist: {
+            /** @description Allow private, loopback and link-local targets. Needs the `admin` scope. */
+            allow_private?: boolean;
+            /** @description Default true. */
+            enabled?: boolean | null;
+            format?: components["schemas"]["Format"] | null;
+            /**
+             * Format: int64
+             * @description Seconds between refreshes, 60 to 2,592,000; default 86,400.
+             */
+            interval_secs?: number | null;
+            /** @description `http://` or `https://` URL, or a file path (file paths need the `admin` scope). */
+            location: string;
+            /** @description Unique, 1 to 128 characters. */
+            name: string;
+        };
+        /** @description New allowed certificate. */
+        CreateClientCert: {
+            /**
+             * Format: int64
+             * @description Unix seconds in the future; omit for no expiry.
+             */
+            expires_at?: number | null;
+            /** @description 1 to 128 characters. */
+            label: string;
+            /** @description SHA-256 fingerprint: 64 hex digits, optionally colon separated. */
+            sha256: string;
+        };
+        /** @description New group. */
+        CreateGroup: components["schemas"]["GroupBody"] & {
+            /** @description 1 to 64 characters of `[A-Za-z0-9._-]`. */
+            name: string;
+        };
+        /** @description New custom rule. */
+        CreateRule: {
+            /** @description Domain name, e.g. `ads.example.com`; subdomains match too. */
+            domain: string;
+            kind: components["schemas"]["RuleKindView"];
+        };
         /** @description New token for the caller. */
         CreateToken: {
             /**
@@ -537,6 +944,13 @@ export interface components {
             /** @description The secret. Store it now; it cannot be retrieved again. */
             token: string;
         };
+        FilterPatch: {
+            block_mode?: components["schemas"]["BlockModeView"] | null;
+        };
+        /** @description Filtering settings. */
+        FilterSettings: {
+            block_mode: components["schemas"]["BlockModeView"];
+        };
         /** @description Outcome of a flush. */
         Flushed: {
             /**
@@ -544,6 +958,57 @@ export interface components {
              * @description Entries removed.
              */
             removed: number;
+        };
+        /**
+         * @description List file format.
+         * @enum {string}
+         */
+        Format: "auto" | "hosts" | "domains" | "adblock";
+        /** @description Group definition for create and replace. */
+        GroupBody: {
+            /** @description Receives queries no domain pattern matches. Exactly one group is the default. */
+            default?: boolean;
+            /** @description Patterns such as `corp.example` or `*.corp.example`. */
+            domains?: string[];
+            members: components["schemas"]["MemberInput"][];
+            strategy: components["schemas"]["StrategyView"];
+        };
+        /** @description A group with its members and, when the server is running, their health. */
+        GroupView: {
+            default: boolean;
+            domains: string[];
+            health?: components["schemas"]["HealthView"][] | null;
+            members: components["schemas"]["MemberView"][];
+            name: string;
+            strategy: components["schemas"]["StrategyView"];
+        };
+        /** @description Live state of one member. */
+        HealthView: {
+            /** @description Not ejected by the passive health check. */
+            available: boolean;
+            /** Format: int32 */
+            consecutive_failures: number;
+            /**
+             * Format: double
+             * @description Smoothed round-trip time; absent until measured.
+             */
+            latency_ms?: number | null;
+            upstream: string;
+        };
+        /** @description Limits. */
+        LimitSettings: {
+            /**
+             * Format: int32
+             * @description Queries per second per client; 0 means unlimited.
+             */
+            per_client_qps: number;
+        };
+        LimitsPatch: {
+            /**
+             * Format: int32
+             * @description 0 to 1,000,000; 0 disables the limit.
+             */
+            per_client_qps?: number | null;
         };
         /** @description A page of the query log, newest first. */
         LogPageBody: {
@@ -585,6 +1050,32 @@ export interface components {
             /** @description `session` or `token`. */
             auth: string;
         };
+        /** @description A member as written by a client. */
+        MemberInput: {
+            /** @description `udp://host[:port]`, `tcp://host[:port]` or `tls://host[:port][#sni]`. */
+            upstream: string;
+            /**
+             * Format: int32
+             * @description Used by the `weighted` strategy; 1 to 1000, default 1.
+             */
+            weight?: number | null;
+        };
+        /** @description A member of a group. */
+        MemberView: {
+            /** @description Position in the group, for `DELETE /upstream-groups/{name}/upstreams/{index}`. */
+            index: number;
+            upstream: string;
+            /** Format: int32 */
+            weight: number;
+        };
+        /** @description Fields of a source that can change. */
+        PatchBlocklist: {
+            enabled: boolean;
+        };
+        /** @description Fields that can change. */
+        PatchClientCert: {
+            enabled: boolean;
+        };
         /** @description RFC 9457 problem document. */
         Problem: {
             /** @description Explanation specific to this occurrence. Never contains secrets. */
@@ -603,6 +1094,29 @@ export interface components {
             title: string;
             /** @description URI identifying the problem type. */
             type: string;
+        };
+        QueryLogPatch: {
+            /**
+             * Format: int32
+             * @description 1 to 3650.
+             */
+            retention_days?: number | null;
+        };
+        /** @description Query log settings. */
+        QueryLogSettings: {
+            /**
+             * Format: int32
+             * @description Days of history kept.
+             */
+            retention_days: number;
+        };
+        /** @description Per-client rate limit. */
+        RateLimit: {
+            /**
+             * Format: int32
+             * @description Queries per second per client; 0 disables limiting. At most 1,000,000.
+             */
+            qps: number;
         };
         /** @description Readiness answer. */
         Ready: {
@@ -647,6 +1161,28 @@ export interface components {
             type: string;
             value: string;
         };
+        /** @description Result of a manual refresh. */
+        RefreshResult: {
+            /**
+             * Format: int64
+             * @description Block plus allow entries now loaded (only when `updated`).
+             */
+            entries?: number | null;
+            /** @description `updated` or `not_modified`. */
+            outcome: string;
+        };
+        /**
+         * @description Custom rule kind.
+         * @enum {string}
+         */
+        RuleKindView: "block" | "allow";
+        /** @description A custom rule: the domain and everything below it. Allow beats block. */
+        RuleView: {
+            domain: string;
+            /** Format: int64 */
+            id: number;
+            kind: components["schemas"]["RuleKindView"];
+        };
         /** @description One timeseries bucket. */
         SeriesPoint: {
             /** Format: int64 */
@@ -659,6 +1195,20 @@ export interface components {
             start_ms: number;
             /** Format: int64 */
             total: number;
+        };
+        /** @description Partial update: omitted fields keep their value. */
+        SettingsPatch: {
+            cache?: components["schemas"]["CachePatch"] | null;
+            filter?: components["schemas"]["FilterPatch"] | null;
+            limits?: components["schemas"]["LimitsPatch"] | null;
+            querylog?: components["schemas"]["QueryLogPatch"] | null;
+        };
+        /** @description The settings that can change at runtime. */
+        SettingsView: {
+            cache: components["schemas"]["CacheSettings"];
+            filter: components["schemas"]["FilterSettings"];
+            limits: components["schemas"]["LimitSettings"];
+            querylog: components["schemas"]["QueryLogSettings"];
         };
         /** @description The SOA record of a zone. */
         SoaBody: {
@@ -690,6 +1240,11 @@ export interface components {
             /** @description `ok` or `ready`. */
             status: string;
         };
+        /**
+         * @description How a group orders its members.
+         * @enum {string}
+         */
+        StrategyView: "round_robin" | "weighted" | "lowest_latency" | "failover";
         /** @description Aggregate over the range. */
         SummaryBody: {
             /**
@@ -735,6 +1290,13 @@ export interface components {
             to: number;
             /** Format: int64 */
             total: number;
+        };
+        /** @description A feature switch. */
+        Toggle: {
+            enabled: boolean;
+        };
+        TogglePatch: {
+            enabled?: boolean | null;
         };
         /** @description Token metadata. The secret is never part of it. */
         TokenInfo: {
@@ -831,6 +1393,150 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_acl: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AclOverview"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAclRule"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AclRuleView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description An identical rule exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_rate_limit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RateLimit"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RateLimit"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     bootstrap: {
         parameters: {
             query?: never;
@@ -1035,6 +1741,195 @@ export interface operations {
             };
         };
     };
+    list_blocklists: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlocklistView"][];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_blocklist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBlocklist"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlocklistView"];
+                };
+            };
+            /** @description A file path or private target needs the admin scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Name or location exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid source or SSRF target refused */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_blocklist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Source id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted; its entries leave the filter */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    patch_blocklist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Source id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchBlocklist"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlocklistView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    refresh_blocklist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Source id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefreshResult"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The fetch failed; the previous list stays active */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No blocklist manager is running */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     cache_stats: {
         parameters: {
             query?: never;
@@ -1180,6 +2075,137 @@ export interface operations {
             };
         };
     };
+    list_certs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientCertView"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_cert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateClientCert"];
+            };
+        };
+        responses: {
+            /** @description Created and active */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientCertView"];
+                };
+            };
+            /** @description The fingerprint is already listed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_cert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Certificate id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed; open connections are re-checked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    patch_cert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Certificate id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchClientCert"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientCertView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     search_log: {
         parameters: {
             query?: {
@@ -1305,6 +2331,162 @@ export interface operations {
             };
             /** @description Too many live-tail connections */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleView"][];
+                };
+            };
+        };
+    };
+    create_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRule"];
+            };
+        };
+        responses: {
+            /** @description Created and active */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleView"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule id */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    patch_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SettingsPatch"];
+            };
+        };
+        responses: {
+            /** @description The settings now in effect */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsView"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown field or invalid value; nothing changed */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1650,6 +2832,297 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_groups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupView"][];
+                };
+            };
+        };
+    };
+    create_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGroup"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupView"];
+                };
+            };
+            /** @description The group exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    replace_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_group: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Would leave no default group */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    group_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthView"][];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The server is not running upstream groups */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    add_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberInput"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group name */
+                name: string;
+                /** @description Member index as listed */
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A group keeps at least one member */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

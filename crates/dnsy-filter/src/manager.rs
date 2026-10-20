@@ -90,7 +90,7 @@ type BuildInput = (i64, String, ListFormat, Arc<Vec<u8>>);
 struct Inner {
     store: SourceStore,
     filter: ArcSwap<FilterSet>,
-    mode: BlockMode,
+    mode: ArcSwap<BlockMode>,
     limits: FilterLimits,
     fetcher: Fetcher,
     clock: Arc<dyn Clock>,
@@ -118,7 +118,7 @@ impl ListManager {
             inner: Arc::new(Inner {
                 store,
                 filter: ArcSwap::from_pointee(empty),
-                mode,
+                mode: ArcSwap::from_pointee(mode),
                 limits,
                 fetcher,
                 clock,
@@ -131,6 +131,12 @@ impl ListManager {
     #[must_use]
     pub fn current(&self) -> Arc<FilterSet> {
         self.inner.filter.load_full()
+    }
+
+    /// Changes how blocked names are answered. Call [`ListManager::reload`] afterwards to
+    /// rebuild the active filter with the new mode.
+    pub fn set_block_mode(&self, mode: BlockMode) {
+        self.inner.mode.store(Arc::new(mode));
     }
 
     /// Rebuilds from the lists already loaded plus the custom rules (after enabling, disabling
@@ -245,7 +251,7 @@ impl ListManager {
         lists: Vec<BuildInput>,
     ) -> Result<(FilterSet, HashMap<i64, ParseStats>), RefreshError> {
         let rules = self.inner.store.custom_rules().await?;
-        let (mode, limits) = (self.inner.mode, self.inner.limits);
+        let (mode, limits) = (**self.inner.mode.load(), self.inner.limits);
         tokio::task::spawn_blocking(move || {
             let mut builder = FilterSetBuilder::new(mode, limits);
             let mut stats = HashMap::new();

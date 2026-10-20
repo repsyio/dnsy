@@ -403,6 +403,8 @@ dependencies = [
  "dnsy-auth",
  "dnsy-config",
  "dnsy-core",
+ "dnsy-engine",
+ "dnsy-filter",
  "dnsy-observe",
  "dnsy-proto",
  "dnsy-resolver",
@@ -410,6 +412,7 @@ dependencies = [
  "dnsy-zone",
  "futures-util",
  "http-body-util",
+ "ipnet",
  "rand",
  "rust-embed",
  "serde",
@@ -538,6 +541,7 @@ dependencies = [
 name = "dnsy-resolver"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "dnsy-config",
  "dnsy-core",
  "dnsy-dnssec",

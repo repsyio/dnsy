@@ -290,7 +290,7 @@ impl<E: Exchange> EngineBuilder<E> {
             cache: self.cache,
             exchange: self.exchange,
             sink: self.sink,
-            block_mode: self.block_mode,
+            block_mode: ArcSwap::from_pointee(self.block_mode),
             attempts: self.attempts,
             deadline: self.deadline,
             fetch_permits: Semaphore::new(MAX_CONCURRENT_FETCHES),

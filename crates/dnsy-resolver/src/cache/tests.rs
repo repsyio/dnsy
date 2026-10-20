@@ -770,3 +770,25 @@ fn bound_is_global_whatever_the_hash_distribution() {
         assert_eq!((s.entries, s.inserts, s.evictions), (4, 10, 6));
     }
 }
+
+#[test]
+fn reconfigure_changes_ttl_bounds_for_later_inserts() {
+    let c = Cache::new(&cfg());
+    let t0 = Instant::now();
+    let k = key("www.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 300),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    assert_eq!(fresh(c.get(&k, t0)).answers[0].ttl, 300);
+    c.reconfigure(|cfg| cfg.max_ttl = 60);
+    c.insert(
+        k.clone(),
+        &positive("www.example.com", 300),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    assert_eq!(fresh(c.get(&k, t0)).answers[0].ttl, 60);
+}

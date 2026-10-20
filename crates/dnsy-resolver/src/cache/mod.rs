@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use dnsy_config::Cache as CacheConfig;
 use dnsy_core::DnssecStatus;
 use dnsy_proto::{
@@ -109,7 +110,7 @@ struct Shard {
 pub struct Cache {
     shards: Vec<Mutex<Shard>>,
     hasher: RandomState,
-    cfg: CacheConfig,
+    cfg: ArcSwap<CacheConfig>,
     tick: AtomicU64,
     /// Live entries across all shards: the bound applies to this, not to each shard.
     len: AtomicUsize,
@@ -143,7 +144,7 @@ impl Cache {
         Cache {
             shards,
             hasher: RandomState::new(),
-            cfg: cfg.clone(),
+            cfg: ArcSwap::from_pointee(cfg.clone()),
             tick: AtomicU64::new(0),
             len: AtomicUsize::new(0),
             hits: AtomicU64::new(0),
@@ -152,6 +153,18 @@ impl Cache {
             evictions: AtomicU64::new(0),
             expired: AtomicU64::new(0),
         }
+    }
+
+    fn cfg(&self) -> arc_swap::Guard<Arc<CacheConfig>> {
+        self.cfg.load()
+    }
+
+    /// Changes the live configuration. Applies to later lookups and inserts; `max_entries` is
+    /// not meant to change at runtime (the shard count is fixed at construction).
+    pub fn reconfigure(&self, update: impl FnOnce(&mut CacheConfig)) {
+        let mut next = CacheConfig::clone(&self.cfg.load());
+        update(&mut next);
+        self.cfg.store(Arc::new(next));
     }
 
     fn shard_for(&self, key: &StoreKey) -> &Mutex<Shard> {
@@ -173,7 +186,7 @@ impl Cache {
     /// Like [`Cache::get`]; with `serve_bogus` (permissive validation) a Bogus entry comes back
     /// as its data, still labelled Bogus, so the caller can serve it without AD.
     pub fn get_for(&self, key: &CacheKey, now: Instant, serve_bogus: bool) -> CacheLookup {
-        if self.cfg.enabled && key.qtype != RESERVED_TYPE {
+        if self.cfg().enabled && key.qtype != RESERVED_TYPE {
             for k in [StoreKey::exact(key), StoreKey::by_name(key)] {
                 if let Some(found) = self.get_exact(&k, key, now, serve_bogus) {
                     self.hits.fetch_add(1, Ordering::Relaxed);
@@ -235,7 +248,7 @@ impl Cache {
         reason = "signature pinned by the plan"
     )]
     pub fn insert(&self, key: CacheKey, msg: &Message, dnssec: DnssecStatus, now: Instant) {
-        if !self.cfg.enabled || msg.header.tc || msg.header.aa || key.qtype == RESERVED_TYPE {
+        if !self.cfg().enabled || msg.header.tc || msg.header.aa || key.qtype == RESERVED_TYPE {
             return;
         }
         let Some((ttl, mut stored)) = self.prepare(msg, dnssec) else {
@@ -253,8 +266,8 @@ impl Cache {
             r.ttl = r.ttl.min(ttl);
         }
         let lifetime = Duration::from_secs(u64::from(ttl));
-        let stale = if self.cfg.serve_stale.enabled {
-            Duration::from_secs(u64::from(self.cfg.serve_stale.max_stale))
+        let stale = if self.cfg().serve_stale.enabled {
+            Duration::from_secs(u64::from(self.cfg().serve_stale.max_stale))
         } else {
             Duration::ZERO
         };
@@ -280,7 +293,7 @@ impl Cache {
         self.inserts.fetch_add(1, Ordering::Relaxed);
         if added {
             self.len.fetch_add(1, Ordering::Relaxed);
-            while self.len.load(Ordering::Relaxed) > self.cfg.max_entries {
+            while self.len.load(Ordering::Relaxed) > self.cfg().max_entries {
                 if !self.evict_one(&key) {
                     break;
                 }
@@ -290,7 +303,7 @@ impl Cache {
 
     /// Works out the entry lifetime and the message to store (record TTLs clamped).
     fn prepare(&self, msg: &Message, dnssec: DnssecStatus) -> Option<(u32, Message)> {
-        let cfg = &self.cfg;
+        let cfg = self.cfg();
         let mut stored = msg.clone();
         let ttl = match msg.header.rcode {
             Rcode::ServFail => cfg.servfail_ttl,
@@ -387,7 +400,7 @@ impl Cache {
         let entries = self.len.load(Ordering::Relaxed) as u64;
         CacheStats {
             entries,
-            capacity: self.cfg.max_entries as u64,
+            capacity: self.cfg().max_entries as u64,
             hits: self.hits.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
             inserts: self.inserts.load(Ordering::Relaxed),

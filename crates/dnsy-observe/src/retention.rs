@@ -40,6 +40,30 @@ pub fn spawn_retention(store: Store, retention: Duration, interval: Duration) ->
     })
 }
 
+/// Like [`spawn_retention`], but the retention is read from `retention` on every pass, so
+/// changing it takes effect at the next purge.
+#[must_use]
+pub fn spawn_retention_watch(
+    store: Store,
+    retention: tokio::sync::watch::Receiver<Duration>,
+    interval: Duration,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(interval);
+        loop {
+            tick.tick().await;
+            let keep = *retention.borrow();
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+            let cutoff = now_ms.saturating_sub(i64::try_from(keep.as_millis()).unwrap_or(i64::MAX));
+            if let Err(e) = purge_before(&store, cutoff).await {
+                tracing::warn!(error = %e, "query log retention purge failed");
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +97,20 @@ mod tests {
             Duration::from_secs(60),
             Duration::from_millis(20),
         );
+        wait_for_rows(&store, 0).await;
+        h.abort();
+    }
+
+    #[tokio::test]
+    async fn watched_retention_applies_changes() {
+        let (store, _d) = open_store();
+        ingest(&store, vec![event("old.example.", 1_000)]).await;
+        wait_for_rows(&store, 1).await;
+        let (tx, rx) = tokio::sync::watch::channel(Duration::from_secs(u64::MAX / 4_000));
+        let h = spawn_retention_watch(store.clone(), rx, Duration::from_millis(20));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(count_rows(&store, "query_log").await, 1);
+        tx.send(Duration::from_secs(60)).unwrap();
         wait_for_rows(&store, 0).await;
         h.abort();
     }

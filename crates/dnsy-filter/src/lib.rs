@@ -26,7 +26,9 @@ pub use parse::{ListFormat, MAX_LINE_LEN, ParseStats};
 pub use ratelimit::{RateLimiter, RateVerdict, client_key};
 pub use response::{BLOCK_TTL, block_response};
 pub use rules::{AclRule, FilterError, RuleStore};
-pub use sources::{FetchRecord, ListSource, LoadedMeta, NewSource, RuleKind, SourceStore};
+pub use sources::{
+    CustomRule, FetchRecord, ListSource, LoadedMeta, NewSource, RuleKind, SourceStore,
+};
 
 #[cfg(test)]
 mod blocklist_tests;

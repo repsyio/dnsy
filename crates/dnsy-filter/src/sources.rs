@@ -56,6 +56,14 @@ pub struct LoadedMeta {
     pub entries: u64,
 }
 
+/// A stored custom rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomRule {
+    pub id: i64,
+    pub kind: RuleKind,
+    pub domain: String,
+}
+
 /// A custom rule kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleKind {
@@ -304,6 +312,48 @@ impl SourceStore {
             })
             .await
             .map_err(constraint)
+    }
+
+    /// Custom rules with their ids, oldest first.
+    ///
+    /// # Errors
+    /// Store failure or a corrupt row.
+    pub async fn custom_rules_with_ids(&self) -> Result<Vec<CustomRule>, FilterError> {
+        let rows: Vec<(i64, String, String)> = self
+            .store
+            .read(|c| {
+                let mut stmt =
+                    c.prepare("SELECT id, kind, domain FROM custom_rules ORDER BY id")?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                Ok(rows.collect::<Result<_, _>>()?)
+            })
+            .await?;
+        rows.into_iter()
+            .map(|(id, k, domain)| {
+                let kind = match k.as_str() {
+                    "block" => RuleKind::Block,
+                    "allow" => RuleKind::Allow,
+                    _ => return Err(FilterError::Corrupt),
+                };
+                Ok(CustomRule { id, kind, domain })
+            })
+            .collect()
+    }
+
+    /// Delete a custom rule.
+    ///
+    /// # Errors
+    /// [`FilterError::NotFound`] if no such rule.
+    pub async fn delete_custom_rule(&self, id: i64) -> Result<(), FilterError> {
+        let n = self
+            .store
+            .write(move |tx| Ok(tx.execute("DELETE FROM custom_rules WHERE id = ?1", [id])?))
+            .await?;
+        if n == 0 {
+            Err(FilterError::NotFound)
+        } else {
+            Ok(())
+        }
     }
 
     /// All custom rules, oldest first.

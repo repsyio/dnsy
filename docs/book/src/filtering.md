@@ -78,3 +78,12 @@ A source is refreshed when it has never been fetched or its due time has passed.
 - A source with `allow_private` set skips the address check, for lists served from the local network. It is off by default.
 - At most 50 MB per list (checked against `Content-Length` and while streaming; compressed encodings are not requested) and 30 s for the whole fetch, including redirects.
 - Files are read with the same size cap.
+
+## Managing filtering through the API
+
+ACL rules, the rate limit, blocklist sources and custom rules can be changed at runtime with the
+[REST API](rest-api.md#filtering-upstreams-client-certificates-and-settings) and are active
+immediately (the ACL is rebuilt and swapped, the blocklist filter is rebuilt off the hot path). The
+block mode is a runtime setting (`PATCH /settings`, `filter.block_mode`). Creating a source whose
+location is a file path or a non-public address needs the `admin` scope and `allow_private`; see
+URL safety above.

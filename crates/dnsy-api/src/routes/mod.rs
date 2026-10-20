@@ -8,11 +8,14 @@ use utoipa_axum::router::OpenApiRouter;
 
 use crate::state::ApiState;
 
+mod acl;
 mod auth;
+mod blocklists;
 mod cache;
 mod certs;
 mod dnssec;
 mod filtering;
+mod live;
 mod meta;
 mod querylog;
 mod settings;
@@ -21,6 +24,8 @@ mod tokens;
 mod upstreams;
 mod users;
 mod zones;
+
+pub use settings::RuntimeSettings;
 
 /// Everything under `/api/v1`.
 pub fn v1() -> OpenApiRouter<ApiState> {
@@ -32,6 +37,8 @@ pub fn v1() -> OpenApiRouter<ApiState> {
         .merge(zones::router())
         .merge(dnssec::router())
         .merge(filtering::router())
+        .merge(acl::router())
+        .merge(blocklists::router())
         .merge(upstreams::router())
         .merge(certs::router())
         .merge(settings::router())
