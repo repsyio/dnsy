@@ -231,7 +231,7 @@ fn detail(store: &ZoneStore, zone: &Zone) -> ZoneDetail {
     }
 }
 
-fn zone_error(e: ZoneError) -> ApiError {
+fn zone_error(e: &ZoneError) -> ApiError {
     match e {
         ZoneError::Invalid(_) | ZoneError::Json(_) => ApiError::Unprocessable(e.to_string()),
         ZoneError::Io(_) => ApiError::Internal(e.to_string()),
@@ -370,7 +370,7 @@ fn has_apex_ns(zone: &Zone) -> bool {
 /// Parses a candidate zone document, enforcing the rules a file would meet plus the API's own:
 /// the apex keeps an NS record, no duplicate records, size limits.
 fn validate(doc: &Value, previous: Option<&Zone>) -> Result<Zone, ApiError> {
-    let (zone, _) = Zone::from_json(&doc.to_string()).map_err(zone_error)?;
+    let (zone, _) = Zone::from_json(&doc.to_string()).map_err(|e| zone_error(&e))?;
     if zone.records.len() > MAX_RECORDS {
         return Err(ApiError::Unprocessable(format!(
             "a zone holds at most {MAX_RECORDS} records"
@@ -458,7 +458,7 @@ async fn create_zone(
     let zone = validate(&doc, None)?;
     let out = mutate(&state, move |store| {
         let snapshot = store.snapshot();
-        let file = zone.file_name().map_err(zone_error)?;
+        let file = zone.file_name().map_err(|e| zone_error(&e))?;
         if snapshot.get(&zone.origin).is_some() || store.load_error(&file).is_some() {
             return Err(ApiError::Conflict(format!(
                 "zone {} already exists",
@@ -470,7 +470,7 @@ async fn create_zone(
                 "at most {MAX_ZONES} zones can be created"
             )));
         }
-        store.write_zone(&zone).map_err(zone_error)?;
+        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
         Ok((detail(store, &zone), etag(&zone)))
     })
     .await?;
@@ -551,7 +551,7 @@ async fn replace_zone(
             .cloned();
         let doc = zone_document(&origin, &body, old.soa.serial.wrapping_add(1), dnssec)?;
         let zone = validate(&doc, Some(&old))?;
-        store.write_zone(&zone).map_err(zone_error)?;
+        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
         Ok((detail(store, &zone), zone))
     })
     .await?;
@@ -576,7 +576,7 @@ async fn delete_zone(
     let wanted = if_match(&headers)?;
     mutate(&state, move |store| {
         current(store, &origin, wanted.as_deref())?;
-        store.remove_zone(&origin).map_err(zone_error)
+        store.remove_zone(&origin).map_err(|e| zone_error(&e))
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -671,7 +671,7 @@ async fn create_record(
         let mut doc = bumped(&old);
         records_mut(&mut doc).push(new);
         let zone = validate(&doc, Some(&old))?;
-        store.write_zone(&zone).map_err(zone_error)?;
+        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
         let record = zone.records.last().map(view).expect("a record was added");
         Ok((record, zone))
     })
@@ -706,7 +706,7 @@ async fn replace_record(
         let mut doc = bumped(&old);
         records_mut(&mut doc)[at] = new;
         let zone = validate(&doc, Some(&old))?;
-        store.write_zone(&zone).map_err(zone_error)?;
+        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
         Ok((view(&zone.records[at]), zone))
     })
     .await?;
@@ -736,7 +736,7 @@ async fn delete_record(
         let mut doc = bumped(&old);
         records_mut(&mut doc).remove(at);
         let zone = validate(&doc, Some(&old))?;
-        store.write_zone(&zone).map_err(zone_error)?;
+        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
         Ok(zone)
     })
     .await?;
@@ -761,7 +761,7 @@ async fn export_zone(
 ) -> Result<Response, ApiError> {
     let (_, zone) = existing(&state, &name)?;
     // The file name is `[a-z0-9.-]` by construction of `zone_name`, so it is header-safe.
-    let file = zone.file_name().map_err(zone_error)?;
+    let file = zone.file_name().map_err(|e| zone_error(&e))?;
     let file = file.trim_end_matches(".json");
     let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{file}.zone\""))
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -1209,13 +1209,13 @@ mod tests {
     async fn records_are_paged_and_filtered() {
         let fx = fx().await;
         let mut body = zone_body();
-        let mut recs = vec![json!({"name": "@", "type": "NS", "value": "ns1.example.com."})];
+        let mut rows = vec![json!({"name": "@", "type": "NS", "value": "ns1.example.com."})];
         for i in 0..25 {
-            recs.push(
+            rows.push(
                 json!({"name": format!("h{i}"), "type": "A", "value": format!("192.0.2.{i}")}),
             );
         }
-        body["records"] = json!(recs);
+        body["records"] = json!(rows);
         assert_eq!(
             call(
                 &fx,
