@@ -7,7 +7,7 @@
 use std::cmp::Ordering;
 use std::fmt::Write as _;
 
-use dnsy_proto::{Name, RData, RecordType};
+use dnsy_proto::{Name, RData, RecordType, WireWriter};
 
 use crate::model::{Record, Zone};
 
@@ -187,6 +187,23 @@ fn rdata(out: &mut String, data: &RData) {
             }
         }
         RData::Opaque { data, .. } => generic(out, data),
+        // DNSSEC types: the proto presentation text is used when it holds nothing that is
+        // special in a master file (a signer or next name with `;`, `(`, `"`, ...);
+        // otherwise the RFC 3597 generic form is written, which is always safe.
+        other => {
+            let text = other.to_string();
+            let plain = text
+                .bytes()
+                .all(|b| (0x20..0x7f).contains(&b) && !b";()\"$@\\".contains(&b));
+            let mut w = WireWriter::new();
+            if plain {
+                out.push_str(&text);
+            } else if other.encode(&mut w).is_ok() {
+                generic(out, &w.finish());
+            } else {
+                out.push_str("\\# 0");
+            }
+        }
     }
 }
 
@@ -398,6 +415,30 @@ mod tests {
         assert!(tail[1].starts_with("@\t3600\tIN\tDNSKEY"));
         assert!(tail[2].starts_with("@\t3600\tIN\tNSEC"));
         assert!(!text.contains("evil"));
+    }
+
+    #[test]
+    fn signed_rdata_with_special_names_uses_generic_form() {
+        let z = zone(EXAMPLE);
+        let nsec = |next: Name| Record {
+            name: Name::from_ascii("example.com.").unwrap(),
+            ttl: 300,
+            rdata: RData::Nsec {
+                next,
+                types: dnsy_proto::TypeBitmap::from_types(&[RecordType::A]),
+            },
+        };
+        let plain = Name::from_ascii("www.example.com.").unwrap();
+        let evil = Name::from_labels([b"a;\n$INCLUDE".to_vec(), b"com".to_vec()]).unwrap();
+        let signed = SignedZone {
+            records: vec![nsec(plain), nsec(evil)],
+        };
+        let text = export_bind(&z, Some(&signed));
+        let lines: Vec<&str> = text.lines().filter(|l| l.contains("NSEC")).collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().any(|l| l.contains("www.example.com. A")));
+        assert!(lines.iter().any(|l| l.contains("\\# ")));
+        assert!(!text.contains("$INCLUDE"));
     }
 
     #[test]

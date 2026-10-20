@@ -82,6 +82,7 @@ are not answered from zones.
   section with TTL = min(SOA TTL, SOA `minimum`) (RFC 2308).
 - **Rotation.** Every query rotates the order of each RRset by one, so clients that pick the
   first address spread across all of them.
+
 ## BIND export
 
 `dnsy_zone::export_bind(&zone, signed)` renders a zone as a BIND master file: `$ORIGIN`, `$TTL`,
