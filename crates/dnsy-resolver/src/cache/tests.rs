@@ -82,6 +82,7 @@ fn response(n: &str, t: RecordType, rcode: Rcode) -> Message {
         answers: Vec::new(),
         authority: Vec::new(),
         additional: Vec::new(),
+        edns: None,
     }
 }
 
@@ -689,4 +690,34 @@ fn concurrent_get_insert() {
     assert!(s.entries <= 64);
     assert_eq!(s.inserts, 8 * 500);
     assert_eq!(s.hits + s.misses, 8 * 500);
+}
+
+#[test]
+fn qtype_zero_neither_hits_nor_overwrites_name_level_nxdomain() {
+    let c = Cache::new(&cfg());
+    let t0 = Instant::now();
+    let zero = RecordType::Unknown(0);
+    let m = negative("gone.example.com", RecordType::A, Rcode::NxDomain, 300, 300);
+    c.insert(
+        key("gone.example.com", RecordType::A),
+        &m,
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    // A type-0 query does not read the name-level entry.
+    assert!(matches!(
+        c.get(&key("gone.example.com", zero), t0),
+        CacheLookup::Miss
+    ));
+    // A type-0 response is not cached, so it cannot replace it either.
+    c.insert(
+        key("gone.example.com", zero),
+        &positive("gone.example.com", 300),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    let got = fresh(c.get(&key("gone.example.com", RecordType::Txt), t0));
+    assert_eq!(got.header.rcode, Rcode::NxDomain);
+    assert_eq!(got.questions[0].qtype, RecordType::Txt);
+    assert_eq!(c.stats().inserts, 1);
 }

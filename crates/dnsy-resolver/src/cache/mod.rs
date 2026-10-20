@@ -19,8 +19,8 @@ mod tests;
 const MAX_SHARDS: usize = 16;
 /// Entries examined when an eviction is needed; the oldest of the sample goes.
 const EVICTION_SAMPLE: usize = 32;
-/// Pseudo query type under which an NXDOMAIN is stored by name; it answers every type.
-const ANY_TYPE: RecordType = RecordType::Unknown(0);
+/// QTYPE 0 is reserved and never cached.
+const RESERVED_TYPE: RecordType = RecordType::Unknown(0);
 
 /// What identifies a cached response.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -60,6 +60,33 @@ pub struct CacheStats {
     pub prefetches: u64,
 }
 
+/// How an entry is stored. A name-level NXDOMAIN answers every type; the flag keeps it apart from
+/// per-type entries whatever the wire QTYPE is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StoreKey {
+    key: CacheKey,
+    by_name: bool,
+}
+
+impl StoreKey {
+    fn exact(key: &CacheKey) -> Self {
+        Self {
+            key: key.clone(),
+            by_name: false,
+        }
+    }
+
+    fn by_name(key: &CacheKey) -> Self {
+        Self {
+            key: CacheKey {
+                qtype: RecordType::Any,
+                ..key.clone()
+            },
+            by_name: true,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Entry {
     msg: Message,
@@ -73,7 +100,7 @@ struct Entry {
 }
 
 struct Shard {
-    map: HashMap<CacheKey, Entry>,
+    map: HashMap<StoreKey, Entry>,
     capacity: usize,
 }
 
@@ -125,7 +152,7 @@ impl Cache {
         }
     }
 
-    fn shard_for(&self, key: &CacheKey) -> &Mutex<Shard> {
+    fn shard_for(&self, key: &StoreKey) -> &Mutex<Shard> {
         let h = self.hasher.hash_one(key);
         let idx = usize::try_from(h % self.shards.len() as u64).unwrap_or(0);
         &self.shards[idx]
@@ -137,13 +164,9 @@ impl Cache {
 
     /// Looks `key` up at `now`. An NXDOMAIN cached for the name answers any type.
     pub fn get(&self, key: &CacheKey, now: Instant) -> CacheLookup {
-        if self.cfg.enabled {
-            let any_key = CacheKey {
-                qtype: ANY_TYPE,
-                ..key.clone()
-            };
-            for k in [key, &any_key] {
-                if let Some(found) = self.get_exact(k, key, now) {
+        if self.cfg.enabled && key.qtype != RESERVED_TYPE {
+            for k in [StoreKey::exact(key), StoreKey::by_name(key)] {
+                if let Some(found) = self.get_exact(&k, key, now) {
                     self.hits.fetch_add(1, Ordering::Relaxed);
                     return found;
                 }
@@ -180,7 +203,7 @@ impl Cache {
         for r in section_records_mut(&mut msg) {
             r.ttl = r.ttl.saturating_sub(elapsed);
         }
-        if stored_key.qtype == ANY_TYPE
+        if stored_key.by_name
             && let Some(q) = msg.questions.first_mut()
         {
             q.qtype = asked.qtype;
@@ -197,7 +220,7 @@ impl Cache {
     /// SERVFAIL, negative answers without an SOA, and anything whose lifetime works out to zero.
     /// A Bogus message never replaces a live Secure entry.
     pub fn insert(&self, key: CacheKey, msg: &Message, dnssec: DnssecStatus, now: Instant) {
-        if !self.cfg.enabled || msg.header.tc || msg.header.aa {
+        if !self.cfg.enabled || msg.header.tc || msg.header.aa || key.qtype == RESERVED_TYPE {
             return;
         }
         let Some((ttl, mut stored)) = self.prepare(msg, dnssec) else {
@@ -207,12 +230,9 @@ impl Cache {
             return;
         }
         let key = if stored.header.rcode == Rcode::NxDomain && stored.answers.is_empty() {
-            CacheKey {
-                qtype: ANY_TYPE,
-                ..key
-            }
+            StoreKey::by_name(&key)
         } else {
-            key
+            StoreKey::exact(&key)
         };
         for r in section_records_mut(&mut stored) {
             r.ttl = r.ttl.min(ttl);
@@ -319,9 +339,9 @@ impl Cache {
                 let before = shard.map.len();
                 shard.map.retain(|k, _| {
                     let hit = if subtree {
-                        k.name.is_subdomain_of(name)
+                        k.key.name.is_subdomain_of(name)
                     } else {
-                        k.name == *name
+                        k.key.name == *name
                     };
                     !hit
                 });
@@ -382,5 +402,6 @@ fn servfail_for(msg: &Message) -> Message {
         answers: Vec::new(),
         authority: Vec::new(),
         additional: Vec::new(),
+        edns: None,
     }
 }
