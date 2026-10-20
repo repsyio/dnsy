@@ -92,6 +92,7 @@ fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router 
             }),
         )
         .fallback(ui::fallback)
+        .layer(middleware::from_fn(security::problem_rejections))
         .layer(middleware::from_fn_with_state(
             config.tls,
             security::security_headers,
