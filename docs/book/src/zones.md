@@ -82,3 +82,18 @@ are not answered from zones.
   section with TTL = min(SOA TTL, SOA `minimum`) (RFC 2308).
 - **Rotation.** Every query rotates the order of each RRset by one, so clients that pick the
   first address spread across all of them.
+## BIND export
+
+`dnsy_zone::export_bind(&zone, signed)` renders a zone as a BIND master file: `$ORIGIN`, `$TTL`,
+a multi-line SOA first, then the records grouped by owner with owner names relative to the
+origin (`@` for the apex). A record's TTL is written only when it differs from `$TTL`. With a
+signed zone the DNSKEY, RRSIG, NSEC/NSEC3 and NSEC3PARAM records follow in canonical order.
+
+The output is safe to hand to other tools. Owner names, rdata names and character-strings are
+escaped: `. \ ; ( ) " $ @` get a backslash and non-printable bytes become `\DDD`, so a record
+cannot end its line, start a comment or inject a directive such as `$INCLUDE`. TXT strings
+longer than 255 octets are split into several strings, and a CAA record whose tag is not
+alphanumeric is written in the RFC 3597 generic form (`\# len hex`).
+
+The export is checked with `named-checkzone` when it is installed (the test is skipped
+otherwise).

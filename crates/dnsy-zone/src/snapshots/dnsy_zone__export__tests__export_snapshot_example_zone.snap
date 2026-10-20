@@ -1,0 +1,23 @@
+---
+source: crates/dnsy-zone/src/export.rs
+expression: "export_bind(&zone(EXAMPLE), None)"
+---
+$ORIGIN example.com.
+$TTL 3600
+@		IN	SOA	ns1.example.com. hostmaster.example.com. (
+			2026102001 ; serial
+			7200 ; refresh
+			3600 ; retry
+			1209600 ; expire
+			300 ; minimum
+			)
+@		IN	NS	ns1.example.com.
+@		IN	MX	10 mail.example.com.
+@		IN	TXT	"v=spf1 -all"
+@		IN	CAA	0 issue "letsencrypt.org"
+ns1	300	IN	A	192.0.2.53
+www	300	IN	A	192.0.2.1
+www	300	IN	AAAA	2001:db8::1
+mail		IN	A	192.0.2.25
+blog		IN	CNAME	www.example.com.
+_sip._tcp		IN	SRV	10 60 5060 sip.example.com.
