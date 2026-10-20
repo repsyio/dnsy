@@ -8,6 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 ring = { workspace = true }
 zeroize = { workspace = true }

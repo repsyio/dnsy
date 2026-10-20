@@ -5,8 +5,8 @@ DNSY implements DNSSEC itself. The `dnsy-dnssec` crate holds the cryptography an
 crypto is [`ring`](https://github.com/briansmith/ring) for raw signature checks and digests
 (plus `zeroize` to wipe key material); the DNSSEC logic is written in this repository.
 
-This page covers the cryptographic building blocks, signing keys and zone signing.
-Chain-of-trust validation is added by a later story and extends this page.
+This page covers the cryptographic building blocks, signing keys, zone signing and the
+chain-of-trust validator.
 
 ## Algorithms
 
@@ -215,3 +215,125 @@ chains cover names that do not exist, and they re-read the BIND export and verif
 When BIND's `dnssec-verify` or `ldns-verify-zone` is installed,
 `dnssec_verify_accepts_signed_export` runs it on the exported zone. Without either tool the
 test is skipped.
+
+## Chain-of-trust validation
+
+`Validator::validate(fetcher, question, response, now)` checks one upstream response (fetched
+with DO=1 and CD=1) and returns a `ValidationOutcome`: the RFC 4035 4.3 status, an optional
+extended DNS error (RFC 8914) and, for secure answers, `min_ttl`, the lowest of the validated
+records' TTLs, their RRSIG original TTLs and the seconds left until their RRSIGs expire. The
+resolver caps cache lifetimes with it. The clock is a parameter, so callers (and tests)
+control it.
+
+| Status | Meaning |
+| --- | --- |
+| `Secure` | Every RRset on the answer chain, and the denial proof if any, verified up to a trust anchor. |
+| `Insecure` | The data lies below a proven unsigned delegation, an NSEC3 opt-out span, a zone using only unsupported algorithms or digests, or a negative trust anchor. |
+| `Bogus` | Something should have verified and did not. |
+| `Indeterminate` | No trust anchor covers the name, or the response code (SERVFAIL, REFUSED, ...) carries nothing to validate. |
+
+### Trust anchors
+
+`TrustAnchors` holds DS anchors (`add_ds`), DNSKEY anchors (`add_dnskey`) and negative trust
+anchors (`add_negative`, RFC 7646). The configuration's `dnssec.trust_anchors` are the root
+KSK DS records (key tags 20326 and 38696) and `dnssec.negative_trust_anchors` are domain
+names. A name at or below a negative trust anchor validates as `Insecure` without any fetch.
+The validator always starts from the closest (deepest) anchor above a name.
+
+### Building the chain
+
+Missing DS and DNSKEY RRsets are fetched through the `DnssecFetcher` trait, so the resolver
+can supply them over its upstreams and tests can use in-memory zones. For a signer zone (the
+RRSIG signer name), the validator walks up with DS queries until it reaches a zone it has
+already validated or the anchor, then validates back down:
+
+1. At the anchor, the DNSKEY RRset must be signed by a key matching an anchor DS (or equal to
+   an anchor DNSKEY).
+2. At each level, the DS RRset is verified with the parent's keys, and the child's DNSKEY
+   RRset must be signed by a key matching one of those DS records. SHA-1 DS records are
+   ignored when a SHA-256 one exists (RFC 4509).
+3. If there is no DS, the parent must prove it with a signed NSEC or NSEC3 record: a
+   delegation without DS (or an opt-out span) makes the subtree `Insecure`; a name that is
+   not a delegation stays in the parent zone. An unsigned DS answer proves nothing.
+4. A DS set using only unsupported algorithms or digest types makes the zone `Insecure`.
+
+The RRSIG signer must be the zone apex that the walk found, and must lie at or below the
+anchor that covers the owner. Validated zones and fetched responses are memoised for the rest
+of the validation.
+
+Unsigned data is never accepted on its own word: it is `Insecure` only if the walk from the
+anchor proves an insecure delegation above it, and `Bogus` (EDE 10) otherwise.
+
+### Answers, CNAME and DNAME
+
+The answer chain is followed from the question name: each CNAME and DNAME RRset is validated
+on its own, so a chain that leaves a signed zone for an unsigned one is `Insecure` and a
+broken link anywhere is `Bogus`. The CNAME synthesized from a DNAME is unsigned (RFC 6672)
+and must equal the substitution. Any other RRset in the answer section is validated too, and
+an unsigned one next to a secure chain makes the answer `Bogus` rather than downgrading it.
+
+A positive answer whose RRSIG `labels` field is shorter than the owner name is a wildcard
+expansion; the authority section must prove that the name itself does not exist (RFC 4035
+5.3.4, RFC 5155 8.8), using only denial records signed by the zone that signed the wildcard.
+
+### Denial of existence
+
+- **NSEC** (RFC 4035 5.4): NXDOMAIN needs an NSEC covering the name and one covering the
+  wildcard at the closest encloser. NODATA needs the name's NSEC without the type or CNAME
+  in its bitmap, an NSEC proving an empty non-terminal, or the wildcard's NSEC. NSEC records
+  from the parent side of a delegation (NS without SOA) prove nothing about the child, and
+  never deny names below themselves; the child's apex NSEC cannot prove a missing DS
+  (RFC 6840 4.4).
+- **NSEC3** (RFC 5155 8): closest-encloser proof (matching NSEC3 for the encloser, covering
+  NSEC3 for the next closer name), wildcard cover for NXDOMAIN, matching NSEC3 for NODATA,
+  wildcard NODATA, and opt-out: a DS NODATA or NXDOMAIN proven only through an opt-out span
+  is `Insecure`. NSEC3 records with more than 100 iterations make the answer `Insecure`
+  (RFC 9276 3.2) without being hashed.
+
+A proof never mixes records of different zones. A negative answer is proven with the records
+of the deepest zone that encloses the name; a hidden deeper zone cannot be skipped because the
+parent's records show its delegation. If that proof fails, the name's own chain is walked: an
+insecure delegation above it (for example after a CNAME from a signed zone into an unsigned
+one) makes the answer `Insecure`, anything else leaves it `Bogus`.
+
+### Extended DNS errors
+
+| EDE | When |
+| --- | --- |
+| 1 Unsupported DNSKEY algorithm | Insecure: the zone uses only unsupported algorithms. |
+| 2 Unsupported DS digest | Insecure: the DS set has only unsupported digest types. |
+| 5 DNSSEC indeterminate | No trust anchor, or an error response code. |
+| 6 DNSSEC bogus | Bad signature, contradicting denial, work limit exceeded, failed fetch. |
+| 7 Signature expired | The only RRSIGs tried have expired. |
+| 8 Signature not yet valid | The only RRSIGs tried are not yet valid. |
+| 9 DNSKEY missing | No DNSKEY matches the DS, the anchor or the RRSIG key tag, or the DNSKEY fetch failed. |
+| 10 RRSIGs missing | Data in a secure zone came without signatures. |
+| 12 NSEC missing | A negative answer or wildcard expansion lacks its proof. |
+
+### Work limits
+
+Each validation runs under `ValidationLimits` so that a hostile zone cannot exhaust CPU
+(KeyTrap, CVE-2023-50387; NSEC3 floods, CVE-2023-50868). Exceeding any limit makes the answer
+`Bogus` with EDE 6.
+
+| Limit | Default |
+| --- | --- |
+| `max_zone_cuts`: names walked between the anchor and a signer | 16 |
+| `max_rrsig_verifications`: signature checks per RRset | 8 |
+| `max_verifications`: signature checks per validation | 64 |
+| `max_fetches`: DS/DNSKEY fetches per validation | 32 |
+| `max_nsec3_iterations`: above this, NSEC3 proofs are `Insecure` | 100 |
+| `max_nsec3_hashes`: distinct NSEC3 hashes per validation | 64 |
+| `clock_skew`: seconds the RRSIG validity window is widened (`dnssec.clock_skew_s`) | 300 |
+
+Only RRSIG/DNSKEY pairs whose key tag and algorithm match are tried, the validity window is
+checked before any signature math, and DS digest computations count against
+`max_verifications`. A failed DS or DNSKEY fetch is `Bogus`, not `Indeterminate`: an attacker
+who can block those fetches must not get unvalidated answers served in strict mode.
+
+### Tests
+
+`crates/dnsy-dnssec/tests/validate.rs` builds zones signed with `SigningKey` (root, TLD and
+child zones, NSEC and NSEC3 chains, opt-out, wildcards) and serves them from an in-memory
+`DnssecFetcher`, covering secure chains, insecure delegations, every bogus case above, the
+negative trust anchor short-circuit and the work limits.
