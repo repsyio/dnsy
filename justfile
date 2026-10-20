@@ -38,7 +38,7 @@ openapi:
 docs:
     #!/usr/bin/env bash
     set -euo pipefail
-    target="${CARGO_TARGET_DIR:-target}"
+    target="$(realpath -m "${CARGO_TARGET_DIR:-target}")"
     rm -rf "$target/site"
     mkdir -p "$target/site"
     cargo doc --workspace --no-deps
@@ -47,7 +47,7 @@ docs:
     cp docs/landing/index.html "$target/site/index.html"
     if command -v mdbook >/dev/null 2>&1; then
       mdbook test docs/book
-      mdbook build docs/book -d "$PWD/$target/site/docs"
+      mdbook build docs/book -d "$target/site/docs"
     else
       echo "mdbook not installed (cargo install mdbook --version 0.5.4 --locked); skipping the book"
     fi
