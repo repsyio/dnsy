@@ -1,7 +1,7 @@
 //! [`EngineBuilder`]: the one place that assembles the pipeline's components.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use dnsy_config::Config;
@@ -15,7 +15,7 @@ use dnsy_resolver::forward::{DnssecConfigError, DnssecPolicy, MAX_CONCURRENT_FET
 use dnsy_resolver::groups::{
     Exchange, GroupError, GroupSet, GroupStore, GroupStoreError, SystemClock, ThreadRng,
 };
-use dnsy_resolver::{Cache, UpstreamClient, UpstreamConfig, UpstreamError};
+use dnsy_resolver::{Cache, Refreshes, UpstreamClient, UpstreamConfig, UpstreamError};
 use dnsy_store::Store;
 use dnsy_zone::{
     KeyStore, KeyStoreError, ZoneError, ZoneSigning, ZoneStore, passphrase_from_environment,
@@ -24,7 +24,7 @@ use std::sync::atomic::AtomicBool;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use crate::engine::{Engine, Filters, RATE_LIMIT_KEYS};
+use crate::engine::{Engine, Filters, Now, PREFETCH_QUEUE, RATE_LIMIT_KEYS};
 use crate::response::ResponseIpPolicy;
 
 /// Why the engine could not be assembled.
@@ -75,6 +75,8 @@ pub struct EngineBuilder<E = UpstreamClient> {
     deadline: Duration,
     dnssec: DnssecPolicy,
     querylog_task: Option<JoinHandle<()>>,
+    stale_wait: Duration,
+    now: Now,
 }
 
 impl EngineBuilder<UpstreamClient> {
@@ -204,6 +206,8 @@ impl<E: Exchange> EngineBuilder<E> {
             deadline: Duration::from_millis(config.resolver.timeout_ms).saturating_mul(attempts),
             dnssec: DnssecPolicy::off(),
             querylog_task: None,
+            stale_wait: Duration::from_millis(config.cache.serve_stale.client_timeout_ms),
+            now: Arc::new(Instant::now),
         }
     }
 
@@ -271,6 +275,13 @@ impl<E: Exchange> EngineBuilder<E> {
         self
     }
 
+    /// Replaces the clock the cache is driven by (tests move it by hand).
+    #[must_use]
+    pub fn clock(mut self, now: impl Fn() -> Instant + Send + Sync + 'static) -> Self {
+        self.now = Arc::new(now);
+        self
+    }
+
     /// The query-log writer task started by [`EngineBuilder::from_config`]; it finishes once the
     /// engine (holding the writer) is dropped and the remaining events are flushed.
     pub fn take_querylog_task(&mut self) -> Option<JoinHandle<()>> {
@@ -279,7 +290,13 @@ impl<E: Exchange> EngineBuilder<E> {
 
     #[must_use]
     pub fn build(self) -> Engine<E> {
+        let (prefetch_tx, prefetch_rx) = tokio::sync::mpsc::channel(PREFETCH_QUEUE);
         Engine {
+            now: self.now,
+            stale_wait: self.stale_wait,
+            refreshes: Refreshes::new(),
+            prefetch_tx,
+            prefetch_rx: tokio::sync::Mutex::new(prefetch_rx),
             acl: ArcSwap::from_pointee(self.acl),
             rate: ArcSwap::from_pointee(RateLimiter::new(self.rate_qps, RATE_LIMIT_KEYS)),
             filter: self.filter,

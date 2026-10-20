@@ -28,11 +28,13 @@ use dnsy_filter::{
 };
 use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink};
 use dnsy_proto::{EDNS_VERSION, Edns, Message, Name, Opcode, Question, Rcode, RecordType, ede};
-use dnsy_resolver::forward::{DnssecPolicy, UpstreamFetcher, cap_ttls, unix_now};
+use dnsy_resolver::forward::{DnssecPolicy, UpstreamFetcher, cap_ttls, dnssec_query, unix_now};
 use dnsy_resolver::groups::{Exchange, GroupError, GroupSet};
-use dnsy_resolver::{Cache, CacheKey, CacheLookup, Upstream, UpstreamClient, UpstreamError};
+use dnsy_resolver::{
+    Cache, CacheKey, CacheLookup, RefreshGuard, Refreshes, Upstream, UpstreamClient, UpstreamError,
+};
 use dnsy_zone::{ZoneSigning, ZoneStore};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::handler::{Handler, RequestContext};
 use crate::response::{
@@ -42,6 +44,17 @@ use crate::response::{
 
 /// Clients tracked by the rate limiter.
 pub(crate) const RATE_LIMIT_KEYS: usize = 100_000;
+/// Prefetches waiting for a worker; further ones are dropped, the entry then just expires.
+pub(crate) const PREFETCH_QUEUE: usize = 64;
+
+/// The time source the cache is driven by.
+pub(crate) type Now = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+/// One background refresh of a popular entry. Holding the guard keeps the key's slot.
+pub(crate) struct PrefetchJob {
+    key: CacheKey,
+    _guard: RefreshGuard,
+}
 
 /// The request pipeline. Built by [`crate::EngineBuilder`]; policy snapshots (ACL,
 /// response-IP policy, upstream groups, rate limit) can be swapped while serving.
@@ -64,6 +77,13 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) fetch_permits: Semaphore,
     /// Set while the system clock is before the policy's floor (shown by `/readyz`).
     pub(crate) clock_untrusted: Arc<AtomicBool>,
+    pub(crate) now: Now,
+    /// How long a client waits for a refresh before it is answered from a stale entry.
+    pub(crate) stale_wait: Duration,
+    /// Refreshes in flight, per key (serve-stale and prefetch share it).
+    pub(crate) refreshes: Arc<Refreshes>,
+    pub(crate) prefetch_tx: mpsc::Sender<PrefetchJob>,
+    pub(crate) prefetch_rx: tokio::sync::Mutex<mpsc::Receiver<PrefetchJob>>,
 }
 
 /// Where the active blocklist filter comes from.
@@ -399,13 +419,27 @@ impl<E: Exchange> Engine<E> {
         let policy = self.dnssec.load_full();
         let validating = policy.mode != Validation::Off && !query.header.cd;
         let serve_bogus = policy.mode == Validation::Permissive;
-        let (msg, source, dnssec) = match self.cache.get_for(&key, Instant::now(), serve_bogus) {
-            CacheLookup::Fresh { msg, dnssec } => (msg, AnswerSource::Cache, dnssec),
+        let (msg, source, dnssec) = match self.cache.get_for(&key, (self.now)(), serve_bogus) {
+            CacheLookup::Fresh { msg, dnssec } => {
+                self.queue_prefetch(&key);
+                (msg, AnswerSource::Cache, dnssec)
+            }
+            CacheLookup::Stale { msg, dnssec, .. } => {
+                if let Some((fresh, from, status)) = self
+                    .refresh_stale(ctx, query, question, &key, &policy, validating)
+                    .await
+                {
+                    (fresh, AnswerSource::Upstream(from), status)
+                } else {
+                    self.cache.note_stale_served();
+                    (stale_answer(msg), AnswerSource::CacheStale, dnssec)
+                }
+            }
             CacheLookup::Miss => {
                 let (msg, from, dnssec) = self
-                    .resolve(ctx, query, question, &policy, validating)
+                    .resolve(ctx.received_at, query, question, &policy, validating)
                     .await?;
-                self.cache.insert(key, &msg, dnssec, Instant::now());
+                self.cache.insert(key, &msg, dnssec, (self.now)());
                 (msg, AnswerSource::Upstream(from), dnssec)
             }
         };
@@ -419,11 +453,104 @@ impl<E: Exchange> Engine<E> {
         Ok((msg, source, dnssec))
     }
 
+    /// Refreshes an expired entry for a waiting client (RFC 8767): one in-flight refresh per
+    /// key, the others answer stale at once. `None` means answer from the stale entry: the
+    /// refresh is coalesced away, failed, came back SERVFAIL or took longer than `stale_wait`.
+    async fn refresh_stale(
+        &self,
+        ctx: &RequestContext,
+        query: &Message,
+        question: &Question,
+        key: &CacheKey,
+        policy: &DnssecPolicy,
+        validating: bool,
+    ) -> Option<(Message, SocketAddr, DnssecStatus)> {
+        let _slot = self.refreshes.begin(key)?;
+        let resolved = tokio::time::timeout(
+            self.stale_wait,
+            self.resolve(ctx.received_at, query, question, policy, validating),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        if resolved.0.header.rcode == Rcode::ServFail {
+            return None;
+        }
+        self.cache
+            .insert(key.clone(), &resolved.0, resolved.2, (self.now)());
+        Some(resolved)
+    }
+
+    /// Queues a background refresh when the live entry for `key` is popular and close to expiry.
+    fn queue_prefetch(&self, key: &CacheKey) {
+        if !self.cache.prefetch_due(key, (self.now)()) {
+            return;
+        }
+        if let Some(guard) = self.refreshes.begin(key) {
+            // A full queue drops the job (and frees the slot): the entry simply expires.
+            let _ = self.prefetch_tx.try_send(PrefetchJob {
+                key: key.clone(),
+                _guard: guard,
+            });
+        }
+    }
+
+    /// Runs the prefetch workers: four refreshes at a time, forever. The
+    /// binary spawns this once next to the listeners; dropping the future stops it. Each refresh
+    /// takes the normal path (validation included), so a prefetch never stores more than a
+    /// client-driven miss would.
+    pub async fn run_prefetch(&self) {
+        tokio::join!(
+            self.prefetch_worker(),
+            self.prefetch_worker(),
+            self.prefetch_worker(),
+            self.prefetch_worker(),
+        );
+    }
+
+    async fn prefetch_worker(&self) {
+        loop {
+            let job = self.prefetch_rx.lock().await.recv().await;
+            let Some(job) = job else {
+                return;
+            };
+            self.prefetch(&job.key).await;
+        }
+    }
+
+    async fn prefetch(&self, key: &CacheKey) {
+        let question = Question {
+            name: key.name.clone(),
+            qtype: key.qtype,
+            qclass: key.qclass,
+        };
+        let mut query = dnssec_query(&question);
+        query.header.cd = key.cd_bit;
+        if let Some(edns) = &mut query.edns {
+            edns.dnssec_ok = key.do_bit;
+        }
+        let policy = self.dnssec.load_full();
+        let validating = policy.mode != Validation::Off && !key.cd_bit;
+        self.cache.note_prefetch();
+        match self
+            .resolve(Instant::now(), &query, &question, &policy, validating)
+            .await
+        {
+            Ok((msg, _, dnssec)) if msg.header.rcode != Rcode::ServFail => {
+                self.cache.insert(key.clone(), &msg, dnssec, (self.now)());
+            }
+            Ok(_) => {
+                tracing::debug!(qname = %key.name, "prefetch answered SERVFAIL; kept the entry");
+            }
+            Err(e) => tracing::debug!(qname = %key.name, failure = ?e, "prefetch failed"),
+        }
+    }
+
     /// Forwards, validates (when `validating`) and scrubs one cache miss. Returns the message to
     /// cache and serve, the upstream that answered and the validation status.
     async fn resolve(
         &self,
-        ctx: &RequestContext,
+        received_at: Instant,
         query: &Message,
         question: &Question,
         policy: &DnssecPolicy,
@@ -434,7 +561,7 @@ impl<E: Exchange> Engine<E> {
         };
         let do_bit = dnssec_ok(query);
         let (raw, from) = self
-            .forward(ctx, &groups, query, question, do_bit, validating)
+            .forward(received_at, &groups, query, question, do_bit, validating)
             .await?;
         if !answers_question(question, &raw) {
             return Err(UpstreamFailure::Network);
@@ -513,7 +640,7 @@ impl<E: Exchange> Engine<E> {
     /// client's DO and CD bits. Returns the raw (unscrubbed) answer.
     async fn forward(
         &self,
-        ctx: &RequestContext,
+        received_at: Instant,
         groups: &GroupSet,
         query: &Message,
         question: &Question,
@@ -547,7 +674,7 @@ impl<E: Exchange> Engine<E> {
             }
             Err(failure)
         };
-        let deadline = tokio::time::Instant::from_std(ctx.received_at + self.deadline);
+        let deadline = tokio::time::Instant::from_std(received_at + self.deadline);
         let resp = tokio::time::timeout_at(deadline, attempts)
             .await
             .map_err(|_| UpstreamFailure::Unreachable)??;
@@ -590,6 +717,17 @@ impl<E: Exchange> Engine<E> {
             latency_us: u32::try_from(ctx.received_at.elapsed().as_micros()).unwrap_or(u32::MAX),
         });
     }
+}
+
+/// A stale cache answer, labelled with EDE 3 (stale answer) or 19 (stale NXDOMAIN).
+fn stale_answer(mut msg: Message) -> Message {
+    let (code, text) = if msg.header.rcode == Rcode::NxDomain {
+        (ede::STALE_NXDOMAIN, "stale NXDOMAIN answer")
+    } else {
+        (ede::STALE_ANSWER, "stale answer")
+    };
+    msg.set_ede(code, text);
+    msg
 }
 
 impl<E: Exchange + 'static> Handler for Engine<E> {

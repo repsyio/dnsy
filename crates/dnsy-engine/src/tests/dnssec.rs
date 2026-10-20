@@ -255,7 +255,7 @@ impl Rig {
         };
         match self.h.engine.cache().get_for(&key, Instant::now(), true) {
             CacheLookup::Fresh { msg, dnssec } => Some((msg, dnssec)),
-            CacheLookup::Miss => None,
+            _ => None,
         }
     }
 

@@ -68,7 +68,32 @@ evicted and counted.
 
 **Flush and statistics.** The cache can be flushed entirely or by name (optionally the whole
 subtree below it). Statistics report entries, capacity, hits, misses, inserts, evictions and
-expired entries; the serve-stale and prefetch counters stay at zero until those features land.
+expired entries, stale answers served and prefetches started.
+
+**Serve-stale (RFC 8767).** With `[cache.serve_stale] enabled`, an expired entry is kept for
+`max_stale` seconds more (memory stays bounded by `max_entries`; stale entries are evicted like any
+other). A query that finds only a stale entry refreshes it upstream first and answers with the new
+data. If the refresh fails, comes back SERVFAIL, or takes longer than `client_timeout_ms`, the
+client gets the stale answer instead, with every TTL set to `answer_ttl` and Extended DNS Error 3
+(Stale Answer), or 19 (Stale NXDOMAIN Answer) for a stale NXDOMAIN. The query log records these as
+source `cache_stale` and `stale_served` counts them. At most one refresh runs per cache key: while
+it is in flight, other clients asking for the same name are answered stale at once instead of
+querying upstream again. A refresh that outlasts `client_timeout_ms` is abandoned with the client's
+request. Never served stale: Bogus entries and cached SERVFAILs. A stale answer that was Secure is
+no longer reported as validated (no AD bit): validation does not outlive the lifetime the
+validator allowed. A successful refresh replaces the stale entry.
+
+**Prefetch.** With `[cache.prefetch] enabled`, a live entry that has served at least `min_hits`
+hits and whose remaining lifetime has fallen to `remaining_ttl_pct` percent is refreshed in the
+background, once per entry, so popular names never expire under load. The client that triggers it
+is answered from the cache as usual. Refreshes go through the normal forwarding and DNSSEC
+validation path, share the one-refresh-per-key rule with serve-stale, wait in a queue of 64 (extra
+ones are dropped and the entry simply expires) and run four at a time. `Engine::run_prefetch` is
+the worker loop; the binary spawns it next to the listeners. A failed prefetch keeps the existing
+entry.
+
+**Clock.** Cache operations take the current time as an argument, and the engine's time source can
+be replaced (`EngineBuilder::clock`), so tests move time by hand.
 
 ## Upstream client
 

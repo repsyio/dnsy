@@ -23,6 +23,7 @@ use tempfile::TempDir;
 use crate::{Engine, EngineBuilder, Handler, RESPONSE_IP_LIST, RequestContext, ResponseIpPolicy};
 
 mod dnssec;
+mod stale;
 
 const ZONE: &str = r#"{"schema":1,"origin":"home.test.","default_ttl":3600,
   "soa":{"mname":"ns.home.test.","rname":"h.home.test.","serial":1,"refresh":1,"retry":1,

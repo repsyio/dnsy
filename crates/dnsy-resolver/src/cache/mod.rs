@@ -16,6 +16,11 @@ use dnsy_proto::{
     Class, Edns, EdnsOption, Header, Message, Name, Question, RData, Rcode, Record, RecordType,
 };
 
+mod prefetch;
+mod stale;
+
+pub use stale::{RefreshGuard, Refreshes};
+
 #[cfg(test)]
 mod tests;
 
@@ -45,6 +50,16 @@ pub enum CacheLookup {
     Fresh {
         msg: Message,
         dnssec: DnssecStatus,
+    },
+    /// An expired entry inside the serve-stale window (RFC 8767). Record TTLs are the configured
+    /// `answer_ttl`; a `Secure` entry is reported as `Indeterminate`, because its validation does
+    /// not extend past the lifetime the validator allowed. The caller refreshes, and answers from
+    /// this only when the refresh fails or is too slow (EDE 3, or 19 for NXDOMAIN).
+    Stale {
+        msg: Message,
+        dnssec: DnssecStatus,
+        /// Time since the entry expired.
+        stale_for: Duration,
     },
     Miss,
 }
@@ -96,10 +111,13 @@ struct Entry {
     dnssec: DnssecStatus,
     stored_at: Instant,
     expires_at: Instant,
-    /// End of the serve-stale window (used by the stale lifecycle).
-    #[expect(dead_code, reason = "read by serve-stale (DNSY-45)")]
+    /// End of the serve-stale window.
     stale_until: Instant,
     last_used: u64,
+    /// Fresh hits so far (prefetch popularity).
+    hits: u32,
+    /// A prefetch was already started for this entry.
+    prefetch_started: bool,
 }
 
 struct Shard {
@@ -119,6 +137,8 @@ pub struct Cache {
     inserts: AtomicU64,
     evictions: AtomicU64,
     expired: AtomicU64,
+    stale_served: AtomicU64,
+    prefetches: AtomicU64,
 }
 
 fn lock(shard: &Mutex<Shard>) -> MutexGuard<'_, Shard> {
@@ -152,6 +172,8 @@ impl Cache {
             inserts: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
             expired: AtomicU64::new(0),
+            stale_served: AtomicU64::new(0),
+            prefetches: AtomicU64::new(0),
         }
     }
 
@@ -187,11 +209,20 @@ impl Cache {
     /// as its data, still labelled Bogus, so the caller can serve it without AD.
     pub fn get_for(&self, key: &CacheKey, now: Instant, serve_bogus: bool) -> CacheLookup {
         if self.cfg().enabled && key.qtype != RESERVED_TYPE {
+            let mut stale = None;
             for k in [StoreKey::exact(key), StoreKey::by_name(key)] {
-                if let Some(found) = self.get_exact(&k, key, now, serve_bogus) {
-                    self.hits.fetch_add(1, Ordering::Relaxed);
-                    return found;
+                match self.get_exact(&k, key, now, serve_bogus) {
+                    Some(found @ CacheLookup::Fresh { .. }) => {
+                        self.hits.fetch_add(1, Ordering::Relaxed);
+                        return found;
+                    }
+                    Some(found) => stale = stale.or(Some(found)),
+                    None => {}
                 }
+            }
+            if let Some(found) = stale {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                return found;
             }
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
@@ -209,12 +240,17 @@ impl Cache {
         let mut shard = lock(self.shard_for(stored_key));
         let entry = shard.map.get_mut(stored_key)?;
         if now >= entry.expires_at {
+            if let Some(stale) = self.stale_view(entry, stored_key.by_name, asked, now) {
+                entry.last_used = tick;
+                return Some(stale);
+            }
             shard.map.remove(stored_key);
             self.len.fetch_sub(1, Ordering::Relaxed);
             self.expired.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         entry.last_used = tick;
+        entry.hits = entry.hits.saturating_add(1);
         // A Bogus result is only ever shown to a validating (CD=0) client as SERVFAIL.
         if entry.dnssec == DnssecStatus::Bogus && !asked.cd_bit && !serve_bogus {
             return Some(CacheLookup::Fresh {
@@ -278,6 +314,8 @@ impl Cache {
             expires_at: now + lifetime,
             stale_until: now + lifetime + stale,
             last_used: self.next_tick(),
+            hits: 0,
+            prefetch_started: false,
         };
         let mut shard = lock(self.shard_for(&key));
         if dnssec == DnssecStatus::Bogus
@@ -406,8 +444,8 @@ impl Cache {
             inserts: self.inserts.load(Ordering::Relaxed),
             evictions: self.evictions.load(Ordering::Relaxed),
             expired: self.expired.load(Ordering::Relaxed),
-            stale_served: 0,
-            prefetches: 0,
+            stale_served: self.stale_served.load(Ordering::Relaxed),
+            prefetches: self.prefetches.load(Ordering::Relaxed),
         }
     }
 }
