@@ -562,11 +562,14 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pki-types",
+ "sha2",
  "tempfile",
+ "time",
  "tokio",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "x509-parser",
 ]
 
 [[package]]

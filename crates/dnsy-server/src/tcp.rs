@@ -15,6 +15,7 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
+use crate::dot::mtls::ClientSession;
 use crate::query::{Incoming, encode_response, pad_response, parse};
 
 /// Concurrent requests per connection; the reader stops reading when reached (back-pressure).
@@ -33,7 +34,7 @@ pub(crate) async fn serve<H: Handler>(
     shutdown: watch::Receiver<bool>,
     limits: Limits,
 ) {
-    let wrap = |stream: TcpStream| std::future::ready(Some(stream));
+    let wrap = |stream: TcpStream| std::future::ready(Some((stream, None)));
     serve_with(listener, handler, shutdown, limits, Flavor::PLAIN, wrap).await;
 }
 
@@ -54,7 +55,8 @@ impl Flavor {
 
 /// Accept loop shared by TCP and `DoT`. `wrap` turns an accepted socket into the byte stream the
 /// framing runs on (the identity for TCP, the TLS handshake for `DoT`); `None` closes the socket.
-/// It runs inside the connection task, after the connection slot is taken.
+/// It also returns the authenticated client session, if any (mTLS). It runs inside the connection
+/// task, after the connection slot is taken.
 pub(crate) async fn serve_with<H, S, F, Fut>(
     listener: TcpListener,
     handler: Arc<H>,
@@ -66,7 +68,7 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
     H: Handler,
     S: AsyncRead + AsyncWrite + Send + 'static,
     F: Fn(TcpStream) -> Fut + Clone + Send + 'static,
-    Fut: Future<Output = Option<S>> + Send,
+    Fut: Future<Output = Option<(S, Option<ClientSession>)>> + Send,
 {
     let slots = Arc::new(Semaphore::new(limits.max_conns));
     let mut conns = JoinSet::new();
@@ -92,8 +94,8 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
         let shutdown = shutdown.clone();
         let wrap = wrap.clone();
         conns.spawn(async move {
-            if let Some(stream) = wrap(stream).await {
-                connection(stream, client, handler, shutdown, limits, flavor).await;
+            if let Some((stream, session)) = wrap(stream).await {
+                connection(stream, client, session, handler, shutdown, limits, flavor).await;
             }
             drop(permit);
         });
@@ -107,6 +109,7 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
 async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
     stream: S,
     client: SocketAddr,
+    mut session: Option<ClientSession>,
     handler: Arc<H>,
     mut shutdown: watch::Receiver<bool>,
     limits: Limits,
@@ -152,12 +155,17 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
                 break;
             }
             Incoming::Query(query) => {
+                // Certificate revoked, removed from the allowlist or expired since the handshake.
+                if session.as_mut().is_some_and(|s| !s.still_permitted()) {
+                    break;
+                }
+                let principal = session.as_ref().map(|s| s.principal.clone());
                 let tx = tx.clone();
                 let handler = Arc::clone(&handler);
                 let ctx = RequestContext {
                     client,
                     transport: flavor.transport,
-                    principal: None,
+                    principal,
                     received_at: Instant::now(),
                 };
                 requests.spawn(async move {

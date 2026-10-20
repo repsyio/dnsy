@@ -30,6 +30,7 @@ use tokio::task::JoinHandle;
 
 pub use doh::{DohAuthenticator, DohConfig, DohDenied, TokenAuth};
 pub use dot::DotConfig;
+pub use dot::mtls::{AllowedCert, Allowlist, MtlsMode, MtlsVerifier};
 pub use query::{MAX_UDP_PAYLOAD, MIN_UDP_PAYLOAD};
 
 /// Listener settings.
@@ -128,6 +129,7 @@ impl Server {
                     Arc::clone(&handler),
                     rx.clone(),
                     limits,
+                    dot.mtls().cloned(),
                 )));
             }
             tasks.push(dot::certs::watch_reloads(store, rx.clone())?);

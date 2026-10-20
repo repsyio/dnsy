@@ -6,6 +6,7 @@
 //! through [`DotConfig::client_verifier`]; this module only forwards it to rustls.
 
 pub(crate) mod certs;
+pub mod mtls;
 
 use std::io;
 use std::net::SocketAddr;
@@ -34,8 +35,11 @@ pub struct DotConfig {
     /// Private key (PEM).
     pub key: PathBuf,
     /// Client certificate verifier; `None` means no client authentication. The mTLS story
-    /// supplies a `WebPkiClientVerifier` here.
+    /// supplies an [`mtls::MtlsVerifier`] here.
     pub client_verifier: Option<Arc<dyn ClientCertVerifier>>,
+    /// The [`mtls::MtlsVerifier`] behind `client_verifier`, if any. Set by [`Self::with_mtls`];
+    /// lets the listener re-check connections when the CRL or allowlist changes.
+    mtls: Option<Arc<mtls::MtlsVerifier>>,
 }
 
 impl std::fmt::Debug for DotConfig {
@@ -45,6 +49,7 @@ impl std::fmt::Debug for DotConfig {
             .field("cert", &self.cert)
             .field("key", &self.key)
             .field("client_verifier", &self.client_verifier.is_some())
+            .field("mtls", &self.mtls.is_some())
             .finish()
     }
 }
@@ -57,7 +62,20 @@ impl DotConfig {
             cert,
             key,
             client_verifier: None,
+            mtls: None,
         }
+    }
+
+    pub(crate) fn mtls(&self) -> Option<&Arc<mtls::MtlsVerifier>> {
+        self.mtls.as_ref()
+    }
+
+    /// Enables mTLS with `verifier`.
+    #[must_use]
+    pub fn with_mtls(mut self, verifier: Arc<mtls::MtlsVerifier>) -> Self {
+        self.client_verifier = Some(verifier.as_verifier());
+        self.mtls = Some(verifier);
+        self
     }
 }
 
@@ -70,11 +88,19 @@ pub(crate) fn acceptor(
     let builder = rustls::ServerConfig::builder_with_provider(Arc::new(default_provider()))
         .with_safe_default_protocol_versions()
         .map_err(io::Error::other)?;
+    let verifier_set = verifier.is_some();
     let builder = match verifier {
         Some(v) => builder.with_client_cert_verifier(v),
         None => builder.with_no_client_auth(),
     };
+    let mutual = verifier_set;
     let mut config = builder.with_cert_resolver(store);
+    if mutual {
+        // A resumed session skips client certificate verification, so a revoked or removed
+        // certificate would keep working. Force a full handshake every time.
+        config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+        config.send_tls13_tickets = 0;
+    }
     config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
@@ -85,13 +111,23 @@ pub(crate) async fn serve<H: Handler>(
     handler: Arc<H>,
     shutdown: watch::Receiver<bool>,
     limits: Limits,
+    mtls: Option<Arc<mtls::MtlsVerifier>>,
 ) {
     let idle = limits.idle;
     let wrap = move |stream| {
         let acceptor = acceptor.clone();
+        let mtls = mtls.clone();
         async move {
             match tokio::time::timeout(idle, acceptor.accept(stream)).await {
-                Ok(Ok(tls)) => Some(tls),
+                Ok(Ok(tls)) => {
+                    let chain = tls.get_ref().1.peer_certificates();
+                    if let Ok(session) = mtls::ClientSession::new(chain, mtls.as_ref()) {
+                        Some((tls, session))
+                    } else {
+                        tracing::debug!("dot client certificate no longer permitted");
+                        None
+                    }
+                }
                 Ok(Err(e)) => {
                     tracing::debug!(error = %e, "dot handshake failed");
                     None

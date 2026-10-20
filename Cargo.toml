@@ -16,6 +16,7 @@ tokio = { version = "1.54.0", features = ["full"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 rustls-pki-types = "1.15.1"
+x509-parser = "0.18.1"
 webpki-roots = "1.0.10"
 # HTTP server and client
 axum = "0.8.9"
