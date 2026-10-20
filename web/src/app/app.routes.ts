@@ -36,13 +36,13 @@ export const routes: Routes = [
         path: 'filtering',
         title: 'Filtering',
         loadComponent: () =>
-          import('./pages/filtering/filtering.page').then((m) => m.FilteringPage),
+          import('./features/filtering/filtering.page').then((m) => m.FilteringPage),
       },
       {
         path: 'upstreams',
         title: 'Upstreams',
         loadComponent: () =>
-          import('./pages/upstreams/upstreams.page').then((m) => m.UpstreamsPage),
+          import('./features/upstreams/upstreams.page').then((m) => m.UpstreamsPage),
       },
       {
         path: 'query-log',
@@ -57,7 +57,23 @@ export const routes: Routes = [
       {
         path: 'settings',
         title: 'Settings',
-        loadComponent: () => import('./pages/settings/settings.page').then((m) => m.SettingsPage),
+        loadComponent: () =>
+          import('./features/settings/settings.page').then((m) => m.SettingsPage),
+      },
+      {
+        path: 'acl',
+        title: 'ACL and rate limits',
+        loadComponent: () => import('./features/acl/acl.page').then((m) => m.AclPage),
+      },
+      {
+        path: 'client-certs',
+        title: 'Client certificates',
+        loadComponent: () => import('./features/certs/certs.page').then((m) => m.CertsPage),
+      },
+      {
+        path: 'cache',
+        title: 'Cache',
+        loadComponent: () => import('./features/cache/cache.page').then((m) => m.CachePage),
       },
       // Component gallery; production builds leave it out, so the path falls through to 404.
       ...(isDevMode()

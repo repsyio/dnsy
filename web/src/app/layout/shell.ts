@@ -21,6 +21,9 @@ export const NAV_ITEMS = [
   { path: '/upstreams', label: 'Upstreams' },
   { path: '/query-log', label: 'Query log' },
   { path: '/users', label: 'Users' },
+  { path: '/acl', label: 'ACL' },
+  { path: '/client-certs', label: 'Client certs' },
+  { path: '/cache', label: 'Cache' },
   { path: '/settings', label: 'Settings' },
 ] as const;
 
