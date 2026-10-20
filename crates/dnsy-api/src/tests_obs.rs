@@ -322,7 +322,7 @@ async fn stats_top_domains_shape() {
 #[tokio::test]
 async fn invalid_range_400() {
     let f = Fx::new(|s| s);
-    let t = f.viewer().await;
+    let t = f.operator().await;
     for uri in [
         "/api/v1/stats/summary?from=100&to=100",
         "/api/v1/stats/summary?from=200&to=100",
@@ -333,6 +333,16 @@ async fn invalid_range_400() {
         "/api/v1/stats/timeseries?bucket=0",
         "/api/v1/stats/timeseries?from=0&to=31536000000&bucket=60",
         "/api/v1/stats/summary?from=abc",
+        "/api/v1/stats/summary?from=-9223372036854775808&to=9223372036854775807",
+        "/api/v1/stats/summary?from=-9223372036854775808&to=100",
+        "/api/v1/stats/summary?from=0&to=9223372036854775807",
+        "/api/v1/stats/summary?to=-9223372036854775808",
+        "/api/v1/stats/top-domains?from=9223372036854775807&to=9223372036854775807",
+        "/api/v1/stats/timeseries?from=-9223372036854775808&to=9223372036854775807&bucket=60",
+        "/api/v1/stats/timeseries?from=0&to=60000&bucket=18446744073709551615",
+        "/api/v1/querylog?from=-9223372036854775808",
+        "/api/v1/querylog?to=9223372036854775807",
+        "/api/v1/querylog/stream?from=-9223372036854775808",
     ] {
         let res = f.call(Method::GET, uri, Some(&t)).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{uri}");

@@ -11,7 +11,7 @@ use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use super::querylog::{Params, scrub};
+use super::querylog::{Params, check_ms, scrub};
 use crate::auth::{Read, RequireScope};
 use crate::error::{ApiError, Problem};
 use crate::state::ApiState;
@@ -19,6 +19,7 @@ use crate::state::ApiState;
 const DEFAULT_RANGE_MS: i64 = 24 * 3600 * 1000;
 const MAX_RANGE_MS: i64 = 366 * 24 * 3600 * 1000;
 const DEFAULT_BUCKET_S: u64 = 3600;
+const MAX_BUCKET_S: u64 = 366 * 24 * 3600;
 const MAX_POINTS: i64 = 5000;
 const DEFAULT_TOP: usize = 10;
 const MAX_TOP: usize = 100;
@@ -121,14 +122,17 @@ fn now_ms() -> i64 {
 }
 
 fn range(from: Option<i64>, to: Option<i64>) -> Result<TimeRange, ApiError> {
-    let to_ms = to.unwrap_or_else(now_ms);
-    let from_ms = from.unwrap_or(to_ms - DEFAULT_RANGE_MS);
+    let to_ms = check_ms("to", to.unwrap_or_else(now_ms))?;
+    let from_ms = match from {
+        Some(f) => check_ms("from", f)?,
+        None => to_ms.saturating_sub(DEFAULT_RANGE_MS).max(0),
+    };
     if from_ms >= to_ms {
         return Err(ApiError::BadRequest(
             "`from` must be before `to`".to_owned(),
         ));
     }
-    if to_ms - from_ms > MAX_RANGE_MS {
+    if to_ms.saturating_sub(from_ms) > MAX_RANGE_MS {
         return Err(ApiError::BadRequest(
             "the range must not exceed 366 days".to_owned(),
         ));
@@ -219,7 +223,13 @@ async fn timeseries(
 ) -> Result<Json<Vec<SeriesPoint>>, ApiError> {
     let range = range(p.from, p.to)?;
     let bucket = p.bucket.unwrap_or(DEFAULT_BUCKET_S);
-    let width = i64::try_from(bucket.max(1)).unwrap_or(i64::MAX);
+    if bucket > MAX_BUCKET_S {
+        return Err(ApiError::BadRequest(
+            "`bucket` must not exceed 366 days".to_owned(),
+        ));
+    }
+    #[expect(clippy::cast_possible_wrap, reason = "bucket is capped at 366 days")]
+    let width = bucket.max(1) as i64;
     if (range.to_ms - range.from_ms) / 1000 / width > MAX_POINTS {
         return Err(ApiError::BadRequest(format!(
             "the range holds more than {MAX_POINTS} buckets; use a larger `bucket`"

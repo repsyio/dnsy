@@ -36,6 +36,20 @@ impl<T: serde::de::DeserializeOwned, S: Send + Sync> FromRequestParts<S> for Par
     }
 }
 
+/// Latest accepted timestamp: the end of year 9999 in unix milliseconds.
+const MAX_MS: i64 = 253_402_300_799_999;
+
+/// Reject timestamps outside `0..=MAX_MS`, so later arithmetic on them cannot overflow.
+pub(crate) fn check_ms(what: &str, v: i64) -> Result<i64, ApiError> {
+    if (0..=MAX_MS).contains(&v) {
+        Ok(v)
+    } else {
+        Err(ApiError::BadRequest(format!(
+            "`{what}` must be unix milliseconds between 0 and {MAX_MS}"
+        )))
+    }
+}
+
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 500;
 /// Rows fetched per live-tail poll.
@@ -231,7 +245,9 @@ fn name_of<T: Copy + Into<u16>>(table: &[(&str, T)], prefix: &str, v: T) -> Stri
 
 impl LogFilter {
     fn to_query(&self, state: &ApiState) -> Result<QueryLogQuery, ApiError> {
-        if let (Some(from), Some(to)) = (self.from, self.to)
+        let from = self.from.map(|v| check_ms("from", v)).transpose()?;
+        let to = self.to.map(|v| check_ms("to", v)).transpose()?;
+        if let (Some(from), Some(to)) = (from, to)
             && from >= to
         {
             return Err(ApiError::BadRequest(
@@ -270,8 +286,8 @@ impl LogFilter {
             ),
         };
         Ok(QueryLogQuery {
-            from_ms: self.from,
-            to_ms: self.to,
+            from_ms: from,
+            to_ms: to,
             client,
             qname_contains: self.domain.clone().filter(|d| !d.is_empty()),
             qtype: self
