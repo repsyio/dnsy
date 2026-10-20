@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::Cursor;
 
 use dnsy_proto::{
@@ -217,7 +218,7 @@ fn ede_code(m: &Message) -> Option<u16> {
 fn block_response_modes() {
     let r = block_response(&query(RecordType::A, true), BlockMode::NxDomain, "l").unwrap();
     assert_eq!(r.header.rcode, Rcode::NxDomain);
-    assert!(r.answers.is_empty());
+    assert_eq!(r.answers, []);
     assert_eq!(ede_code(&r), Some(ede::BLOCKED));
     assert_eq!(r.header.id, 7);
 
@@ -230,7 +231,7 @@ fn block_response_modes() {
     let r = block_response(&query(RecordType::Aaaa, true), BlockMode::NullIp, "l").unwrap();
     assert_eq!(r.answers[0].data, RData::Aaaa([0; 16].into()));
     let r = block_response(&query(RecordType::Txt, true), BlockMode::NullIp, "l").unwrap();
-    assert!(r.answers.is_empty());
+    assert_eq!(r.answers, []);
     assert_eq!(r.header.rcode, Rcode::NoError);
 
     let mode = BlockMode::CustomIp {
@@ -239,12 +240,8 @@ fn block_response_modes() {
     };
     let r = block_response(&query(RecordType::A, true), mode, "l").unwrap();
     assert_eq!(r.answers[0].data, RData::A([10, 0, 0, 1].into()));
-    assert!(
-        block_response(&query(RecordType::Aaaa, true), mode, "l")
-            .unwrap()
-            .answers
-            .is_empty()
-    );
+    let r = block_response(&query(RecordType::Aaaa, true), mode, "l").unwrap();
+    assert_eq!(r.answers, []);
 
     let r = block_response(
         &query(RecordType::A, true),
@@ -276,7 +273,7 @@ fn million_entries_memory_bound() {
     }
     let mut text = String::with_capacity(32 << 20);
     for i in 0..1_000_000u32 {
-        text.push_str(&format!("host{i}.tracker{}.example\n", i % 1000));
+        writeln!(text, "host{i}.tracker{}.example", i % 1000).unwrap();
     }
     let before = rss_kib();
     let mut b = FilterSetBuilder::new(BlockMode::NullIp, FilterLimits::default());
@@ -295,7 +292,7 @@ proptest! {
     fn arbitrary_bytes_never_panic(data in proptest::collection::vec(any::<u8>(), 0..4096), fmt in 0..4usize) {
         let format = [ListFormat::Hosts, ListFormat::Domains, ListFormat::Adblock, ListFormat::Auto][fmt];
         let mut b = FilterSetBuilder::new(BlockMode::NullIp, FilterLimits::default());
-        let lines = data.iter().filter(|&&c| c == b'\n').count() + 1;
+        let lines = data.split(|&c| c == b'\n').count();
         let stats = b.add_list("p", format, Cursor::new(data)).unwrap();
         prop_assert!(stats.invalid + stats.skipped <= lines);
         let set = b.build();
