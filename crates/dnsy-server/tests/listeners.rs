@@ -250,3 +250,49 @@ async fn shutdown_drains() {
         .unwrap()
         .unwrap();
 }
+
+/// Drops every query whose name starts with `drop` (as the engine does for ACL drop).
+struct Dropper;
+
+impl Handler for Dropper {
+    fn handle(&self, _ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send {
+        std::future::ready(Message::response_to(&query))
+    }
+
+    async fn respond(&self, ctx: RequestContext, query: Message) -> Option<Message> {
+        if query.questions[0].name.to_string().starts_with("drop") {
+            None
+        } else {
+            Some(self.handle(ctx, query).await)
+        }
+    }
+}
+
+#[tokio::test]
+async fn udp_drop_sends_no_reply() {
+    let server = Server::start(config(), Arc::new(Dropper)).await.unwrap();
+    let dropped = udp_exchange(
+        &server,
+        &query(1, "drop.example.", None).encode(512).unwrap(),
+    )
+    .await;
+    assert!(dropped.is_none(), "dropped query must get no reply");
+    let kept = udp_exchange(
+        &server,
+        &query(2, "keep.example.", None).encode(512).unwrap(),
+    )
+    .await;
+    assert!(kept.is_some());
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn tcp_drop_sends_no_reply_but_keeps_connection() {
+    let server = Server::start(config(), Arc::new(Dropper)).await.unwrap();
+    let mut s = TcpStream::connect(server.tcp_addrs()[0]).await.unwrap();
+    send_frame(&mut s, &query(1, "drop.example.", None)).await;
+    send_frame(&mut s, &query(2, "keep.example.", None)).await;
+    let only = read_frame(&mut s).await.unwrap();
+    assert_eq!(only.header.id, 2);
+    server.shutdown().await;
+}

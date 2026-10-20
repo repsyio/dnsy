@@ -14,6 +14,12 @@ check:
     cargo deny check
     just openapi-check
 
+# Release binary with the web UI embedded: builds web/dist first, then `dnsy` with `embed-ui`.
+# A plain `cargo build -p dnsy` needs no node and serves 404 for the UI paths.
+build:
+    cd web && pnpm install --frozen-lockfile && pnpm build
+    cargo build --release -p dnsy --features embed-ui
+
 # Run the Rust test suite.
 test:
     cargo nextest run --workspace --no-tests=pass

@@ -1,3 +1,61 @@
 # Operations
 
-Stub: query log, stats, cache flush, backups, key backup, upgrades and migrations.
+## Signals
+
+| Signal | Effect |
+| --- | --- |
+| `SIGTERM`, `SIGINT` | graceful shutdown: listeners stop accepting, in-flight queries finish (5 s), the API closes, the query log is flushed, then the process exits 0 |
+| `SIGHUP` | reload without a restart: zone files, TLS certificates for DoT/DoH, the DoT client CA bundle, blocklists and custom rules, and a pass of DNSSEC re-signing |
+
+Zone files and certificates are also watched on disk, so `SIGHUP` is a "do it now". Changes to
+`dnsy.toml` itself (listen addresses, limits, logging) need a restart. A reload that fails keeps
+the previous state and logs the reason. The trust anchor file (`[dnssec] trust_anchor_file`)
+reload hook runs on `SIGHUP` and is applied by the DNSSEC validation wiring.
+
+## Logging
+
+Logs go to stderr through `tracing`. `[logging] level` is `trace` to `error`; `format = "json"`
+writes one JSON object per line for log shippers. Tokens, `Authorization` headers, cookies,
+DoH path tokens, passwords and the DNSSEC key passphrase are never logged.
+
+## Health
+
+`GET /healthz` answers while the process runs. `GET /readyz` answers 200 when the database
+works and 503 otherwise; point load balancers and orchestrators at it.
+
+## Background work
+
+`serve` runs these tasks for you: blocklist refresh, zone hot reload, re-signing of DNSSEC zones
+(every minute it checks for changed zones, expiring signatures and key state changes), the key
+rollover timer (advances key states per the zone policy), client-certificate allowlist refresh
+and query-log retention (`[querylog] retention_days`).
+
+## Query log, stats and cache
+
+The query log and stats live in SQLite and are served by the API and UI. Flush the cache from
+the UI or the command line:
+
+```sh
+dnsy cache flush --token "$DNSY_TOKEN"                    # everything
+dnsy cache flush example.com --subtree --token "$DNSY_TOKEN"
+```
+
+Dropped queries (ACL `drop`, UDP rate limiting) get no reply on UDP and TCP; over DoH they
+become `403`.
+
+## Backups
+
+Stop writing, or use SQLite's online backup, and copy `<data_dir>/dnsy.db` (with its `-wal`
+file). It holds users, tokens, rules, upstream groups and DNSSEC private keys; protect the
+copy like the keys themselves. Without `DNSY_DNSSEC_PASSPHRASE` or `key_passphrase_file` the
+keys are stored unencrypted. Zone files are plain JSON in `[zones] dir`; back them up too.
+
+## Upgrades and migrations
+
+`dnsy serve` and `dnsy migrate` apply pending migrations on start. `dnsy migrate --status`
+lists applied and pending migrations without touching the database. Migrations are never
+edited after release; a database newer than the binary is refused. Back up before upgrading.
+
+## Building with the UI
+
+`just build` produces the release binary with the web UI embedded (see [Install](install.md)).

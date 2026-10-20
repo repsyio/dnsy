@@ -57,7 +57,9 @@ pub(crate) async fn serve<H: Handler>(
                         principal: None,
                         received_at,
                     };
-                    let response = handler.handle(ctx, query.clone()).await;
+                    let Some(response) = handler.respond(ctx, query.clone()).await else {
+                        return;
+                    };
                     match encode_response(&query, &response, limit) {
                         Some(bytes) => bytes,
                         None => return,

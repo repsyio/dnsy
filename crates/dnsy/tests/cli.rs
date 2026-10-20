@@ -1,0 +1,627 @@
+//! Runs the real binary: CLI subcommands and `serve` (all listeners on port 0).
+
+use std::io::{Read as _, Write as _};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+use dnsy_proto::{Class, Message, Name, Question, RData, Rcode, RecordType};
+use tempfile::TempDir;
+
+const ZONE: &str = r#"{
+  "schema": 1,
+  "origin": "example.test.",
+  "default_ttl": 300,
+  "soa": {"mname": "ns1.example.test.", "rname": "hostmaster.example.test.",
+          "serial": 1, "refresh": 7200, "retry": 3600, "expire": 1209600, "minimum": 300},
+  "records": [{"name": "www", "type": "A", "value": "192.0.2.7"}],
+  "dnssec": {"enabled": SIGNED}
+}"#;
+
+/// A path as a TOML basic string.
+fn q(p: &Path) -> String {
+    serde_json::to_string(p.to_str().unwrap()).unwrap()
+}
+
+struct Env {
+    dir: TempDir,
+}
+
+impl Env {
+    fn new(signed: bool) -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let zones = dir.path().join("zones");
+        std::fs::create_dir(&zones).unwrap();
+        std::fs::write(
+            zones.join("example.test.json"),
+            ZONE.replace("SIGNED", &signed.to_string()),
+        )
+        .unwrap();
+        let config = format!(
+            "[server]\ndata_dir = {data}\n[dns]\nudp = [\"127.0.0.1:0\"]\ntcp = [\"127.0.0.1:0\"]\n\
+             [api]\nlisten = [\"127.0.0.1:0\"]\n[zones]\ndir = {zones}\n\
+             [dnssec]\nvalidation = \"off\"\n",
+            data = q(&dir.path().join("data")),
+            zones = q(&zones),
+        );
+        std::fs::write(dir.path().join("dnsy.toml"), config).unwrap();
+        Env { dir }
+    }
+
+    fn append_config(&self, extra: &str) {
+        let mut text = std::fs::read_to_string(self.config()).unwrap();
+        text.push_str(extra);
+        std::fs::write(self.config(), text).unwrap();
+    }
+
+    fn config(&self) -> PathBuf {
+        self.dir.path().join("dnsy.toml")
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_dnsy"));
+        c.arg("--config").arg(self.config()).args(args);
+        c.env_remove("DNSY_PASSWORD")
+            .env_remove("DNSY_DNSSEC_PASSPHRASE")
+            .env_remove("DNSY_TOKEN");
+        c
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        self.command(args).output().unwrap()
+    }
+
+    fn ok(&self, args: &[&str]) -> String {
+        let out = self.run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn serve(&self) -> Running {
+        let ready = self.dir.path().join("ready.json");
+        let child = self
+            .command(&["serve", "--ready-file", ready.to_str().unwrap()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let addrs = loop {
+            if let Ok(text) = std::fs::read_to_string(&ready) {
+                break serde_json::from_str::<serde_json::Value>(&text).unwrap();
+            }
+            assert!(Instant::now() < deadline, "server did not become ready");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let addr = |k: &str| -> SocketAddr { addrs[k][0].as_str().unwrap().parse().unwrap() };
+        Running {
+            udp: addr("udp"),
+            tcp: addr("tcp"),
+            api: addr("api"),
+            ready: addrs.clone(),
+            child,
+        }
+    }
+}
+
+struct Running {
+    udp: SocketAddr,
+    tcp: SocketAddr,
+    api: SocketAddr,
+    ready: serde_json::Value,
+    child: Child,
+}
+
+impl Running {
+    fn signal(&self, name: &str) {
+        let status = Command::new("kill")
+            .args([name, &self.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    fn wait_exit(&mut self) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "server did not exit");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn query(name: &str) -> Vec<u8> {
+    let mut m = Message::response_to(&Message::decode(&[0; 12]).unwrap());
+    m.header.qr = false;
+    m.header.rd = true;
+    m.header.id = 0x4242;
+    m.questions.push(Question {
+        name: Name::from_ascii(name).unwrap(),
+        qtype: RecordType::A,
+        qclass: Class::In,
+    });
+    m.encode(512).unwrap()
+}
+
+fn udp_ask(addr: SocketAddr, name: &str) -> Message {
+    let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    sock.send_to(&query(name), addr).unwrap();
+    let mut buf = [0_u8; 4096];
+    let n = sock.recv(&mut buf).unwrap();
+    Message::decode(&buf[..n]).unwrap()
+}
+
+fn tcp_ask(addr: SocketAddr, name: &str) -> Message {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let q = query(name);
+    s.write_all(&u16::try_from(q.len()).unwrap().to_be_bytes())
+        .unwrap();
+    s.write_all(&q).unwrap();
+    let mut len = [0_u8; 2];
+    s.read_exact(&mut len).unwrap();
+    let mut buf = vec![0_u8; usize::from(u16::from_be_bytes(len))];
+    s.read_exact(&mut buf).unwrap();
+    Message::decode(&buf).unwrap()
+}
+
+fn http_get(addr: SocketAddr, path: &str) -> String {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(s, "GET {path} HTTP/1.0\r\nHost: localhost\r\n\r\n").unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    out
+}
+
+fn first_a(m: &Message) -> Option<std::net::Ipv4Addr> {
+    m.answers.iter().find_map(|r| match &r.data {
+        RData::A(a) => Some(*a),
+        _ => None,
+    })
+}
+
+#[test]
+fn config_check_reports_errors() {
+    let env = Env::new(false);
+    assert!(env.ok(&["config", "check"]).contains("ok"));
+
+    std::fs::write(env.config(), "[dns]\nbogus_key = 1\n").unwrap();
+    let out = env.run(&["config", "check"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("bogus_key"));
+
+    let zones = env.dir.path().join("zones");
+    let zones_q = q(&zones);
+    std::fs::write(
+        env.config(),
+        format!(
+            "[zones]\ndir = {zones_q}\n[dot]\nlisten = [\"127.0.0.1:0\"]\ncert = \"/nonexistent/c.pem\"\nkey = \"/nonexistent/k.pem\"\n"
+        ),
+    )
+    .unwrap();
+    let out = env.run(&["config", "check"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("dot.cert"));
+
+    std::fs::write(zones.join("broken.json"), "{ nope").unwrap();
+    std::fs::write(env.config(), format!("[zones]\ndir = {}\n", q(&zones))).unwrap();
+    let out = env.run(&["config", "check"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("broken.json"));
+
+    let missing = Command::new(env!("CARGO_BIN_EXE_dnsy"))
+        .args(["--config", "/nonexistent/dnsy.toml", "config", "check"])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+}
+
+#[test]
+fn example_config_is_valid() {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/dnsy.toml");
+    let text = std::fs::read_to_string(example).unwrap();
+    dnsy_config::Config::from_toml(&text).unwrap();
+}
+
+#[test]
+fn openapi_subcommand_matches_committed() {
+    let env = Env::new(false);
+    let printed = env.ok(&["openapi"]);
+    let committed = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/dnsy.json"),
+    )
+    .unwrap();
+    assert_eq!(printed.trim_end(), committed.trim_end());
+}
+
+#[test]
+fn version_prints_build_time() {
+    let env = Env::new(false);
+    let out = env.ok(&["version"]);
+    assert!(out.starts_with(&format!("dnsy {}", env!("CARGO_PKG_VERSION"))));
+    assert!(out.contains("built "));
+}
+
+#[test]
+fn migrate_status_does_not_create_the_database() {
+    let env = Env::new(false);
+    let status = env.ok(&["migrate", "--status"]);
+    assert!(status.contains("pending") && !status.contains("applied"));
+    assert!(!env.dir.path().join("data/dnsy.db").exists());
+    env.ok(&["migrate"]);
+    let status = env.ok(&["migrate", "--status"]);
+    assert!(status.contains("applied") && !status.contains("pending"));
+}
+
+#[test]
+fn users_and_tokens() {
+    let env = Env::new(false);
+    let mut create = env
+        .command(&[
+            "user",
+            "create",
+            "alice",
+            "--role",
+            "operator",
+            "--password-stdin",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    create
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"correct horse battery\n")
+        .unwrap();
+    assert!(create.wait_with_output().unwrap().status.success());
+
+    let generated = env.ok(&["user", "create", "bob", "--role", "viewer"]);
+    assert!(generated.contains("password (shown once)"));
+    assert!(
+        !env.run(&["user", "create", "carol", "--role", "root"])
+            .status
+            .success()
+    );
+    assert!(
+        !env.run(&["user", "create", "alice"]).status.success(),
+        "duplicate"
+    );
+
+    let list = env.ok(&["user", "list"]);
+    assert!(list.contains("alice") && list.contains("bob"));
+
+    assert!(
+        env.ok(&["user", "reset-password", "bob"])
+            .contains("shown once")
+    );
+    assert!(
+        !env.run(&["user", "reset-password", "nobody"])
+            .status
+            .success()
+    );
+
+    let token = env.ok(&[
+        "token",
+        "create",
+        "--user",
+        "alice",
+        "--name",
+        "ci",
+        "--scope",
+        "api:write",
+        "--scope",
+        "dns:query",
+        "--expires-days",
+        "30",
+    ]);
+    let secret = token.split("shown once): ").nth(1).unwrap().trim();
+    assert!(secret.starts_with("dnsy_"), "{secret}");
+    assert!(
+        !env.run(&[
+            "token", "create", "--user", "bob", "--name", "x", "--scope", "admin"
+        ])
+        .status
+        .success(),
+        "viewer cannot hold admin"
+    );
+    assert!(
+        !env.run(&[
+            "token", "create", "--user", "bob", "--name", "x", "--scope", "bogus"
+        ])
+        .status
+        .success()
+    );
+}
+
+#[test]
+fn zone_export_and_dnssec_keys() {
+    let env = Env::new(true);
+    let bind = env.ok(&["zone", "export", "example.test"]);
+    assert!(bind.contains("www") && bind.contains("192.0.2.7"));
+    assert!(
+        !env.run(&["zone", "export", "missing.test"])
+            .status
+            .success()
+    );
+
+    let signed = env.ok(&["zone", "export", "example.test.", "--signed"]);
+    assert!(
+        signed.contains("RRSIG") && signed.contains("DNSKEY"),
+        "{signed}"
+    );
+
+    let keys = env.ok(&["dnssec", "keys", "list", "example.test"]);
+    assert!(keys.contains("csk") && keys.contains("active"), "{keys}");
+    let ds = env.ok(&["dnssec", "keys", "ds", "example.test"]);
+    assert_eq!(ds.lines().count(), 2, "{ds}");
+    assert!(ds.contains(" 13 2 ") && ds.contains(" 13 4 "));
+
+    let rolled = env.ok(&[
+        "dnssec",
+        "keys",
+        "rollover",
+        "example.test",
+        "--algorithm",
+        "15",
+    ]);
+    assert!(rolled.contains("rollover started"));
+    assert!(
+        !env.run(&["dnssec", "keys", "rollover", "example.test"])
+            .status
+            .success(),
+        "second rollover of the same role"
+    );
+    let generated = env.ok(&[
+        "dnssec",
+        "keys",
+        "generate",
+        "example.test",
+        "--role",
+        "zsk",
+    ]);
+    assert!(generated.contains("generated key"));
+    assert!(
+        !env.run(&[
+            "dnssec",
+            "keys",
+            "generate",
+            "example.test",
+            "--algorithm",
+            "8"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        !env.run(&[
+            "dnssec",
+            "keys",
+            "generate",
+            "example.test",
+            "--role",
+            "xsk"
+        ])
+        .status
+        .success()
+    );
+    // No keys yet for a zone that never signed.
+    assert!(
+        !env.run(&["dnssec", "keys", "ds", "other.test"])
+            .status
+            .success()
+    );
+    // Unsigned zones cannot export signed.
+    let plain = Env::new(false);
+    assert!(
+        !plain
+            .run(&["zone", "export", "example.test", "--signed"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn serve_starts_and_answers_udp() {
+    let env = Env::new(false);
+    let server = env.serve();
+    let answer = udp_ask(server.udp, "www.example.test.");
+    assert_eq!(answer.header.id, 0x4242);
+    assert_eq!(first_a(&answer), Some("192.0.2.7".parse().unwrap()));
+    let answer = tcp_ask(server.tcp, "www.example.test.");
+    assert_eq!(first_a(&answer), Some("192.0.2.7".parse().unwrap()));
+    // Not ours and no upstreams: the server answers (with a failure) rather than hanging.
+    let other = udp_ask(server.udp, "elsewhere.invalid.");
+    assert_ne!(other.header.rcode, Rcode::NoError);
+
+    let health = http_get(server.api, "/healthz");
+    assert!(
+        health.starts_with("HTTP/1.0 200") || health.starts_with("HTTP/1.1 200"),
+        "{health}"
+    );
+    let ready = http_get(server.api, "/readyz");
+    assert!(ready.contains("ready"), "{ready}");
+}
+
+#[test]
+fn cache_flush_through_the_api() {
+    let env = Env::new(false);
+    let mut create = env
+        .command(&["user", "create", "root", "--password-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    create
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"long enough password\n")
+        .unwrap();
+    assert!(create.wait().unwrap().success());
+    let token = env.ok(&[
+        "token",
+        "create",
+        "--user",
+        "root",
+        "--name",
+        "cli",
+        "--scope",
+        "api:write",
+    ]);
+    let secret = token
+        .split("shown once): ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    let server = env.serve();
+    let url = format!("http://{}", server.api);
+    let flushed = env.ok(&["cache", "flush", "--url", &url, "--token", &secret]);
+    assert!(flushed.contains("flushed 0 cache entries"), "{flushed}");
+    let flushed = env.ok(&[
+        "cache",
+        "flush",
+        "example.test",
+        "--subtree",
+        "--url",
+        &url,
+        "--token",
+        &secret,
+    ]);
+    assert!(flushed.contains("flushed"), "{flushed}");
+    let rejected = env.run(&["cache", "flush", "--url", &url, "--token", "dnsy_wrong"]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("401"));
+    let unreachable = env.run(&[
+        "cache",
+        "flush",
+        "--url",
+        "http://127.0.0.1:1",
+        "--token",
+        &secret,
+    ]);
+    assert!(!unreachable.status.success());
+    assert!(
+        !env.run(&[
+            "cache",
+            "flush",
+            "--url",
+            &url,
+            "--token",
+            &secret,
+            &"a".repeat(70)
+        ])
+        .status
+        .success()
+    );
+}
+
+#[test]
+fn sigterm_graceful() {
+    let env = Env::new(false);
+    let mut server = env.serve();
+    server.signal("-TERM");
+    let status = server.wait_exit();
+    assert!(status.success(), "{status:?}");
+    // The sockets are gone.
+    assert!(TcpStream::connect_timeout(&server.api, Duration::from_millis(500)).is_err());
+}
+
+#[test]
+fn sigint_graceful() {
+    let env = Env::new(false);
+    let mut server = env.serve();
+    server.signal("-INT");
+    assert!(server.wait_exit().success());
+}
+
+#[test]
+fn sighup_reloads_zones_and_keeps_serving() {
+    let env = Env::new(false);
+    let mut server = env.serve();
+    let zone = env.dir.path().join("zones/example.test.json");
+    let changed = ZONE
+        .replace("SIGNED", "false")
+        .replace("192.0.2.7", "192.0.2.99");
+    std::fs::write(&zone, changed).unwrap();
+    server.signal("-HUP");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let answer = udp_ask(server.udp, "www.example.test.");
+        if first_a(&answer) == Some("192.0.2.99".parse().unwrap()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "zone change not picked up");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // A broken zone file keeps the previous zones and the process alive.
+    std::fs::write(&zone, "{ broken").unwrap();
+    server.signal("-HUP");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(server.child.try_wait().unwrap().is_none());
+    assert_eq!(
+        first_a(&udp_ask(server.udp, "www.example.test.")),
+        Some("192.0.2.99".parse().unwrap())
+    );
+    server.signal("-TERM");
+    assert!(server.wait_exit().success());
+}
+
+#[test]
+fn serve_starts_dot_with_mtls_and_doh() {
+    let env = Env::new(false);
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let tls = env.dir.path();
+    std::fs::write(tls.join("cert.pem"), cert.cert.pem()).unwrap();
+    std::fs::write(tls.join("key.pem"), cert.signing_key.serialize_pem()).unwrap();
+    env.append_config(&format!(
+        "[dot]\nlisten = [\"127.0.0.1:0\"]\ncert = {c}\nkey = {k}\nmtls = \"required\"\nclient_ca = {c}\n\
+         [doh]\nlisten = [\"127.0.0.1:0\"]\ncert = {c}\nkey = {k}\n\
+         [api]\nlisten = [\"127.0.0.1:0\"]\ntls_cert = {c}\ntls_key = {k}\n",
+        c = q(&tls.join("cert.pem")),
+        k = q(&tls.join("key.pem")),
+    ));
+    // Duplicate [api] table from the base config is a TOML error: drop the base one.
+    let base = std::fs::read_to_string(env.config()).unwrap();
+    std::fs::write(
+        env.config(),
+        base.replacen("[api]\nlisten = [\"127.0.0.1:0\"]\n", "", 1),
+    )
+    .unwrap();
+    let mut server = env.serve();
+    for key in ["dot", "doh", "api"] {
+        let addr: SocketAddr = server.ready[key][0].as_str().unwrap().parse().unwrap();
+        TcpStream::connect(addr).unwrap();
+    }
+    server.signal("-TERM");
+    assert!(server.wait_exit().success());
+}
+
+#[test]
+fn serve_fails_fast_on_missing_certificate() {
+    let env = Env::new(false);
+    env.append_config("[doh]\nlisten = [\"127.0.0.1:0\"]\ncert = \"/nonexistent/c.pem\"\nkey = \"/nonexistent/k.pem\"\n");
+    let out = env.run(&["serve"]);
+    assert!(!out.status.success());
+}

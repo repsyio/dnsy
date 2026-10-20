@@ -21,6 +21,16 @@ pub struct RequestContext {
 /// a response to the query they were given; transports apply size limits and framing.
 pub trait Handler: Send + Sync + 'static {
     fn handle(&self, ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send;
+
+    /// Like [`Handler::handle`], but `None` means the request must be dropped without a reply
+    /// (ACL `drop`, UDP rate limiting). Transports call this; the default always answers.
+    fn respond(
+        &self,
+        ctx: RequestContext,
+        query: Message,
+    ) -> impl Future<Output = Option<Message>> + Send {
+        async move { Some(self.handle(ctx, query).await) }
+    }
 }
 
 /// Stub pipeline: answers every query with REFUSED.
