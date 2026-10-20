@@ -1,0 +1,90 @@
+# Example DNSY configuration. Every key shown here is optional; the values are the defaults
+# unless a comment says otherwise. Unknown keys are errors. Override any key from the
+# environment with DNSY_SECTION__KEY, e.g. DNSY_CACHE__SERVE_STALE__ENABLED=false.
+
+[server]
+data_dir = "/var/lib/dnsy"
+
+[dns]
+udp = ["0.0.0.0:53"]
+tcp = ["0.0.0.0:53"]
+
+# DNS-over-TLS is off until `listen` is set (cert and key are then required).
+[dot]
+# listen = ["0.0.0.0:853"]
+# cert = "/etc/dnsy/tls/fullchain.pem"
+# key = "/etc/dnsy/tls/privkey.pem"
+# client_ca = "/etc/dnsy/tls/clients-ca.pem"
+mtls = "off" # off | optional | required
+
+# DNS-over-HTTPS is off until `listen` is set.
+[doh]
+# listen = ["0.0.0.0:443"]
+# cert = "/etc/dnsy/tls/fullchain.pem"
+# key = "/etc/dnsy/tls/privkey.pem"
+path = "/dns-query"
+require_token = true
+
+[api]
+listen = ["127.0.0.1:5380"]
+# tls_cert = "/etc/dnsy/tls/fullchain.pem"
+# tls_key = "/etc/dnsy/tls/privkey.pem"
+# public_url = "https://dns.example.com"
+
+[zones]
+dir = "/var/lib/dnsy/zones"
+
+[resolver]
+timeout_ms = 2000
+attempts = 2
+upstreams = ["1.1.1.1:53", "9.9.9.9:53"] # seed upstreams, default is none
+
+[cache]
+enabled = true
+max_entries = 100000
+min_ttl = 0
+max_ttl = 86400
+negative_max_ttl = 3600
+servfail_ttl = 5
+bogus_ttl = 60
+
+[cache.serve_stale]
+enabled = true
+max_stale = 86400
+answer_ttl = 30
+client_timeout_ms = 1800
+
+[cache.prefetch]
+enabled = true
+min_hits = 5
+remaining_ttl_pct = 10
+
+[dnssec]
+validation = "strict" # off | permissive | strict
+trust_anchors = [
+  "20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D", # root KSK-2017
+  "38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16", # root KSK-2024
+]
+# trust_anchor_file = "/etc/dnsy/trust-anchors.ds"
+negative_trust_anchors = []
+clock_skew_s = 300
+# key_passphrase_file = "/etc/dnsy/key-passphrase" # or env DNSY_DNSSEC_PASSPHRASE
+
+[filter]
+block_mode = "null_ip" # null_ip | nxdomain | refused
+blocklists = []
+refresh_interval = 86400 # seconds
+
+[limits]
+per_client_qps = 0 # 0 = unlimited
+tcp_idle_ms = 10000
+max_tcp_conns = 1024
+
+[querylog]
+enabled = true
+retention_days = 30
+redact_client_ip = false
+
+[logging]
+level = "info" # trace | debug | info | warn | error
+format = "pretty" # pretty | json
