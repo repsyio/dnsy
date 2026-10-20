@@ -27,6 +27,14 @@ Filter by time range, client, query-name substring, type, response code, answer 
 status. Results are newest first with keyset pagination: pass the returned cursor to get the next
 page; pages stay stable while new rows arrive.
 
+## Reading it over the API
+
+`GET /api/v1/querylog` searches with the filters above and a cursor, and
+`GET /api/v1/querylog/stream` tails new rows as server-sent events (operator or admin, at most 16
+streams). `GET /api/v1/stats/*` serves the summary, timeseries and top lists, and
+`GET /api/v1/cache` the live cache counters. See [REST API](rest-api.md). The API applies client
+redaction again on output and replaces anything shaped like a token with `[redacted]`.
+
 ## Retention
 
 A background task deletes raw rows older than the retention period, and hourly top-N rollups that

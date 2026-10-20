@@ -22,9 +22,12 @@ path = "src/bin/gen-openapi.rs"
 axum = { workspace = true }
 dnsy-auth = { version = "0.1.0", path = "../dnsy-auth" }
 dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
+dnsy-observe = { version = "0.1.0", path = "../dnsy-observe" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
+dnsy-resolver = { version = "0.1.0", path = "../dnsy-resolver" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
 dnsy-zone = { version = "0.1.0", path = "../dnsy-zone" }
+futures-util = { workspace = true }
 rand = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -39,6 +42,8 @@ utoipa-axum = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+dnsy-config = { version = "0.1.0", path = "../dnsy-config" }
+http-body-util = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true }

@@ -95,6 +95,41 @@ the header the write goes through. Writes are serialised, and write responses ca
 
 Export file names come from the validated zone name, so the `Content-Disposition` header cannot be
 influenced beyond `[a-z0-9.-]`.
+## Query log, stats and cache
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /api/v1/querylog` | read | search the query log, newest first |
+| `GET /api/v1/querylog/stream` | write (operator, admin) | live tail as server-sent events |
+| `GET /api/v1/stats/summary` | read | totals, blocked ratio, cache hit ratio, answer sources, DNSSEC status counts, latency |
+| `GET /api/v1/stats/timeseries` | read | counts per bucket |
+| `GET /api/v1/stats/top-domains`, `top-blocked`, `top-clients` | read | ranked lists |
+| `GET /api/v1/cache` | read | live cache counters |
+| `DELETE /api/v1/cache` | write | flush everything; answers `{"removed": n}` |
+| `DELETE /api/v1/cache/entries?name=<name>&subtree=<bool>` | write | flush one name, optionally with everything below it; answers `{"removed": n}` |
+
+`/querylog` filters: `from` (inclusive) and `to` (exclusive) in unix milliseconds, `client`
+(exact address), `domain` (case-insensitive substring), `type` (`A`, `AAAA`, or a number),
+`outcome` (response code such as `NXDOMAIN`, or a number), `source` (`authoritative`, `cache`,
+`cache_stale`, `upstream`, `blocked`, `refused`, `error`) and `dnssec` (`unchecked`, `secure`,
+`insecure`, `bogus`, `indeterminate`). `limit` is 1 to 500 (default 100). A page with more rows
+behind it carries `next_cursor`; pass it back as `cursor`. Pages stay stable while new rows arrive.
+Unknown filter values answer 400.
+
+`/stats/*` take `from` and `to` (unix milliseconds; default the last 24 hours, at most 366 days,
+`from` before `to`, else 400). `timeseries` takes `bucket` in seconds (a multiple of 60, default
+3600, at most 5000 buckets). The top lists take `limit` (1 to 100, default 10). Rollups are minute
+or hour granular, so buckets touching the range count whole.
+
+The live tail sends `query` events (one log record as JSON) and `lagged` when rows were skipped
+because the reader was too slow. The server polls the log at its own pace, so a slow reader never
+makes it buffer. At most 16 streams run at once; more answer 429 with `Retry-After`. It takes the
+same filters as the search.
+
+Query-log responses never contain a token: anything shaped like a DNSY token is replaced with
+`[redacted]` (defence in depth; tokens are already redacted before logging). With
+`querylog.redact_client_ip` on, client addresses are shown as their /24 or /48 network, and the
+`client` filter matches the redacted form.
 
 ## Errors
 
@@ -115,9 +150,9 @@ Errors are RFC 9457 `application/problem+json`:
 | 412 | `If-Match` does not match the current `ETag` |
 | 413 | request body too large |
 | 422 | well-formed request with invalid data (record rdata, CNAME conflict, missing apex NS) |
-| 429 | too many failed logins; `Retry-After` header and `retry_after_secs` field |
+| 429 | too many failed logins or too many live-tail streams; `Retry-After` header and `retry_after_secs` field |
 | 500 | internal error; details are logged, never returned |
-| 503 | not ready |
+| 503 | not ready, or the service behind the endpoint (the cache) is not running |
 
 ## Security headers and the web UI
 
