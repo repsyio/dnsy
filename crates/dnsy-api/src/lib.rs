@@ -105,3 +105,5 @@ mod tests;
 mod tests_auth;
 #[cfg(test)]
 mod tests_obs;
+#[cfg(test)]
+mod tests_policy;
