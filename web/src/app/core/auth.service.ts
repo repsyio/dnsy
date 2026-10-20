@@ -44,6 +44,18 @@ export class AuthService {
     await this.refresh();
   }
 
+  /** Create the first admin with the one-time startup code, then sign in with it. */
+  async bootstrap(code: string, username: string, password: string): Promise<void> {
+    await firstValueFrom(
+      this.api.post<unknown>('/auth/bootstrap', {
+        code,
+        username,
+        password,
+      } satisfies components['schemas']['Bootstrap']),
+    );
+    await this.login(username, password);
+  }
+
   async logout(): Promise<void> {
     try {
       await firstValueFrom(this.api.post<unknown>('/auth/logout', {}));

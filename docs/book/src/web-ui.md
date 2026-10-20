@@ -58,11 +58,11 @@ checked in. Regenerate after an API change with `just openapi` followed by `just
 
 ## Commands
 
-| Command | What it does |
-| --- | --- |
-| `just web` | `pnpm install --frozen-lockfile`, lint (`ng lint` and Prettier), unit tests with coverage (>= 80%), production build, types drift check. Skipped when node or pnpm is missing. |
-| `just web-types` | regenerate the API types |
-| `cd web && pnpm start` | dev server on `http://localhost:4200` (proxy API calls to a running dnsy yourself) |
+| Command                | What it does                                                                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `just web`             | `pnpm install --frozen-lockfile`, lint (`ng lint` and Prettier), unit tests with coverage (>= 80%), production build, types drift check. Skipped when node or pnpm is missing. |
+| `just web-types`       | regenerate the API types                                                                                                                                                       |
+| `cd web && pnpm start` | dev server on `http://localhost:4200` (proxy API calls to a running dnsy yourself)                                                                                             |
 
 The production build enforces an initial bundle budget of 300 kB (warning) and 400 kB (error), raw.
 The three.js login scene (DNSY-46) must stay in a lazy chunk.
@@ -72,20 +72,24 @@ The three.js login scene (DNSY-46) must stay in a lazy chunk.
 `web/src/app/shared/mascot/` holds six standalone components for the Nox states, each with the
 same inputs:
 
-| Component | Selector | Used for |
-| --- | --- | --- |
-| `MascotLoadingComponent` | `dnsy-mascot-loading` | route navigation, pending data |
-| `MascotEmptyComponent` | `dnsy-mascot-empty` | empty lists, placeholder pages |
-| `MascotErrorComponent` | `dnsy-mascot-error` | failed requests |
-| `MascotSuccessComponent` | `dnsy-mascot-success` | completed actions |
-| `MascotOfflineComponent` | `dnsy-mascot-offline` | browser offline banner in the shell |
-| `MascotNotFoundComponent` | `dnsy-mascot-not-found` | the 404 page |
+| Component                 | Selector                | Used for                            |
+| ------------------------- | ----------------------- | ----------------------------------- |
+| `MascotLoadingComponent`  | `dnsy-mascot-loading`   | route navigation, pending data      |
+| `MascotEmptyComponent`    | `dnsy-mascot-empty`     | empty lists, placeholder pages      |
+| `MascotErrorComponent`    | `dnsy-mascot-error`     | failed requests                     |
+| `MascotSuccessComponent`  | `dnsy-mascot-success`   | completed actions                   |
+| `MascotOfflineComponent`  | `dnsy-mascot-offline`   | browser offline banner in the shell |
+| `MascotNotFoundComponent` | `dnsy-mascot-not-found` | the 404 page                        |
 
 Inputs (signals): `size` (`sm`, `md`, `lg`; default `md`), `message` (caption; each state has a
 default) and `action` (label of an optional button; the `actionClick` output fires on click).
 
 ```html
-<dnsy-mascot-error message="Could not load zones." action="Retry" (actionClick)="reload()" />
+<dnsy-mascot-error
+  message="Could not load zones."
+  action="Retry"
+  (actionClick)="reload()"
+/>
 ```
 
 The art is drawn inline from `branding/mascot/nox-*.svg` so the global keyframes in
@@ -101,3 +105,29 @@ class driven by `matchMedia`) and Nox keeps its static pose.
 The shell shows the loading mascot during route navigation and the offline mascot when the browser
 goes offline. A gallery of all states and sizes lives at `/dev/mascot` (behind login). It is only
 registered when Angular runs in dev mode, so production builds answer with the 404 page.
+
+## Login page
+
+`/login` (`web/src/app/features/login/`) is a three.js scene with the sign-in form overlaid.
+
+- **Scene:** a cyan light-grid floor receding to an orange horizon glow, light-cycle trails, the
+  Nox mascot as an additive hologram (`mascot/nox-idle.svg` as a sprite texture) over a ring,
+  slow camera drift and pointer parallax. Pixel ratio is capped at 2.
+- **Loading:** `three` (pinned, named imports only) lives in `login-scene.ts`, which the page
+  imports dynamically after first render, so it is its own lazy chunk and not part of the initial
+  bundle. The render loop runs in `requestAnimationFrame` through `setAnimationLoop`, outside
+  change detection.
+- **Fallback:** with `prefers-reduced-motion: reduce` or when WebGL cannot create a context (or the
+  chunk fails to load) the page shows a static SVG perspective grid and never loads three.js. The
+  decision is `decideScene` in `scene-support.ts`; the form behaves the same either way.
+- **Lifecycle:** rendering pauses while the tab is hidden; on destroy (or when reduced motion is
+  switched on) geometries, materials, textures and the renderer are disposed and the GL context
+  is released.
+- **CSP:** works under `default-src 'self'`: no workers, blobs, `data:` URIs, eval or inline
+  styles; the mascot texture is a same-origin file.
+- **Form:** labelled username and password fields, errors in a `role=alert` region, the Nox
+  loading mascot while the request runs. A 429 locks the form and counts down `retry_after_secs`.
+- **First admin:** the API has no "no users yet" endpoint, so the page cannot detect it. The link
+  "First run? Set up the admin account" switches the form to setup mode (one-time code printed at
+  server start, username, password of 8+ characters), which calls `POST /auth/bootstrap` and then
+  signs in. A 409 (admin exists) returns to the sign-in form.
