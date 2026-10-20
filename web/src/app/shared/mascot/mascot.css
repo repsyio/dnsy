@@ -1,0 +1,123 @@
+/* Nox mascot animations. Global (not component styles) because the strict CSP forbids <style>. */
+.nox {
+  --nox-glow: var(--dnsy-cyan);
+  filter: drop-shadow(0 0 3px var(--nox-glow)) drop-shadow(0 0 8px var(--dnsy-cyan-glow));
+  overflow: visible;
+}
+.nox-error {
+  --nox-glow: var(--dnsy-bogus);
+}
+.nox-success {
+  --nox-glow: var(--dnsy-secure);
+}
+.nox-offline {
+  --nox-glow: var(--dnsy-muted);
+}
+
+.nox * {
+  transform-box: view-box;
+}
+.nox-bob {
+  animation: nox-bob 3s ease-in-out infinite;
+}
+.nox-empty .nox-bob,
+.nox-offline .nox-bob {
+  animation-duration: 4.5s;
+}
+.nox-error .nox-bob {
+  animation: nox-shake 0.6s ease-in-out 1;
+}
+.nox-success .nox-bob {
+  animation: nox-hop 0.7s ease-out 1;
+}
+.nox-scan {
+  animation: nox-scan 2.4s ease-in-out infinite;
+}
+.nox-spin {
+  transform-origin: 54px 14px;
+  animation: nox-spin 1.2s linear infinite;
+}
+.nox-dash {
+  animation: nox-march 1.2s linear infinite;
+}
+.nox-flash {
+  animation: nox-flash 1.1s steps(2, jump-none) infinite;
+}
+.nox-breathe {
+  animation: nox-breathe 3s ease-in-out infinite;
+}
+.nox-floor {
+  animation: nox-march 2s linear infinite;
+}
+.nox-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: nox-draw 0.6s ease-out 1;
+}
+
+@keyframes nox-bob {
+  50% {
+    transform: translateY(-2px);
+  }
+}
+@keyframes nox-shake {
+  20%,
+  60% {
+    transform: translateX(-1.5px);
+  }
+  40%,
+  80% {
+    transform: translateX(1.5px);
+  }
+}
+@keyframes nox-hop {
+  40% {
+    transform: translateY(-4px);
+  }
+}
+@keyframes nox-scan {
+  0%,
+  100% {
+    transform: translateX(-2px);
+  }
+  50% {
+    transform: translateX(2px);
+  }
+}
+@keyframes nox-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes nox-march {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+@keyframes nox-flash {
+  50% {
+    opacity: 0.25;
+  }
+}
+@keyframes nox-breathe {
+  50% {
+    opacity: 0.5;
+  }
+}
+@keyframes nox-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+
+/* Reduced motion: freeze every part in its static pose (the global rule also covers the media query). */
+.nox-static,
+.nox-static * {
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nox,
+  .nox * {
+    animation: none !important;
+  }
+}

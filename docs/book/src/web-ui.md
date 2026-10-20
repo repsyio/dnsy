@@ -66,3 +66,38 @@ checked in. Regenerate after an API change with `just openapi` followed by `just
 
 The production build enforces an initial bundle budget of 300 kB (warning) and 400 kB (error), raw.
 The three.js login scene (DNSY-46) must stay in a lazy chunk.
+
+## Mascot components
+
+`web/src/app/shared/mascot/` holds six standalone components for the Nox states, each with the
+same inputs:
+
+| Component | Selector | Used for |
+| --- | --- | --- |
+| `MascotLoadingComponent` | `dnsy-mascot-loading` | route navigation, pending data |
+| `MascotEmptyComponent` | `dnsy-mascot-empty` | empty lists, placeholder pages |
+| `MascotErrorComponent` | `dnsy-mascot-error` | failed requests |
+| `MascotSuccessComponent` | `dnsy-mascot-success` | completed actions |
+| `MascotOfflineComponent` | `dnsy-mascot-offline` | browser offline banner in the shell |
+| `MascotNotFoundComponent` | `dnsy-mascot-not-found` | the 404 page |
+
+Inputs (signals): `size` (`sm`, `md`, `lg`; default `md`), `message` (caption; each state has a
+default) and `action` (label of an optional button; the `actionClick` output fires on click).
+
+```html
+<dnsy-mascot-error message="Could not load zones." action="Retry" (actionClick)="reload()" />
+```
+
+The art is drawn inline from `branding/mascot/nox-*.svg` so the global keyframes in
+`shared/mascot/mascot.css` (imported by `styles.css`) can animate its parts under the strict CSP:
+bobbing, scanning pupils, a spinner, marching dashes, an error flash, a drawn check mark. All glow
+uses `drop-shadow` with the DNSY tokens. There are no JavaScript animation libraries.
+
+Accessibility: the SVG has `role="img"` and a distinct `aria-label` per state; the caption is a
+live region (`status` or `alert`) for loading, success, offline and error. With
+`prefers-reduced-motion: reduce` every animation is removed (CSS media query, plus a `nox-static`
+class driven by `matchMedia`) and Nox keeps its static pose.
+
+The shell shows the loading mascot during route navigation and the offline mascot when the browser
+goes offline. A gallery of all states and sizes lives at `/dev/mascot` (behind login). It is only
+registered when Angular runs in dev mode, so production builds answer with the 404 page.

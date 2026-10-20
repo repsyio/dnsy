@@ -28,7 +28,7 @@ module.exports = defineConfig([
         'error',
         {
           type: 'element',
-          prefix: 'app',
+          prefix: ['app', 'dnsy'],
           style: 'kebab-case',
         },
       ],

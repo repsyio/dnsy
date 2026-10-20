@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import '../../branding/tokens.css';
+@import './app/shared/mascot/mascot.css';
 
 @theme inline {
   --color-bg: var(--dnsy-bg);
