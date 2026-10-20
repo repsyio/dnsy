@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -13,6 +14,7 @@ use arc_swap::ArcSwap;
 use dnsy_proto::Name;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
+use crate::lookup::ZoneIndex;
 use crate::model::{Zone, ZoneError};
 
 /// Quiet period after the last file event before the directory is reloaded.
@@ -22,9 +24,25 @@ const DEBOUNCE: Duration = Duration::from_millis(250);
 #[derive(Debug, Default)]
 pub struct ZoneSet {
     zones: BTreeMap<Name, Arc<Zone>>,
+    /// Per-zone lookup index, keyed like `zones`.
+    pub(crate) indexes: BTreeMap<Name, ZoneIndex>,
+    /// Query counter driving record set rotation.
+    pub(crate) rotation: AtomicUsize,
 }
 
 impl ZoneSet {
+    pub(crate) fn new(zones: BTreeMap<Name, Arc<Zone>>) -> Self {
+        let indexes = zones
+            .iter()
+            .map(|(origin, zone)| (origin.clone(), ZoneIndex::build(zone)))
+            .collect();
+        Self {
+            zones,
+            indexes,
+            rotation: AtomicUsize::new(0),
+        }
+    }
+
     /// The zone with exactly this origin.
     #[must_use]
     pub fn get(&self, origin: &Name) -> Option<&Arc<Zone>> {
@@ -149,7 +167,7 @@ impl ZoneStore {
             .collect();
         st.good = good;
         st.errors = errors;
-        self.set.store(Arc::new(ZoneSet { zones }));
+        self.set.store(Arc::new(ZoneSet::new(zones)));
         Ok(())
     }
 
