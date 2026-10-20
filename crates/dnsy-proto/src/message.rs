@@ -137,15 +137,15 @@ impl Message {
         let mut header = header;
         if let Some(e) = &edns {
             header.rcode =
-                Rcode::from(u16::from(e.ext_rcode) << 4 | u16::from(u16::from(header.rcode) & 0xF));
+                Rcode::from(u16::from(e.ext_rcode) << 4 | (u16::from(header.rcode) & 0xF));
         }
         Ok(Message {
-            edns,
             header,
             questions,
             answers,
             authority,
             additional,
+            edns,
         })
     }
 
@@ -287,7 +287,7 @@ impl Message {
     }
 
     /// Like [`Message::encode`], but pads the OPT record so the message is a multiple of
-    /// [`PADDING_BLOCK`] octets (RFC 8467). Callers use it for DoT and DoH responses when the query
+    /// [`PADDING_BLOCK`] octets (RFC 8467). Callers use it for `DoT` and `DoH` responses when the query
     /// carried a Padding option ([`Edns::has_padding`]). Messages without OPT, and messages whose
     /// padded size would exceed `max_len`, get as much padding as fits.
     pub fn encode_padded(&self, max_len: usize) -> Result<Vec<u8>, EncodeError> {

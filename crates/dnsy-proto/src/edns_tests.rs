@@ -64,7 +64,7 @@ fn opt_roundtrip() {
     });
     let wire = m.encode(4096).unwrap();
     assert_eq!(Message::decode(&wire).unwrap(), m);
-    assert!(Message::decode(&wire).unwrap().additional.is_empty());
+    assert_eq!(Message::decode(&wire).unwrap().additional, vec![]);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn badvers_on_version_1() {
     assert_eq!(got.header.rcode, Rcode::BadVers);
     assert_eq!(got.edns.as_ref().unwrap().version, EDNS_VERSION);
     assert_eq!(got.edns.unwrap().ext_rcode, 1);
-    assert!(got.answers.is_empty());
+    assert_eq!(got.answers, vec![]);
 }
 
 #[test]

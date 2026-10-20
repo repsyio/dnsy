@@ -9,7 +9,7 @@ pub const EDNS_VERSION: u8 = 0;
 /// UDP payload size advertised when DNSY creates an OPT record itself.
 pub const DEFAULT_UDP_PAYLOAD: u16 = 1232;
 
-/// Response padding block size recommended for DoT and DoH (RFC 8467 section 4.1).
+/// Response padding block size recommended for `DoT` and `DoH` (RFC 8467 section 4.1).
 pub const PADDING_BLOCK: usize = 468;
 
 const OPT_CLIENT_SUBNET: u16 = 8;
