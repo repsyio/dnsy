@@ -1,0 +1,562 @@
+//! Zone signing (RFC 4035 2, RFC 5155 7, RFC 6781, RFC 7344, RFC 9276).
+//!
+//! [`ZoneSigner::sign`] turns the records of one zone into a [`SignedZone`]: every
+//! authoritative `RRset` signed by the zone-signing keys, the apex DNSKEY `RRset` signed by
+//! the key-signing keys, an NSEC or NSEC3 chain (with NSEC3PARAM) and, during a KSK or CSK
+//! rollover, CDS and CDNSKEY. Delegation NS `RRsets` and glue stay unsigned; DS at a
+//! delegation is signed. [`ZoneSigner::resign`] reuses the signatures of a previous snapshot
+//! until they come within `refresh_days` of expiry.
+
+mod chain;
+#[cfg(test)]
+mod tests;
+
+use crate::{DigestType, DnssecError, KeyRole, KeyState, SigningKey, ds_for};
+use chain::{ChainNode, NSEC3_SHA1, nsec_chain, nsec3_chain};
+use dnsy_proto::{
+    Class, Dnskey, Name, Nsec3Param, RData, Record, RecordType, canonical, serial_lt,
+};
+use ring::digest::{SHA256, digest};
+use std::collections::BTreeMap;
+
+const DAY: u32 = 86_400;
+/// Signatures start one hour in the past to tolerate validators with slow clocks.
+const INCEPTION_OFFSET: u32 = 3600;
+/// Longest validity window serial arithmetic can order (RFC 1982): 2^31 - 1 seconds.
+const MAX_VALIDITY: u32 = 0x7fff_ffff;
+
+/// The records of one zone, as input to the signer. The SOA must be among `records`; the
+/// signer generates every DNSSEC record itself, so DNSKEY, RRSIG, NSEC, NSEC3, NSEC3PARAM,
+/// CDS and CDNSKEY are rejected. DS is accepted at delegation points only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZoneData {
+    pub origin: Name,
+    pub records: Vec<Record>,
+}
+
+/// Authenticated denial of existence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Denial {
+    /// NSEC chain (RFC 4034 4).
+    Nsec,
+    /// NSEC3 chain with SHA-1 (RFC 5155); RFC 9276 recommends 0 iterations and no salt.
+    Nsec3 {
+        iterations: u16,
+        salt: Vec<u8>,
+        /// Leave insecure delegations (NS without DS) out of the chain (RFC 5155 6).
+        opt_out: bool,
+    },
+}
+
+/// How a zone is signed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SigningPolicy {
+    pub denial: Denial,
+    /// Signature lifetime from signing time; must exceed `refresh_days`.
+    pub signature_validity_days: u32,
+    /// Signatures closer than this to expiry are replaced on re-sign.
+    pub refresh_days: u32,
+    /// TTL of the DNSKEY, CDS and CDNSKEY `RRsets`.
+    pub dnskey_ttl: u32,
+}
+
+/// One key of a zone with its role and lifecycle state. Keys that only publish a DNSKEY
+/// need no private key (see [`ZoneKey::signs`]).
+#[derive(Debug)]
+pub struct ZoneKey {
+    pub role: KeyRole,
+    pub state: KeyState,
+    pub dnskey: Dnskey,
+    key: Option<SigningKey>,
+}
+
+impl ZoneKey {
+    /// A key with its private half.
+    pub fn new(role: KeyRole, state: KeyState, key: SigningKey) -> ZoneKey {
+        ZoneKey {
+            role,
+            state,
+            dnskey: key.dnskey(),
+            key: Some(key),
+        }
+    }
+
+    /// A key known only by its DNSKEY; enough for keys that are published but do not sign.
+    pub fn public(role: KeyRole, state: KeyState, dnskey: Dnskey) -> ZoneKey {
+        ZoneKey {
+            role,
+            state,
+            dnskey,
+            key: None,
+        }
+    }
+
+    /// True when a key in this role and state makes signatures, so its private key is
+    /// needed: active zone-signing keys (ZSK, CSK), and active or published key-signing keys
+    /// (KSK, CSK), which double-sign the DNSKEY `RRset` during a rollover.
+    pub fn signs(role: KeyRole, state: KeyState) -> bool {
+        Self::signs_zone_data(role, state) || Self::signs_dnskeys(role, state)
+    }
+
+    fn signs_zone_data(role: KeyRole, state: KeyState) -> bool {
+        state == KeyState::Active && role != KeyRole::Ksk
+    }
+
+    fn signs_dnskeys(role: KeyRole, state: KeyState) -> bool {
+        role.is_sep() && matches!(state, KeyState::Published | KeyState::Active)
+    }
+}
+
+/// The keys of a zone in the states that matter for signing: published, active and retired
+/// keys go into the DNSKEY `RRset`; generated and removed keys are ignored.
+#[derive(Debug, Default)]
+pub struct ActiveKeys {
+    pub keys: Vec<ZoneKey>,
+}
+
+/// One `RRset` of a signed zone and its RRSIGs (none for delegation NS, glue and other data
+/// at or below a zone cut).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedRrset {
+    pub records: Vec<Record>,
+    pub rrsigs: Vec<Record>,
+}
+
+/// A signed snapshot of a zone: every `RRset`, keyed by owner (canonical order, RFC 4034
+/// 6.1) and type, including the generated DNSKEY, CDS, CDNSKEY, NSEC, NSEC3 and NSEC3PARAM
+/// `RRsets`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedZone {
+    pub origin: Name,
+    pub rrsets: BTreeMap<(Name, u16), SignedRrset>,
+    /// Unix time from which some signature is within `refresh_days` of expiry.
+    pub next_resign: u32,
+}
+
+impl SignedZone {
+    pub fn rrset(&self, name: &Name, rtype: RecordType) -> Option<&SignedRrset> {
+        self.rrsets.get(&(name.clone(), u16::from(rtype)))
+    }
+
+    /// Every record in canonical order: each `RRset` followed by its RRSIGs.
+    pub fn records(&self) -> impl Iterator<Item = &Record> {
+        self.rrsets
+            .values()
+            .flat_map(|s| s.records.iter().chain(&s.rrsigs))
+    }
+
+    /// The records the signer added (DNSKEY, CDS, CDNSKEY, NSEC, NSEC3, NSEC3PARAM, RRSIG),
+    /// in canonical order.
+    pub fn dnssec_records(&self) -> impl Iterator<Item = &Record> {
+        self.records().filter(|r| is_dnssec_type(r.rtype))
+    }
+
+    /// True once some signature is within `refresh_days` of expiry.
+    pub fn needs_refresh(&self, now_unix: u32) -> bool {
+        !serial_lt(now_unix, self.next_resign)
+    }
+}
+
+fn is_dnssec_type(t: RecordType) -> bool {
+    matches!(
+        t,
+        RecordType::Dnskey
+            | RecordType::Rrsig
+            | RecordType::Nsec
+            | RecordType::Nsec3
+            | RecordType::Nsec3param
+            | RecordType::Cds
+            | RecordType::Cdnskey
+    )
+}
+
+/// Signs zone snapshots.
+#[derive(Debug, Clone, Copy)]
+pub struct ZoneSigner;
+
+impl ZoneSigner {
+    /// Signs `zone` from scratch at `now_unix`: inception one hour back, expiration
+    /// `signature_validity_days` ahead minus a per-`RRset` jitter that spreads later
+    /// re-signing.
+    pub fn sign(
+        zone: &ZoneData,
+        keys: &ActiveKeys,
+        policy: &SigningPolicy,
+        now_unix: u32,
+    ) -> Result<SignedZone, DnssecError> {
+        sign_zone(zone, keys, policy, None, now_unix)
+    }
+
+    /// Signs `zone` again, keeping each RRSIG of `previous` whose `RRset` is unchanged, whose
+    /// key still signs, and which is more than `refresh_days` from expiry.
+    pub fn resign(
+        zone: &ZoneData,
+        keys: &ActiveKeys,
+        policy: &SigningPolicy,
+        previous: &SignedZone,
+        now_unix: u32,
+    ) -> Result<SignedZone, DnssecError> {
+        sign_zone(zone, keys, policy, Some(previous), now_unix)
+    }
+}
+
+/// Signature timing derived from the policy.
+struct Timing {
+    now: u32,
+    validity: u32,
+    refresh: u32,
+    jitter: u32,
+}
+
+impl Timing {
+    fn new(policy: &SigningPolicy, now: u32) -> Result<Timing, DnssecError> {
+        let validity = policy
+            .signature_validity_days
+            .checked_mul(DAY)
+            .filter(|v| *v <= MAX_VALIDITY)
+            .ok_or(DnssecError::InvalidValidity)?;
+        let refresh = policy.refresh_days.saturating_mul(DAY);
+        if refresh == 0 || refresh >= validity {
+            return Err(DnssecError::InvalidValidity);
+        }
+        // A fresh signature never falls due straight away: the jitter stays below half the
+        // gap between validity and refresh.
+        let jitter = refresh.min(validity - refresh) / 2;
+        Ok(Timing {
+            now,
+            validity,
+            refresh,
+            jitter,
+        })
+    }
+
+    fn inception(&self) -> u32 {
+        self.now.wrapping_sub(INCEPTION_OFFSET)
+    }
+
+    /// Expiration for one `RRset`: deterministic jitter from owner, type and signing time.
+    fn expiration(&self, owner: &Name, rtype: RecordType) -> u32 {
+        let mut input = owner.to_lowercase().as_wire().to_vec();
+        input.extend_from_slice(&u16::from(rtype).to_be_bytes());
+        input.extend_from_slice(&self.now.to_be_bytes());
+        let d = digest(&SHA256, &input);
+        let mut word = [0u8; 4];
+        word.copy_from_slice(&d.as_ref()[..4]);
+        let jitter = u32::from_be_bytes(word) % self.jitter.max(1);
+        self.now.wrapping_add(self.validity - jitter)
+    }
+
+    /// True when an RRSIG can be kept: already valid and not within the refresh window.
+    fn reusable(&self, inception: u32, expiration: u32) -> bool {
+        !serial_lt(self.now, inception)
+            && serial_lt(self.now.wrapping_add(self.refresh), expiration)
+    }
+}
+
+/// Where a name sits relative to zone cuts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Position {
+    /// The apex or authoritative data above every cut.
+    Authoritative,
+    /// A delegation point: only NS and DS are authoritative here, and only DS is signed.
+    Cut,
+    /// Below a delegation point (glue): unsigned and outside the denial chain.
+    Occluded,
+}
+
+type Owners = BTreeMap<Name, BTreeMap<u16, Vec<Record>>>;
+
+fn sign_zone(
+    zone: &ZoneData,
+    keys: &ActiveKeys,
+    policy: &SigningPolicy,
+    previous: Option<&SignedZone>,
+    now: u32,
+) -> Result<SignedZone, DnssecError> {
+    let timing = Timing::new(policy, now)?;
+    if let Denial::Nsec3 { salt, .. } = &policy.denial
+        && salt.len() > usize::from(u8::MAX)
+    {
+        return Err(DnssecError::Nsec3SaltTooLong);
+    }
+    let origin = &zone.origin;
+    let mut owners = group(zone)?;
+    let soa = owners
+        .get(origin)
+        .and_then(|types| types.get(&u16::from(RecordType::Soa)))
+        .and_then(|set| set.first())
+        .ok_or(DnssecError::InvalidZone("no SOA at the apex"))?;
+    let RData::Soa(soa_data) = &soa.data else {
+        return Err(DnssecError::InvalidZone("malformed SOA"));
+    };
+    let denial_ttl = soa_data.minimum.min(soa.ttl);
+
+    let zone_signers: Vec<&SigningKey> = signers(keys, ZoneKey::signs_zone_data)?;
+    let key_signers: Vec<&SigningKey> = signers(keys, ZoneKey::signs_dnskeys)?;
+    if zone_signers.is_empty() {
+        return Err(DnssecError::NoSigningKey("zone data"));
+    }
+    if key_signers.is_empty() {
+        return Err(DnssecError::NoSigningKey("the DNSKEY RRset"));
+    }
+
+    add_apex_records(&mut owners, origin, keys, policy, denial_ttl)?;
+
+    // Classify names and collect the denial chain; canonical order puts every name right
+    // after its ancestors, so one pass tracks the innermost enclosing cut.
+    let mut positions: BTreeMap<Name, Position> = BTreeMap::new();
+    let mut nodes = Vec::new();
+    let mut cut: Option<Name> = None;
+    for (name, types) in &owners {
+        let below_cut = cut
+            .as_ref()
+            .is_some_and(|c| name != c && name.is_subdomain_of(c));
+        let has = |t: RecordType| types.contains_key(&u16::from(t));
+        let position = if below_cut {
+            Position::Occluded
+        } else if name != origin && has(RecordType::Ns) {
+            cut = Some(name.clone());
+            Position::Cut
+        } else {
+            Position::Authoritative
+        };
+        if has(RecordType::Ds) && position != Position::Cut {
+            return Err(DnssecError::InvalidZone("DS outside a delegation point"));
+        }
+        let node_types: Vec<RecordType> = match position {
+            Position::Occluded => {
+                positions.insert(name.clone(), position);
+                continue;
+            }
+            Position::Cut => [RecordType::Ns, RecordType::Ds]
+                .into_iter()
+                .filter(|t| has(*t))
+                .collect(),
+            Position::Authoritative => types.keys().map(|t| RecordType::from(*t)).collect(),
+        };
+        let secure = position == Position::Authoritative || has(RecordType::Ds);
+        nodes.push(ChainNode {
+            name: name.clone(),
+            types: node_types,
+            signed: secure,
+            insecure_cut: !secure,
+        });
+        positions.insert(name.clone(), position);
+    }
+
+    let chain = match &policy.denial {
+        Denial::Nsec => nsec_chain(&nodes, denial_ttl),
+        Denial::Nsec3 {
+            iterations,
+            salt,
+            opt_out,
+        } => nsec3_chain(origin, &nodes, denial_ttl, *iterations, salt, *opt_out)?,
+    };
+    for r in chain {
+        let types = owners.entry(r.name.clone()).or_default();
+        types.entry(u16::from(r.rtype)).or_default().push(r.clone());
+        positions
+            .entry(r.name.clone())
+            .or_insert(Position::Authoritative);
+    }
+
+    let mut rrsets = BTreeMap::new();
+    let mut next_resign: Option<u32> = None;
+    for (name, types) in owners {
+        let position = positions[&name];
+        for (code, records) in types {
+            let rtype = RecordType::from(code);
+            let key = (name.clone(), code);
+            let signing: Vec<&SigningKey> = match (position, rtype) {
+                (Position::Occluded, _) => Vec::new(),
+                // At a cut only DS and the NSEC proving the delegation are authoritative.
+                (Position::Cut, t) if !matches!(t, RecordType::Ds | RecordType::Nsec) => Vec::new(),
+                (_, RecordType::Dnskey) => key_signers.clone(),
+                (_, RecordType::Cds | RecordType::Cdnskey) => union(&key_signers, &zone_signers),
+                _ => zone_signers.clone(),
+            };
+            let old = previous
+                .and_then(|p| p.rrsets.get(&key))
+                .filter(|old| same_data(&old.records, &records));
+            let mut rrsigs = Vec::with_capacity(signing.len());
+            for signer in signing {
+                let dnskey = signer.dnskey();
+                let kept = old.and_then(|o| {
+                    o.rrsigs.iter().find(|s| match &s.data {
+                        RData::Rrsig(sig) => {
+                            sig.key_tag == dnskey.key_tag()
+                                && sig.algorithm == dnskey.algorithm
+                                && sig.signer == *origin
+                                && timing.reusable(sig.inception, sig.expiration)
+                        }
+                        _ => false,
+                    })
+                });
+                let rrsig = match kept {
+                    Some(sig) => sig.clone(),
+                    None => signer.sign_rrset(
+                        &records,
+                        origin,
+                        timing.inception(),
+                        timing.expiration(&name, rtype),
+                    )?,
+                };
+                if let RData::Rrsig(sig) = &rrsig.data {
+                    let due = sig.expiration.wrapping_sub(timing.refresh);
+                    next_resign = Some(match next_resign {
+                        Some(at) if serial_lt(at, due) => at,
+                        _ => due,
+                    });
+                }
+                rrsigs.push(rrsig);
+            }
+            rrsets.insert(key, SignedRrset { records, rrsigs });
+        }
+    }
+    Ok(SignedZone {
+        origin: origin.clone(),
+        rrsets,
+        next_resign: next_resign.unwrap_or(now),
+    })
+}
+
+/// Groups the zone records into `RRsets` by owner and type, checking that the signer can
+/// own the DNSSEC records. Each `RRset` gets the lowest TTL among its records (RFC 2181 5.2).
+fn group(zone: &ZoneData) -> Result<Owners, DnssecError> {
+    let mut owners: Owners = BTreeMap::new();
+    for r in &zone.records {
+        if !r.name.is_subdomain_of(&zone.origin) {
+            return Err(DnssecError::InvalidZone("record outside the zone"));
+        }
+        if is_dnssec_type(r.rtype) {
+            return Err(DnssecError::InvalidZone(
+                "DNSSEC records are generated by the signer",
+            ));
+        }
+        if r.rtype == RecordType::Soa && r.name != zone.origin {
+            return Err(DnssecError::InvalidZone("SOA below the apex"));
+        }
+        if r.rtype == RecordType::Ds && r.name == zone.origin {
+            return Err(DnssecError::InvalidZone("DS at the apex"));
+        }
+        owners
+            .entry(r.name.clone())
+            .or_default()
+            .entry(u16::from(r.rtype))
+            .or_default()
+            .push(r.clone());
+    }
+    for set in owners.values_mut().flat_map(BTreeMap::values_mut) {
+        let ttl = set.iter().map(|r| r.ttl).min().unwrap_or_default();
+        for r in set {
+            r.ttl = ttl;
+        }
+    }
+    Ok(owners)
+}
+
+fn signers(
+    keys: &ActiveKeys,
+    duty: fn(KeyRole, KeyState) -> bool,
+) -> Result<Vec<&SigningKey>, DnssecError> {
+    keys.keys
+        .iter()
+        .filter(|k| duty(k.role, k.state))
+        .map(|k| k.key.as_ref().ok_or(DnssecError::InvalidKey))
+        .collect()
+}
+
+fn union<'a>(a: &[&'a SigningKey], b: &[&'a SigningKey]) -> Vec<&'a SigningKey> {
+    let mut out = a.to_vec();
+    for k in b {
+        if !out.iter().any(|o| std::ptr::eq(*o, *k)) {
+            out.push(k);
+        }
+    }
+    out
+}
+
+/// Adds the DNSKEY `RRset`, CDS and CDNSKEY during a key-signing key rollover, and
+/// NSEC3PARAM for NSEC3 zones.
+fn add_apex_records(
+    owners: &mut Owners,
+    origin: &Name,
+    keys: &ActiveKeys,
+    policy: &SigningPolicy,
+    denial_ttl: u32,
+) -> Result<(), DnssecError> {
+    let mk = |ttl: u32, data: RData| Record {
+        name: origin.clone(),
+        rtype: data.rtype(),
+        class: Class::In,
+        ttl,
+        data,
+    };
+    let apex = owners.entry(origin.clone()).or_default();
+    let mut dnskeys: Vec<&Dnskey> = Vec::new();
+    for k in keys.keys.iter().filter(|k| k.state.is_published()) {
+        if !dnskeys.contains(&&k.dnskey) {
+            dnskeys.push(&k.dnskey);
+        }
+    }
+    apex.insert(
+        u16::from(RecordType::Dnskey),
+        dnskeys
+            .iter()
+            .map(|k| mk(policy.dnskey_ttl, RData::Dnskey((*k).clone())))
+            .collect(),
+    );
+
+    // RFC 7344: while a new SEP key waits for its DS, CDS/CDNSKEY ask the parent for the
+    // DS set covering both the old and the new key.
+    let sep = |state: KeyState| {
+        keys.keys
+            .iter()
+            .filter(move |k| k.role.is_sep() && k.state == state)
+    };
+    if sep(KeyState::Published).next().is_some() && sep(KeyState::Active).next().is_some() {
+        let mut cds = Vec::new();
+        let mut cdnskey = Vec::new();
+        for k in sep(KeyState::Active).chain(sep(KeyState::Published)) {
+            let ds = ds_for(origin, &k.dnskey, DigestType::Sha256)?;
+            cds.push(mk(policy.dnskey_ttl, RData::Cds(ds)));
+            cdnskey.push(mk(policy.dnskey_ttl, RData::Cdnskey(k.dnskey.clone())));
+        }
+        apex.insert(u16::from(RecordType::Cds), cds);
+        apex.insert(u16::from(RecordType::Cdnskey), cdnskey);
+    }
+
+    if let Denial::Nsec3 {
+        iterations, salt, ..
+    } = &policy.denial
+    {
+        apex.insert(
+            u16::from(RecordType::Nsec3param),
+            vec![mk(
+                denial_ttl,
+                RData::Nsec3param(Nsec3Param {
+                    hash_alg: NSEC3_SHA1,
+                    flags: 0,
+                    iterations: *iterations,
+                    salt: salt.clone(),
+                }),
+            )],
+        );
+    }
+    Ok(())
+}
+
+/// True when two `RRsets` have the same TTL, classes and RDATA (in canonical form, as
+/// signed), so a signature over one is valid for the other.
+fn same_data(a: &[Record], b: &[Record]) -> bool {
+    let key = |set: &[Record]| {
+        let mut v: Vec<(u32, u16, Vec<u8>)> = set
+            .iter()
+            .map(|r| (r.ttl, u16::from(r.class), canonical::rdata_wire(&r.data)))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    key(a) == key(b)
+}

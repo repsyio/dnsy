@@ -81,6 +81,10 @@ pub enum DnssecError {
     },
     /// The NSEC3 salt is longer than 255 octets.
     Nsec3SaltTooLong,
+    /// The zone cannot be signed as given.
+    InvalidZone(&'static str),
+    /// No key is available for a signing duty (zone data or the DNSKEY `RRset`).
+    NoSigningKey(&'static str),
 }
 
 impl fmt::Display for DnssecError {
@@ -97,6 +101,8 @@ impl fmt::Display for DnssecError {
                 write!(f, "NSEC3 iterations {iterations} exceed the limit {max}")
             }
             DnssecError::Nsec3SaltTooLong => f.write_str("NSEC3 salt longer than 255 octets"),
+            DnssecError::InvalidZone(why) => write!(f, "invalid zone: {why}"),
+            DnssecError::NoSigningKey(duty) => write!(f, "no key signs {duty}"),
         }
     }
 }

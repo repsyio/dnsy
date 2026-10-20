@@ -15,6 +15,7 @@ mod error;
 mod keys;
 mod nsec3;
 mod pubkey;
+mod sign;
 mod signing;
 mod verify;
 
@@ -26,5 +27,8 @@ pub use keys::{
     plan,
 };
 pub use nsec3::{MAX_NSEC3_ITERATIONS, checked_nsec3_hash, nsec3_hash};
+pub use sign::{
+    ActiveKeys, Denial, SignedRrset, SignedZone, SigningPolicy, ZoneData, ZoneKey, ZoneSigner,
+};
 pub use signing::SigningKey;
 pub use verify::{MAX_CLOCK_SKEW, verify_rrsig, verify_rrsig_with_skew};
