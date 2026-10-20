@@ -1,5 +1,6 @@
 //! The optional `dnssec` block of a zone file.
 
+use dnsy_dnssec::SigningPolicy;
 use serde::{Deserialize, Serialize};
 
 use crate::model::ZoneError;
@@ -132,6 +133,40 @@ impl DnssecPolicy {
     }
 }
 
+impl DnssecPolicy {
+    /// The policy as [`dnsy_dnssec::ZoneSigner`] takes it.
+    ///
+    /// # Errors
+    /// The NSEC3 salt is not valid hex (cannot happen for a validated policy).
+    pub fn signing_policy(&self) -> Result<SigningPolicy, ZoneError> {
+        let denial = match self.denial {
+            Denial::Nsec => dnsy_dnssec::Denial::Nsec,
+            Denial::Nsec3 => dnsy_dnssec::Denial::Nsec3 {
+                iterations: self.nsec3.iterations,
+                salt: hex_decode(&self.nsec3.salt)
+                    .ok_or_else(|| invalid("dnssec.nsec3.salt is not hex".into()))?,
+                opt_out: self.nsec3.opt_out,
+            },
+        };
+        Ok(SigningPolicy {
+            denial,
+            signature_validity_days: self.signature_validity_days,
+            refresh_days: self.refresh_days,
+            dnskey_ttl: self.dnskey_ttl,
+        })
+    }
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
 fn invalid(msg: String) -> ZoneError {
     ZoneError::Invalid(msg)
 }
@@ -167,6 +202,33 @@ mod tests {
         let w = ok.validate().unwrap();
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("non-zero"));
+    }
+
+    #[test]
+    fn converts_to_signing_policy() {
+        let p = policy(r#"{"nsec3":{"salt":"aBff","opt_out":true},"dnskey_ttl":60}"#)
+            .signing_policy()
+            .unwrap();
+        assert_eq!(
+            p,
+            SigningPolicy {
+                denial: dnsy_dnssec::Denial::Nsec3 {
+                    iterations: 0,
+                    salt: vec![0xab, 0xff],
+                    opt_out: true
+                },
+                signature_validity_days: 14,
+                refresh_days: 5,
+                dnskey_ttl: 60,
+            }
+        );
+        let nsec = policy(r#"{"denial":"nsec"}"#).signing_policy().unwrap();
+        assert_eq!(nsec.denial, dnsy_dnssec::Denial::Nsec);
+        for bad in ["abc", "zz", "é1"] {
+            let mut p = policy("{}");
+            p.nsec3.salt = bad.into();
+            assert!(p.signing_policy().is_err(), "{bad}");
+        }
     }
 
     #[test]

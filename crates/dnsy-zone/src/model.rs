@@ -229,6 +229,31 @@ impl Zone {
         serde_json::to_string_pretty(&file).expect("zone file serialises")
     }
 
+    /// The zone as input to [`dnsy_dnssec::ZoneSigner`]: the SOA (with its own TTL) followed by
+    /// every record, class IN.
+    #[must_use]
+    pub fn signing_data(&self) -> dnsy_dnssec::ZoneData {
+        let record = |name: &Name, ttl: u32, data: &RData| dnsy_proto::Record {
+            name: name.clone(),
+            rtype: data.rtype(),
+            class: dnsy_proto::Class::In,
+            ttl,
+            data: data.clone(),
+        };
+        let soa = RData::Soa(self.soa.clone());
+        let records = std::iter::once(record(&self.origin, self.soa_ttl, &soa))
+            .chain(
+                self.records
+                    .iter()
+                    .map(|r| record(&r.name, r.ttl, &r.rdata)),
+            )
+            .collect();
+        dnsy_dnssec::ZoneData {
+            origin: self.origin.clone(),
+            records,
+        }
+    }
+
     /// The file name this zone is stored under.
     ///
     /// # Errors

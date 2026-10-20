@@ -7,16 +7,12 @@
 use std::cmp::Ordering;
 use std::fmt::Write as _;
 
+#[cfg(test)]
+use dnsy_dnssec::SignedRrset;
+use dnsy_dnssec::SignedZone;
 use dnsy_proto::{Name, RData, RecordType, WireWriter};
 
-use crate::model::{Record, Zone};
-
-/// DNSSEC records produced by signing a zone (DNSKEY, RRSIG, NSEC/NSEC3, NSEC3PARAM), appended
-/// to the export in canonical order.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SignedZone {
-    pub records: Vec<Record>,
-}
+use crate::model::Zone;
 
 const MAX_CHAR_STRING: usize = 255;
 
@@ -270,17 +266,16 @@ pub fn export_bind(zone: &Zone, signed: Option<&SignedZone>) -> String {
     }
 
     if let Some(signed) = signed {
-        let mut extra: Vec<&Record> = signed
-            .records
-            .iter()
+        let mut extra: Vec<&dnsy_proto::Record> = signed
+            .dnssec_records()
             .filter(|r| r.name.is_subdomain_of(&zone.origin))
             .collect();
         extra.sort_by(|a, b| {
             canonical_cmp(&a.name, &b.name)
-                .then_with(|| u16::from(a.rdata.rtype()).cmp(&u16::from(b.rdata.rtype())))
+                .then_with(|| u16::from(a.rtype).cmp(&u16::from(b.rtype)))
         });
         for r in extra {
-            line(&mut out, &r.name, Some(r.ttl), &r.rdata, &zone.origin);
+            line(&mut out, &r.name, Some(r.ttl), &r.data, &zone.origin);
         }
     }
     out
@@ -289,6 +284,7 @@ pub fn export_bind(zone: &Zone, signed: Option<&SignedZone>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Record;
 
     const EXAMPLE: &str = include_str!("../tests/fixtures/example.com.json");
 
@@ -390,55 +386,260 @@ mod tests {
         assert!(text.starts_with("$ORIGIN example.com.\n$TTL 3600\n@\t\tIN\tSOA"));
     }
 
+    /// A snapshot holding exactly `records` (no signatures), for export tests.
+    fn snapshot(records: Vec<dnsy_proto::Record>) -> SignedZone {
+        let mut rrsets = std::collections::BTreeMap::new();
+        for r in records {
+            rrsets
+                .entry((r.name.clone(), u16::from(r.rtype)))
+                .or_insert_with(|| SignedRrset {
+                    records: Vec::new(),
+                    rrsigs: Vec::new(),
+                })
+                .records
+                .push(r);
+        }
+        SignedZone {
+            origin: Name::from_ascii("example.com.").unwrap(),
+            rrsets,
+            next_resign: 0,
+        }
+    }
+
+    fn proto(name: &str, ttl: u32, data: RData) -> dnsy_proto::Record {
+        dnsy_proto::Record {
+            name: Name::from_ascii(name).unwrap(),
+            rtype: data.rtype(),
+            class: dnsy_proto::Class::In,
+            ttl,
+            data,
+        }
+    }
+
     #[test]
     fn signed_records_appended_in_canonical_order() {
         let z = zone(EXAMPLE);
-        let mk = |n: &str, t: u16| Record {
-            name: Name::from_ascii(n).unwrap(),
-            ttl: 3600,
-            rdata: RData::Opaque {
-                rtype: t,
-                data: vec![1, 2],
-            },
+        let mk = |n: &str, t: u16| dnsy_proto::Record {
+            rtype: RecordType::from(t),
+            ..proto(
+                n,
+                3600,
+                RData::Opaque {
+                    rtype: t,
+                    data: vec![1, 2],
+                },
+            )
         };
-        let signed = SignedZone {
-            records: vec![
-                mk("www.example.com.", 46),
-                mk("example.com.", 48),
-                mk("example.com.", 47),
-                mk("evil.org.", 48),
-            ],
-        };
+        let signed = snapshot(vec![
+            mk("www.example.com.", 46),
+            mk("example.com.", 48),
+            mk("example.com.", 47),
+            mk("evil.org.", 48),
+            mk("www.example.com.", 1),
+        ]);
         let text = export_bind(&z, Some(&signed));
         let tail: Vec<&str> = text.lines().rev().take(3).collect();
         assert!(tail[0].starts_with("www\t3600\tIN\tRRSIG"));
         assert!(tail[1].starts_with("@\t3600\tIN\tDNSKEY"));
         assert!(tail[2].starts_with("@\t3600\tIN\tNSEC"));
         assert!(!text.contains("evil"));
+        assert_eq!(
+            text.matches("\\# 2 0102").count(),
+            3,
+            "zone data in the snapshot is not printed again"
+        );
     }
 
     #[test]
     fn signed_rdata_with_special_names_uses_generic_form() {
         let z = zone(EXAMPLE);
-        let nsec = |next: Name| Record {
-            name: Name::from_ascii("example.com.").unwrap(),
-            ttl: 300,
-            rdata: RData::Nsec {
-                next,
-                types: dnsy_proto::TypeBitmap::from_types(&[RecordType::A]),
-            },
+        let nsec = |next: Name| {
+            proto(
+                "example.com.",
+                300,
+                RData::Nsec {
+                    next,
+                    types: dnsy_proto::TypeBitmap::from_types(&[RecordType::A]),
+                },
+            )
         };
         let plain = Name::from_ascii("www.example.com.").unwrap();
         let evil = Name::from_labels([b"a;\n$INCLUDE".to_vec(), b"com".to_vec()]).unwrap();
-        let signed = SignedZone {
-            records: vec![nsec(plain), nsec(evil)],
-        };
+        let signed = snapshot(vec![nsec(plain), nsec(evil)]);
         let text = export_bind(&z, Some(&signed));
         let lines: Vec<&str> = text.lines().filter(|l| l.contains("NSEC")).collect();
         assert_eq!(lines.len(), 2);
         assert!(lines.iter().any(|l| l.contains("www.example.com. A")));
         assert!(lines.iter().any(|l| l.contains("\\# ")));
         assert!(!text.contains("$INCLUDE"));
+    }
+
+    const NOW: u32 = 1_800_000_000;
+
+    /// Signs the example zone with a fresh key of `alg` under its own policy (with `denial`).
+    fn signed_example(alg: dnsy_dnssec::Algorithm, denial: &str) -> (Zone, SignedZone) {
+        let mut z = zone(EXAMPLE);
+        let policy = z.dnssec.as_mut().unwrap();
+        policy.denial = serde_json::from_str(&format!("\"{denial}\"")).unwrap();
+        policy.nsec3.opt_out = denial == "nsec3";
+        let keys = dnsy_dnssec::ActiveKeys {
+            keys: vec![dnsy_dnssec::ZoneKey::new(
+                dnsy_dnssec::KeyRole::Csk,
+                dnsy_dnssec::KeyState::Active,
+                dnsy_dnssec::SigningKey::generate(alg, true).unwrap(),
+            )],
+        };
+        let p = z.dnssec.as_ref().unwrap().signing_policy().unwrap();
+        let signed = dnsy_dnssec::ZoneSigner::sign(&z.signing_data(), &keys, &p, NOW).unwrap();
+        (z, signed)
+    }
+
+    /// Reads the single-line records of an export back: `owner [ttl] IN TYPE rdata`.
+    fn reparse(text: &str, z: &Zone) -> Vec<dnsy_proto::Record> {
+        const TYPES: [RecordType; 16] = [
+            RecordType::A,
+            RecordType::Aaaa,
+            RecordType::Ns,
+            RecordType::Cname,
+            RecordType::Mx,
+            RecordType::Txt,
+            RecordType::Srv,
+            RecordType::Caa,
+            RecordType::Ptr,
+            RecordType::Ds,
+            RecordType::Rrsig,
+            RecordType::Nsec,
+            RecordType::Dnskey,
+            RecordType::Nsec3,
+            RecordType::Nsec3param,
+            RecordType::Cds,
+        ];
+        let mut out = vec![z.signing_data().records[0].clone()];
+        for line in text.lines() {
+            let f: Vec<&str> = line.splitn(5, '\t').collect();
+            if f.len() < 5 || f[2] != "IN" || f[3] == "SOA" {
+                continue;
+            }
+            let name = match f[0] {
+                "@" => z.origin.clone(),
+                o if o.ends_with('.') => Name::from_ascii(o).unwrap(),
+                o => Name::from_ascii(&format!("{o}.{}", z.origin)).unwrap(),
+            };
+            let ttl = f[1].parse().unwrap_or(z.default_ttl);
+            let rtype = *TYPES.iter().find(|t| type_name(**t) == f[3]).unwrap();
+            let data = RData::parse(rtype, f[4]).unwrap();
+            out.push(dnsy_proto::Record {
+                name,
+                rtype,
+                class: dnsy_proto::Class::In,
+                ttl,
+                data,
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn signed_export_verifies_after_reparse() {
+        for alg in [
+            dnsy_dnssec::Algorithm::EcdsaP256Sha256,
+            dnsy_dnssec::Algorithm::Ed25519,
+        ] {
+            for denial in ["nsec", "nsec3"] {
+                let (z, signed) = signed_example(alg, denial);
+                let records = reparse(&export_bind(&z, Some(&signed)), &z);
+                let dnskeys: Vec<dnsy_proto::Dnskey> = records
+                    .iter()
+                    .filter_map(|r| match &r.data {
+                        RData::Dnskey(k) => Some(k.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(dnskeys.len(), 1);
+                let sigs: Vec<&dnsy_proto::Rrsig> = records
+                    .iter()
+                    .filter_map(|r| match &r.data {
+                        RData::Rrsig(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    sigs.len(),
+                    signed
+                        .dnssec_records()
+                        .filter(|r| r.rtype == RecordType::Rrsig)
+                        .count()
+                );
+                for (r, sig) in records.iter().filter_map(|r| match &r.data {
+                    RData::Rrsig(s) => Some((r, s)),
+                    _ => None,
+                }) {
+                    let rrset: Vec<dnsy_proto::Record> = records
+                        .iter()
+                        .filter(|x| x.name == r.name && x.rtype == sig.type_covered)
+                        .cloned()
+                        .collect();
+                    assert_eq!(
+                        dnsy_dnssec::verify_rrsig(&rrset, sig, &dnskeys[0], NOW),
+                        Ok(()),
+                        "{} {:?}",
+                        r.name,
+                        sig.type_covered
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dnssec_verify_accepts_signed_export() {
+        // BIND's dnssec-verify, else ldns-verify-zone; skipped when neither is installed.
+        let tool = ["dnssec-verify", "ldns-verify-zone"]
+            .into_iter()
+            .find(|t| std::process::Command::new(t).arg("-h").output().is_ok());
+        let Some(tool) = tool else {
+            eprintln!("dnssec-verify and ldns-verify-zone not installed, skipping");
+            return;
+        };
+        let now = u32::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        for denial in ["nsec", "nsec3"] {
+            let mut z = zone(EXAMPLE);
+            z.dnssec.as_mut().unwrap().denial =
+                serde_json::from_str(&format!("\"{denial}\"")).unwrap();
+            let keys = dnsy_dnssec::ActiveKeys {
+                keys: vec![dnsy_dnssec::ZoneKey::new(
+                    dnsy_dnssec::KeyRole::Csk,
+                    dnsy_dnssec::KeyState::Active,
+                    dnsy_dnssec::SigningKey::generate(
+                        dnsy_dnssec::Algorithm::EcdsaP256Sha256,
+                        true,
+                    )
+                    .unwrap(),
+                )],
+            };
+            let p = z.dnssec.as_ref().unwrap().signing_policy().unwrap();
+            let signed = dnsy_dnssec::ZoneSigner::sign(&z.signing_data(), &keys, &p, now).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("zone.db");
+            std::fs::write(&path, export_bind(&z, Some(&signed))).unwrap();
+            let mut cmd = std::process::Command::new(tool);
+            if tool == "dnssec-verify" {
+                cmd.arg("-o").arg("example.com");
+            }
+            let out = cmd.arg(&path).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{tool} ({denial}): {}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 
     #[test]

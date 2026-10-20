@@ -5,8 +5,8 @@ DNSY implements DNSSEC itself. The `dnsy-dnssec` crate holds the cryptography an
 crypto is [`ring`](https://github.com/briansmith/ring) for raw signature checks and digests
 (plus `zeroize` to wipe key material); the DNSSEC logic is written in this repository.
 
-This page covers the cryptographic building blocks. Chain-of-trust validation, zone
-signing and key rollover are added by later stories and extend this page.
+This page covers the cryptographic building blocks, signing keys and zone signing.
+Chain-of-trust validation is added by a later story and extends this page.
 
 ## Algorithms
 
@@ -146,3 +146,72 @@ with AES-256-GCM under a bundle passphrase of the operator's choosing, independe
 store passphrase. `import_bundle` decrypts it, validates every key (PKCS#8, algorithm, key
 tag), re-seals the keys under the current store passphrase and skips keys that are already
 present. The file variants create the bundle with mode `0600` and refuse to overwrite.
+
+## Zone signing
+
+`ZoneSigner::sign(zone, keys, policy, now)` in `dnsy-dnssec` turns a zone's records into a
+`SignedZone`: every RRset keyed by owner (in canonical order, RFC 4034 6.1) and type, each
+with its RRSIGs. `dnsy-zone` supplies the inputs: `Zone::signing_data()` for the records,
+`DnssecPolicy::signing_policy()` for the policy and `KeyStore::active_keys(zone)` for the
+keys. `export_bind(&zone, Some(&signed))` writes the signed zone as a master file.
+
+### What is signed
+
+| RRset | Signed by |
+| --- | --- |
+| DNSKEY at the apex | every active or published KSK/CSK |
+| CDS, CDNSKEY (during a KSK/CSK rollover) | the KSK/CSKs above and the zone-signing keys |
+| every other authoritative RRset, NSEC, NSEC3, NSEC3PARAM | every active ZSK/CSK |
+| DS at a delegation | the zone-signing keys |
+| NS at a delegation, glue and anything else at or below a zone cut | not signed |
+
+The DNSKEY RRset holds every published, active and retired key. A ZSK being pre-published
+appears in it without signing anything, and a retired ZSK stays until its signatures are gone.
+During a KSK or CSK rollover the new key is published and signs the DNSKEY RRset next to the
+old one, so the RRset validates whichever DS the parent holds. While that rollover waits for
+the DS, the apex also carries CDS (SHA-256) and CDNSKEY records for both keys (RFC 7344).
+
+Each RRSIG has the RRset's TTL as original TTL, a `labels` count that leaves out a wildcard
+label, inception one hour before signing time (for validators with slow clocks) and
+expiration `signature_validity_days` after it. Expirations are jittered per RRset by up to
+half of `min(refresh_days, signature_validity_days - refresh_days)`, so re-signing spreads
+out instead of happening all at once. The jitter is derived from the owner, type and signing
+time, so it is reproducible. Records of one RRset with different TTLs are given the lowest
+one (RFC 2181 5.2).
+
+The signer refuses zones without an apex SOA, records outside the origin, DNSSEC records in
+the input (it generates them all), DS at the apex or outside a delegation, and policies whose
+validity is not longer than `refresh_days`.
+
+### Denial of existence
+
+The NSEC and NSEC3 records and NSEC3PARAM have the TTL `min(SOA minimum, SOA TTL)` (RFC 9077).
+
+* **NSEC** (`denial = "nsec"`): one NSEC per authoritative name and delegation point in
+  canonical order, the last pointing back to the apex. Glue names and empty non-terminals get
+  none. A delegation's bitmap lists only NS, DS (when present), RRSIG and NSEC.
+* **NSEC3** (`denial = "nsec3"`, the default): SHA-1 hashes of the same names plus every empty
+  non-terminal, sorted by hash and linked in a ring, with NSEC3PARAM at the apex. RFC 9276
+  defaults apply: 0 extra iterations and an empty salt. A non-zero iteration count needs
+  `nsec3.allow_nonzero_iterations` and produces a warning. An insecure delegation's bitmap is just NS, since nothing is signed there.
+* **Opt-out** (`nsec3.opt_out = true`): delegations without DS are left out of the chain,
+  along with empty non-terminals that exist only because of them, and every NSEC3 record
+  carries the opt-out flag. NSEC3PARAM flags stay 0.
+
+### Re-signing
+
+`ZoneSigner::resign(zone, keys, policy, previous, now)` builds a new snapshot and keeps a
+signature from `previous` when its RRset is unchanged (same TTL and RDATA in canonical form),
+its key still has that signing duty, and it expires more than `refresh_days` from now.
+Anything else is signed again. `SignedZone::next_resign` is the first time some signature
+falls inside the refresh window, and `needs_refresh(now)` says whether that time has come.
+Time is always passed in, so tests drive it with a `ManualClock`.
+
+### Verification
+
+The tests sign zones with algorithms 13 and 15, for NSEC, NSEC3 and NSEC3 with opt-out, and
+check every RRSIG with `verify_rrsig` against the published DNSKEYs. They also check that the
+chains cover names that do not exist, and they re-read the BIND export and verify it again.
+When BIND's `dnssec-verify` or `ldns-verify-zone` is installed,
+`dnssec_verify_accepts_signed_export` runs it on the exported zone. Without either tool the
+test is skipped.

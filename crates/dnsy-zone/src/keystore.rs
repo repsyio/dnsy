@@ -15,8 +15,8 @@ use argon2::{Algorithm as Argon2Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use dnsy_dnssec::{
-    Algorithm, Clock, DnssecError, KeyRecord, KeyRole, KeyState, RolloverTimings, SigningKey,
-    Transition, plan,
+    ActiveKeys, Algorithm, Clock, DnssecError, KeyRecord, KeyRole, KeyState, RolloverTimings,
+    SigningKey, Transition, ZoneKey, plan,
 };
 use dnsy_proto::{Dnskey, Name};
 use dnsy_store::{Store, StoreError};
@@ -615,6 +615,24 @@ impl KeyStore {
             .await
     }
 
+    /// The keys [`dnsy_dnssec::ZoneSigner`] needs for a zone: every published, active and
+    /// retired DNSKEY, with the private key decrypted only for keys that sign
+    /// ([`ZoneKey::signs`]).
+    ///
+    /// # Errors
+    /// Missing or wrong passphrase, or a database failure.
+    pub async fn active_keys(&self, zone: &Name) -> Result<ActiveKeys, KeyStoreError> {
+        let mut keys = Vec::new();
+        for (rec, dnskey) in self.dnskeys(zone).await? {
+            keys.push(if ZoneKey::signs(rec.role, rec.state) {
+                ZoneKey::new(rec.role, rec.state, self.signing_key(rec.id).await?)
+            } else {
+                ZoneKey::public(rec.role, rec.state, dnskey)
+            });
+        }
+        Ok(ActiveKeys { keys })
+    }
+
     /// Starts a rollover of `role`: generates a new key of `algorithm` and publishes it.
     /// [`tick`](Self::tick) then advances it per [`plan`].
     ///
@@ -1160,6 +1178,42 @@ mod tests {
         assert!(!dump.contains(&hex));
         assert!(!dump.contains(&format!("{:?}", der.as_slice())));
         assert!(dump.contains("redacted"));
+    }
+
+    #[tokio::test]
+    async fn active_keys_load_signers_and_sign_a_zone() {
+        let f = fixture(Some("pw"));
+        f.ks.bootstrap(&zone(), &policy(r#"{"key_layout":"ksk_zsk"}"#))
+            .await
+            .unwrap();
+        f.ks.start_rollover(&zone(), KeyRole::Ksk, Algorithm::EcdsaP256Sha256)
+            .await
+            .unwrap();
+        let rec =
+            f.ks.start_rollover(&zone(), KeyRole::Zsk, Algorithm::EcdsaP256Sha256)
+                .await
+                .unwrap();
+        let keys = f.ks.active_keys(&zone()).await.unwrap();
+        let published_zsk = keys.keys.iter().find(|k| k.dnskey.key_tag() == rec.key_tag);
+        assert_eq!(keys.keys.len(), 4);
+        assert_eq!(published_zsk.unwrap().state, KeyState::Published);
+
+        let (z, _) =
+            crate::Zone::from_json(include_str!("../tests/fixtures/example.com.json")).unwrap();
+        let p = z.dnssec.as_ref().unwrap().signing_policy().unwrap();
+        let now = u32::try_from(T0).unwrap();
+        let signed = dnsy_dnssec::ZoneSigner::sign(&z.signing_data(), &keys, &p, now).unwrap();
+        let dnskey = signed
+            .rrset(&z.origin, dnsy_proto::RecordType::Dnskey)
+            .unwrap();
+        assert_eq!(dnskey.records.len(), 4);
+        assert_eq!(dnskey.rrsigs.len(), 2, "both KSKs sign the DNSKEY RRset");
+
+        let locked = KeyStore {
+            passphrase: None,
+            ..f.ks.clone()
+        };
+        assert!(locked.active_keys(&zone()).await.is_err());
     }
 
     #[tokio::test]
