@@ -1,9 +1,19 @@
-//! dnsy-engine: the transport-agnostic request handler.
+//! dnsy-engine: the transport-agnostic request pipeline.
 //!
-//! Transports (UDP, TCP, later `DoT` and `DoH`) only frame bytes, decode them into a
-//! [`dnsy_proto::Message`] and call a [`Handler`] with a [`RequestContext`]. The full request
-//! pipeline is wired in a later story; [`RefusedHandler`] is the stub until then.
+//! Transports (UDP, TCP, `DoT`, `DoH`) only frame bytes, decode them into a
+//! [`dnsy_proto::Message`] and call a [`Handler`] with a [`RequestContext`]. [`Engine`] is the
+//! pipeline (spec 5.2); [`EngineBuilder::from_config`] assembles it from the configuration and
+//! the store. [`RefusedHandler`] remains as a trivial handler for listener tests.
 
+mod builder;
+mod engine;
 pub mod handler;
+mod response;
 
+pub use builder::{EngineBuilder, EngineError};
+pub use engine::Engine;
 pub use handler::{Handler, RefusedHandler, RequestContext};
+pub use response::{RESPONSE_IP_LIST, ResponseIpPolicy};
+
+#[cfg(test)]
+mod tests;

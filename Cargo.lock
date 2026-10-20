@@ -463,8 +463,18 @@ dependencies = [
 name = "dnsy-engine"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "dnsy-config",
  "dnsy-core",
+ "dnsy-filter",
+ "dnsy-observe",
  "dnsy-proto",
+ "dnsy-resolver",
+ "dnsy-store",
+ "dnsy-zone",
+ "ipnet",
+ "tempfile",
+ "thiserror",
  "tokio",
 ]
 
