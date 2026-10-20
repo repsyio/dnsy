@@ -120,6 +120,9 @@ impl<'a> Authenticator<'a> {
             return Err(ApiError::Unauthorized);
         };
         let role = self.state.users.get(user).await?.role;
+        if !role.allows(needed) {
+            return Err(ApiError::Forbidden("the role lacks the required scope"));
+        }
         Ok(AuthUser {
             user,
             role,
@@ -165,7 +168,7 @@ fn csrf_matches(headers: &HeaderMap) -> bool {
 }
 
 /// Value of cookie `name` from the `Cookie` header(s).
-fn cookie<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
+pub(crate) fn cookie<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
     headers
         .get_all(header::COOKIE)
         .iter()

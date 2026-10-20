@@ -27,7 +27,8 @@ fn digest(code: &str) -> [u8; 32] {
 
 impl BootstrapCode {
     /// Create a code valid for `ttl`. Returns the handle and the plaintext code.
-    pub(crate) fn generate(ttl: Duration) -> (BootstrapCode, String) {
+    #[must_use]
+    pub fn generate(ttl: Duration) -> (BootstrapCode, String) {
         let mut raw = [0u8; 16];
         rand::fill(&mut raw[..]);
         let code = raw.iter().fold(String::with_capacity(32), |mut s, b| {

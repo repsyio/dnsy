@@ -27,6 +27,29 @@ Bearer requests need no CSRF token.
 
 Credentials are never logged: request tracing records only method, path, status and latency.
 
+## Auth, users and tokens
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `POST /api/v1/auth/login` | none | `{username, password}`; sets `dnsy_session` (HttpOnly) and `dnsy_csrf` cookies, both `SameSite=Strict` (and `Secure` over TLS). Answers 401 on bad credentials, 429 when throttled |
+| `POST /api/v1/auth/logout` | session | ends the session and clears the cookies (204) |
+| `GET /api/v1/auth/me` | read | the caller and how it authenticated (`session` or `token`) |
+| `POST /api/v1/auth/bootstrap` | none | `{code, username, password}`; creates the first admin with the one-time code printed at startup. 401 for a wrong or expired code, 409 once any user exists |
+| `PUT /api/v1/auth/me/password` | session | `{current_password, new_password}`; ends every session of the user and returns fresh cookies for this client |
+| `GET/POST /api/v1/users` | admin | list, create `{username, password, role}` |
+| `GET/PATCH/DELETE /api/v1/users/{id}` | admin | PATCH takes `role` and/or `password`. 409 when it would remove or demote the last admin |
+| `GET/POST /api/v1/tokens` | read / session | list own tokens (admins: all); create `{name, scopes, expires_at?}` |
+| `DELETE /api/v1/tokens/{id}` | read | revoke an own token (admins: any); other users' tokens answer 404 |
+
+Passwords are at least 8 characters. Changing a user's password or role, and deleting a user, ends
+that user's sessions; a deleted user's tokens stop working immediately. A token only works while its
+owner's *current* role still allows the scope it is used for, so a demoted user's old admin token
+gets 403.
+
+The token secret is returned only in the `POST /tokens` response (`token`); listings contain
+metadata only. Creating a token and changing a password need a session, so a leaked token cannot
+mint further tokens or lock the owner out.
+
 ## Errors
 
 Errors are RFC 9457 `application/problem+json`:
