@@ -1,11 +1,16 @@
 //! Resource record data: wire codecs and RFC 1035 presentation format.
 
+mod dnssec;
 mod text;
 
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::{Name, RecordType, WireError, WireReader, WireWriter};
+use crate::{Name, RecordType, TypeBitmap, WireError, WireReader, WireWriter};
+pub use dnssec::{
+    Dnskey, Ds, Nsec3, Nsec3Param, Rrsig, base32hex_decode, base32hex_encode, format_timestamp,
+    parse_timestamp, serial_gt, serial_lt,
+};
 use text::{Token, parse_hex, tokenize, write_hex, write_quoted};
 
 /// Maximum length of one TXT character-string.
@@ -49,6 +54,17 @@ pub enum RData {
         tag: String,
         value: Vec<u8>,
     },
+    Dnskey(Dnskey),
+    Rrsig(Rrsig),
+    Ds(Ds),
+    Nsec {
+        next: Name,
+        types: TypeBitmap,
+    },
+    Nsec3(Nsec3),
+    Nsec3param(Nsec3Param),
+    Cds(Ds),
+    Cdnskey(Dnskey),
     /// Any type without a dedicated variant, kept as RFC 3597 opaque data.
     Opaque {
         rtype: u16,
@@ -99,6 +115,14 @@ impl RData {
             Self::Soa(_) => RecordType::Soa,
             Self::Srv { .. } => RecordType::Srv,
             Self::Caa { .. } => RecordType::Caa,
+            Self::Dnskey(_) => RecordType::Dnskey,
+            Self::Rrsig(_) => RecordType::Rrsig,
+            Self::Ds(_) => RecordType::Ds,
+            Self::Nsec { .. } => RecordType::Nsec,
+            Self::Nsec3(_) => RecordType::Nsec3,
+            Self::Nsec3param(_) => RecordType::Nsec3param,
+            Self::Cds(_) => RecordType::Cds,
+            Self::Cdnskey(_) => RecordType::Cdnskey,
             Self::Opaque { rtype, .. } => RecordType::from(*rtype),
         }
     }
@@ -174,6 +198,17 @@ impl RData {
                     value: r.read_bytes(value_len)?.to_vec(),
                 }
             }
+            RecordType::Dnskey => Self::Dnskey(Dnskey::decode(r, end)?),
+            RecordType::Cdnskey => Self::Cdnskey(Dnskey::decode(r, end)?),
+            RecordType::Rrsig => Self::Rrsig(Rrsig::decode(r, end)?),
+            RecordType::Ds => Self::Ds(Ds::decode(r, end)?),
+            RecordType::Cds => Self::Cds(Ds::decode(r, end)?),
+            RecordType::Nsec => {
+                let (next, types) = dnssec::decode_nsec(r, end)?;
+                Self::Nsec { next, types }
+            }
+            RecordType::Nsec3 => Self::Nsec3(Nsec3::decode(r, end)?),
+            RecordType::Nsec3param => Self::Nsec3param(Nsec3Param::decode(r)?),
             other => Self::Opaque {
                 rtype: other.into(),
                 data: r.read_bytes(rdlen)?.to_vec(),
@@ -241,6 +276,12 @@ impl RData {
                 w.write_bytes(tag.as_bytes());
                 w.write_bytes(value);
             }
+            Self::Dnskey(k) | Self::Cdnskey(k) => k.encode(w),
+            Self::Rrsig(s) => s.encode(w),
+            Self::Ds(d) | Self::Cds(d) => d.encode(w),
+            Self::Nsec { next, types } => dnssec::encode_nsec(w, next, types),
+            Self::Nsec3(n) => n.encode(w)?,
+            Self::Nsec3param(n) => n.encode(w)?,
             Self::Opaque { data, .. } => w.write_bytes(data),
         }
         Ok(())
@@ -305,6 +346,17 @@ impl RData {
                 let value = next(&mut it, "value")?.bytes.clone();
                 Self::Caa { flags, tag, value }
             }
+            RecordType::Dnskey => Self::Dnskey(Dnskey::parse(&mut it)?),
+            RecordType::Cdnskey => Self::Cdnskey(Dnskey::parse(&mut it)?),
+            RecordType::Rrsig => Self::Rrsig(Rrsig::parse(&mut it)?),
+            RecordType::Ds => Self::Ds(Ds::parse(&mut it)?),
+            RecordType::Cds => Self::Cds(Ds::parse(&mut it)?),
+            RecordType::Nsec => {
+                let (next, types) = dnssec::parse_nsec(&mut it)?;
+                Self::Nsec { next, types }
+            }
+            RecordType::Nsec3 => Self::Nsec3(Nsec3::parse(&mut it)?),
+            RecordType::Nsec3param => Self::Nsec3param(Nsec3Param::parse(&mut it)?),
             other => {
                 return Err(RdataParseError::InvalidField(
                     if matches!(other, RecordType::Opt | RecordType::Any) {
@@ -398,6 +450,12 @@ impl fmt::Display for RData {
                 write!(f, "{flags} {tag} ")?;
                 write_quoted(f, value)
             }
+            Self::Dnskey(k) | Self::Cdnskey(k) => write!(f, "{k}"),
+            Self::Rrsig(s) => write!(f, "{s}"),
+            Self::Ds(d) | Self::Cds(d) => write!(f, "{d}"),
+            Self::Nsec { next, types } => write!(f, "{next}{types}"),
+            Self::Nsec3(n) => write!(f, "{n}"),
+            Self::Nsec3param(n) => write!(f, "{n}"),
             Self::Opaque { data, .. } => {
                 write!(f, "\\# {}", data.len())?;
                 if !data.is_empty() {
