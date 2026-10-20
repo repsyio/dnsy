@@ -260,6 +260,928 @@
         ]
       }
     },
+    "/api/v1/cache": {
+      "get": {
+        "tags": [
+          "cache"
+        ],
+        "summary": "Live cache statistics.",
+        "operationId": "cache_stats",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CacheStatsBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No cache is running",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "cache"
+        ],
+        "summary": "Remove every cache entry. Needs `api:write`.",
+        "operationId": "flush_all",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Flushed"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No cache is running",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/cache/entries": {
+      "delete": {
+        "tags": [
+          "cache"
+        ],
+        "summary": "Remove the entries of one name, optionally with its subtree. Needs `api:write`.",
+        "operationId": "flush_entries",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Domain name whose entries are removed.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subtree",
+            "in": "query",
+            "description": "Also remove everything below the name (default false).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Flushed"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No cache is running",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/querylog": {
+      "get": {
+        "tags": [
+          "querylog"
+        ],
+        "summary": "Search the query log, newest first.",
+        "operationId": "search_log",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive start, unix milliseconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Exclusive end, unix milliseconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "Exact client address (the network address when client redaction is on).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "domain",
+            "in": "query",
+            "description": "Case-insensitive substring of the query name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Query type by name (`A`, `AAAA`, ...) or number.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "description": "Response code by name (`NOERROR`, `NXDOMAIN`, ...) or number.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "`authoritative`, `cache`, `cache_stale`, `upstream`, `blocked`, `refused` or `error`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dnssec",
+            "in": "query",
+            "description": "`unchecked`, `secure`, `insecure`, `bogus` or `indeterminate`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1 to 500 (default 100).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogPageBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/querylog/stream": {
+      "get": {
+        "tags": [
+          "querylog"
+        ],
+        "summary": "Live tail of the query log as server-sent events.",
+        "description": "Events are named `query` and carry one log record as JSON; `lagged` means rows were\nskipped because the consumer was too slow. The server polls at its own pace, so a slow\nconsumer never makes it buffer. The number of concurrent streams is capped (429 beyond).\nTakes the same filters as the search (`from`/`to` bound the stream). Needs `api:write`\n(operator or admin).",
+        "operationId": "stream_log",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive start, unix milliseconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Exclusive end, unix milliseconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "Exact client address (the network address when client redaction is on).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "domain",
+            "in": "query",
+            "description": "Case-insensitive substring of the query name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Query type by name (`A`, `AAAA`, ...) or number.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "description": "Response code by name (`NOERROR`, `NXDOMAIN`, ...) or number.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "`authoritative`, `cache`, `cache_stale`, `upstream`, `blocked`, `refused` or `error`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dnssec",
+            "in": "query",
+            "description": "`unchecked`, `secure`, `insecure`, `bogus` or `indeterminate`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many live-tail connections",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/stats/summary": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Totals, answer sources, DNSSEC status counts, cache hit ratio, blocked ratio and latency.",
+        "operationId": "summary",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive start, unix milliseconds (default: `to` minus 24 hours).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Exclusive end, unix milliseconds (default: now).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/stats/timeseries": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Query counts per bucket (only buckets with data), oldest first.",
+        "operationId": "timeseries",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive start, unix milliseconds (default: `to` minus 24 hours).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Exclusive end, unix milliseconds (default: now).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "bucket",
+            "in": "query",
+            "description": "Bucket width in seconds, a multiple of 60 (default 3600).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SeriesPoint"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/stats/top-blocked": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Most blocked names.",
+        "operationId": "top_blocked",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive start, unix milliseconds (default: `to` minus 24 hours).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Exclusive end, unix milliseconds (default: now).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of entries, 1 to 100 (default 10).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TopItem"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/stats/top-clients": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Busiest clients (network addresses when client redaction is on).",
+        "operationId": "top_clients",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive start, unix milliseconds (default: `to` minus 24 hours).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Exclusive end, unix milliseconds (default: now).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of entries, 1 to 100 (default 10).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TopItem"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/stats/top-domains": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Most queried names.",
+        "operationId": "top_domains",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive start, unix milliseconds (default: `to` minus 24 hours).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Exclusive end, unix milliseconds (default: now).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Number of entries, 1 to 100 (default 10).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TopItem"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/tokens": {
       "get": {
         "tags": [
@@ -1582,6 +2504,74 @@
           }
         }
       },
+      "CacheStatsBody": {
+        "type": "object",
+        "description": "Live cache counters.",
+        "required": [
+          "entries",
+          "capacity",
+          "hits",
+          "misses",
+          "hit_ratio",
+          "inserts",
+          "evictions",
+          "expired",
+          "stale_served",
+          "prefetches"
+        ],
+        "properties": {
+          "capacity": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "evictions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expired": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "hit_ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "`hits / (hits + misses)`, 0 before any lookup."
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "inserts": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "misses": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "prefetches": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stale_served": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ChangePassword": {
         "type": "object",
         "description": "Password change.",
@@ -1683,6 +2673,111 @@
           "token": {
             "type": "string",
             "description": "The secret. Store it now; it cannot be retrieved again."
+          }
+        }
+      },
+      "Flushed": {
+        "type": "object",
+        "description": "Outcome of a flush.",
+        "required": [
+          "removed"
+        ],
+        "properties": {
+          "removed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries removed.",
+            "minimum": 0
+          }
+        }
+      },
+      "LogPageBody": {
+        "type": "object",
+        "description": "A page of the query log, newest first.",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogRecord"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; absent on the last page."
+          }
+        }
+      },
+      "LogRecord": {
+        "type": "object",
+        "description": "One logged query.",
+        "required": [
+          "id",
+          "ts_ms",
+          "client",
+          "transport",
+          "qname",
+          "qtype",
+          "rcode",
+          "source",
+          "dnssec",
+          "latency_us"
+        ],
+        "properties": {
+          "client": {
+            "type": "string",
+            "description": "Client address (truncated to its network when redaction is on)."
+          },
+          "dnssec": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latency_us": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "principal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Authenticated principal (`DoH` token name), never a token secret."
+          },
+          "qname": {
+            "type": "string"
+          },
+          "qtype": {
+            "type": "string"
+          },
+          "rcode": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "source_detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Upstream address or blocklist name."
+          },
+          "transport": {
+            "type": "string"
+          },
+          "ts_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix milliseconds."
           }
         }
       },
@@ -1857,6 +2952,43 @@
           }
         }
       },
+      "SeriesPoint": {
+        "type": "object",
+        "description": "One timeseries bucket.",
+        "required": [
+          "start_ms",
+          "total",
+          "blocked",
+          "cache_hits",
+          "max_latency_us"
+        ],
+        "properties": {
+          "blocked": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_hits": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_latency_us": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "start_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "SoaBody": {
         "type": "object",
         "description": "The SOA record of a zone.",
@@ -1930,6 +3062,118 @@
           }
         }
       },
+      "SummaryBody": {
+        "type": "object",
+        "description": "Aggregate over the range.",
+        "required": [
+          "from",
+          "to",
+          "total",
+          "blocked",
+          "blocked_ratio",
+          "by_rcode",
+          "by_source",
+          "dnssec",
+          "cache_hits",
+          "cache_misses",
+          "cache_hit_ratio",
+          "stale_answers",
+          "avg_latency_us",
+          "max_latency_us"
+        ],
+        "properties": {
+          "avg_latency_us": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Upstream and overall latency, microseconds.",
+            "minimum": 0
+          },
+          "blocked": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers blocked by a blocklist or rule.",
+            "minimum": 0
+          },
+          "blocked_ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "`blocked / total`, 0 when there are no queries."
+          },
+          "by_rcode": {
+            "type": "object",
+            "description": "Response code number to count.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "by_source": {
+            "type": "object",
+            "description": "Answer source to count.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "cache_hit_ratio": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_hits": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_misses": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "dnssec": {
+            "type": "object",
+            "description": "DNSSEC status (`unchecked`, `secure`, `insecure`, `bogus`, `indeterminate`) to count.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_latency_us": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stale_answers": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "TokenInfo": {
         "type": "object",
         "description": "Token metadata. The secret is never part of it.",
@@ -1981,6 +3225,24 @@
             "type": "integer",
             "format": "int64",
             "description": "Owner."
+          }
+        }
+      },
+      "TopItem": {
+        "type": "object",
+        "description": "A ranked name or address.",
+        "required": [
+          "key",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "key": {
+            "type": "string"
           }
         }
       },

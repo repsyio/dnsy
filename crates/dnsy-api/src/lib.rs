@@ -103,3 +103,5 @@ fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router 
 mod tests;
 #[cfg(test)]
 mod tests_auth;
+#[cfg(test)]
+mod tests_obs;
