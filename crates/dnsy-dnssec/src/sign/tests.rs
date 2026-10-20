@@ -177,9 +177,7 @@ fn owners_of(z: &SignedZone, t: RecordType) -> Vec<Name> {
 
 fn covers_nsec(z: &SignedZone, qname: &Name) -> bool {
     z.records().any(|r| match &r.data {
-        RData::Nsec { next, .. } => {
-            (r.name < *qname && qname < next) || (next == &z.origin && r.name < *qname)
-        }
+        RData::Nsec { next, .. } => r.name < *qname && (qname < next || next == &z.origin),
         _ => false,
     })
 }
@@ -280,6 +278,7 @@ fn rrsig_fields_follow_rfc4034() {
 
 #[test]
 fn nsec_chain_complete_and_ordered() {
+    use RecordType as T;
     let z = ZoneSigner::sign(
         &zone(),
         &csk(Algorithm::Ed25519),
@@ -317,7 +316,6 @@ fn nsec_chain_complete_and_ordered() {
         RData::Nsec { types, .. } => types.types().collect::<Vec<_>>(),
         _ => unreachable!(),
     };
-    use RecordType as T;
     assert_eq!(
         bitmap("example."),
         [T::Ns, T::Soa, T::Mx, T::Rrsig, T::Nsec, T::Dnskey]
@@ -333,6 +331,7 @@ fn nsec_chain_complete_and_ordered() {
 
 #[test]
 fn nsec3_chain_complete_with_ents() {
+    use RecordType as T;
     let z = ZoneSigner::sign(
         &zone(),
         &csk(Algorithm::Ed25519),
@@ -387,8 +386,7 @@ fn nsec3_chain_complete_with_ents() {
             .unwrap();
         x.types.types().collect::<Vec<_>>()
     };
-    use RecordType as T;
-    assert!(bitmap("c.example.").is_empty());
+    assert_eq!(bitmap("c.example."), []);
     assert_eq!(
         bitmap("insecure.example."),
         [T::Ns],
@@ -410,7 +408,7 @@ fn nsec3_chain_complete_with_ents() {
         })
     );
     assert_eq!(param.rrsigs.len(), 1);
-    assert!(owners_of(&z, RecordType::Nsec).is_empty());
+    assert_eq!(owners_of(&z, RecordType::Nsec), []);
 }
 
 #[test]
@@ -457,7 +455,7 @@ fn nsec3_opt_out_skips_insecure_delegations() {
     assert!(matches!(&param.data, RData::Nsec3param(p) if p.flags == 0));
     // The insecure delegation itself is still unsigned.
     let cut = z.rrset(&n("insecure.example."), RecordType::Ns).unwrap();
-    assert!(cut.rrsigs.is_empty());
+    assert_eq!(cut.rrsigs, []);
 }
 
 #[test]

@@ -7,7 +7,8 @@ mod model;
 mod policy;
 mod store;
 
-pub use export::{SignedZone, export_bind};
+pub use dnsy_dnssec::SignedZone;
+pub use export::export_bind;
 pub use keystore::{
     KdfCost, KeyStore, KeyStoreError, Passphrase, passphrase_from_environment, resolve_passphrase,
 };

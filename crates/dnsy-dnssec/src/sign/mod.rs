@@ -302,47 +302,7 @@ fn sign_zone(
 
     add_apex_records(&mut owners, origin, keys, policy, denial_ttl)?;
 
-    // Classify names and collect the denial chain; canonical order puts every name right
-    // after its ancestors, so one pass tracks the innermost enclosing cut.
-    let mut positions: BTreeMap<Name, Position> = BTreeMap::new();
-    let mut nodes = Vec::new();
-    let mut cut: Option<Name> = None;
-    for (name, types) in &owners {
-        let below_cut = cut
-            .as_ref()
-            .is_some_and(|c| name != c && name.is_subdomain_of(c));
-        let has = |t: RecordType| types.contains_key(&u16::from(t));
-        let position = if below_cut {
-            Position::Occluded
-        } else if name != origin && has(RecordType::Ns) {
-            cut = Some(name.clone());
-            Position::Cut
-        } else {
-            Position::Authoritative
-        };
-        if has(RecordType::Ds) && position != Position::Cut {
-            return Err(DnssecError::InvalidZone("DS outside a delegation point"));
-        }
-        let node_types: Vec<RecordType> = match position {
-            Position::Occluded => {
-                positions.insert(name.clone(), position);
-                continue;
-            }
-            Position::Cut => [RecordType::Ns, RecordType::Ds]
-                .into_iter()
-                .filter(|t| has(*t))
-                .collect(),
-            Position::Authoritative => types.keys().map(|t| RecordType::from(*t)).collect(),
-        };
-        let secure = position == Position::Authoritative || has(RecordType::Ds);
-        nodes.push(ChainNode {
-            name: name.clone(),
-            types: node_types,
-            signed: secure,
-            insecure_cut: !secure,
-        });
-        positions.insert(name.clone(), position);
-    }
+    let (mut positions, nodes) = classify(&owners, origin)?;
 
     let chain = match &policy.denial {
         Denial::Nsec => nsec_chain(&nodes, denial_ttl),
@@ -380,27 +340,7 @@ fn sign_zone(
                 .filter(|old| same_data(&old.records, &records));
             let mut rrsigs = Vec::with_capacity(signing.len());
             for signer in signing {
-                let dnskey = signer.dnskey();
-                let kept = old.and_then(|o| {
-                    o.rrsigs.iter().find(|s| match &s.data {
-                        RData::Rrsig(sig) => {
-                            sig.key_tag == dnskey.key_tag()
-                                && sig.algorithm == dnskey.algorithm
-                                && sig.signer == *origin
-                                && timing.reusable(sig.inception, sig.expiration)
-                        }
-                        _ => false,
-                    })
-                });
-                let rrsig = match kept {
-                    Some(sig) => sig.clone(),
-                    None => signer.sign_rrset(
-                        &records,
-                        origin,
-                        timing.inception(),
-                        timing.expiration(&name, rtype),
-                    )?,
-                };
+                let rrsig = rrsig_for(signer, &records, old, origin, &timing)?;
                 if let RData::Rrsig(sig) = &rrsig.data {
                     let due = sig.expiration.wrapping_sub(timing.refresh);
                     next_resign = Some(match next_resign {
@@ -418,6 +358,89 @@ fn sign_zone(
         rrsets,
         next_resign: next_resign.unwrap_or(now),
     })
+}
+
+/// Classifies every owner relative to zone cuts and collects the nodes of the denial chain.
+fn classify(
+    owners: &Owners,
+    origin: &Name,
+) -> Result<(BTreeMap<Name, Position>, Vec<ChainNode>), DnssecError> {
+    // Classify names and collect the denial chain; canonical order puts every name right
+    // after its ancestors, so one pass tracks the innermost enclosing cut.
+    let mut positions: BTreeMap<Name, Position> = BTreeMap::new();
+    let mut nodes = Vec::new();
+    let mut cut: Option<Name> = None;
+    for (name, types) in owners {
+        let below_cut = cut
+            .as_ref()
+            .is_some_and(|c| name != c && name.is_subdomain_of(c));
+        let has = |t: RecordType| types.contains_key(&u16::from(t));
+        let position = if below_cut {
+            Position::Occluded
+        } else if name != origin && has(RecordType::Ns) {
+            cut = Some(name.clone());
+            Position::Cut
+        } else {
+            Position::Authoritative
+        };
+        if has(RecordType::Ds) && position != Position::Cut {
+            return Err(DnssecError::InvalidZone("DS outside a delegation point"));
+        }
+        let node_types: Vec<RecordType> = match position {
+            Position::Occluded => {
+                positions.insert(name.clone(), position);
+                continue;
+            }
+            Position::Cut => [RecordType::Ns, RecordType::Ds]
+                .into_iter()
+                .filter(|t| has(*t))
+                .collect(),
+            Position::Authoritative => types.keys().map(|t| RecordType::from(*t)).collect(),
+        };
+        let secure = position == Position::Authoritative || has(RecordType::Ds);
+        nodes.push(ChainNode {
+            name: name.clone(),
+            types: node_types,
+            signed: secure,
+            insecure_cut: !secure,
+        });
+        positions.insert(name.clone(), position);
+    }
+
+    Ok((positions, nodes))
+}
+
+/// The RRSIG of `records` by `signer`: the matching one from the previous snapshot when it
+/// can be kept, else a fresh signature.
+fn rrsig_for(
+    signer: &SigningKey,
+    records: &[Record],
+    old: Option<&SignedRrset>,
+    origin: &Name,
+    timing: &Timing,
+) -> Result<Record, DnssecError> {
+    let dnskey = signer.dnskey();
+    let kept = old.and_then(|o| {
+        o.rrsigs.iter().find(|s| match &s.data {
+            RData::Rrsig(sig) => {
+                sig.key_tag == dnskey.key_tag()
+                    && sig.algorithm == dnskey.algorithm
+                    && sig.signer == *origin
+                    && timing.reusable(sig.inception, sig.expiration)
+            }
+            _ => false,
+        })
+    });
+    if let Some(sig) = kept {
+        return Ok(sig.clone());
+    }
+    let first = &records[0];
+    signer.sign_rrset(
+        records,
+        origin,
+        timing.inception(),
+        timing.expiration(&first.name, first.rtype),
+    )
 }
 
 /// Groups the zone records into `RRsets` by owner and type, checking that the signer can

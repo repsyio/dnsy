@@ -88,7 +88,8 @@ are not answered from zones.
 `dnsy_zone::export_bind(&zone, signed)` renders a zone as a BIND master file: `$ORIGIN`, `$TTL`,
 a multi-line SOA first, then the records grouped by owner with owner names relative to the
 origin (`@` for the apex). A record's TTL is written only when it differs from `$TTL`. With a
-signed zone the DNSKEY, RRSIG, NSEC/NSEC3 and NSEC3PARAM records follow in canonical order.
+signed zone (a `SignedZone` from the zone signer, see [DNSSEC](dnssec.md#zone-signing)) the DNSKEY,
+CDS, CDNSKEY, RRSIG, NSEC/NSEC3 and NSEC3PARAM records follow in canonical order.
 
 The output is safe to hand to other tools. Owner names, rdata names and character-strings are
 escaped: `. \ ; ( ) " $ @` get a backslash and non-printable bytes become `\DDD`, so a record

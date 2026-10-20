@@ -93,7 +93,7 @@ pub(super) fn nsec3_chain(
                 .map(|n| (nsec3_hash(n, salt, iterations), TypeBitmap::from_types(&[]))),
         )
         .collect();
-    hashed.sort_by(|a, b| a.0.cmp(&b.0));
+    hashed.sort_by_key(|h| h.0);
 
     let origin_labels: Vec<&[u8]> = origin.labels().collect();
     let flags = if opt_out { OPT_OUT } else { 0 };
