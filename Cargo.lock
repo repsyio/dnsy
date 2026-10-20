@@ -238,6 +238,11 @@ dependencies = [
 [[package]]
 name = "dnsy-resolver"
 version = "0.1.0"
+dependencies = [
+ "dnsy-config",
+ "dnsy-core",
+ "dnsy-proto",
+]
 
 [[package]]
 name = "dnsy-server"
