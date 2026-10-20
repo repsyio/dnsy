@@ -4,12 +4,9 @@ The web interface is an Angular single-page app in `web/`. It is built to `web/d
 and embedded into the binary by `dnsy-api` (feature `embed-ui`), which serves it from `/` with a
 single-page-app fallback.
 
-This page covers the shell, the zones pages and the admin pages (filtering, ACL, upstreams, client
-certificates, cache, settings); the other pages (dashboard, users) arrive with later
-stories and are placeholders for now.
-
-This page covers the shell, the dashboard and the zones pages; the other pages (filtering,
-upstreams, query log, users, settings) arrive with later stories and are placeholders for now.
+This page covers the shell, the dashboard, the query log, the zones pages, the admin pages
+(filtering, ACL, upstreams, client certificates, cache, settings) and the users, tokens and
+profile pages.
 
 ## Stack
 
@@ -258,3 +255,36 @@ Code lives in `web/src/app/features/query-log/`; route `/query-log`.
 
 Controls are labelled, the table has a caption and column headers, and live status changes are
 announced through `role="status"`.
+
+## Users, tokens and profile
+
+**Users** (`/users`, admins only; other roles are redirected to the dashboard and the nav entry is
+hidden) lists accounts and lets an admin create a user, change a role, reset a password and delete
+a user after a confirmation. The role and password changes end that user's sessions. You cannot
+delete your own account from here. The API has no "disable" operation, so accounts are removed
+rather than disabled.
+
+**Tokens** (`/tokens`) manages the signed-in user's own API tokens:
+
+- The scope picker only offers what the role allows (viewer: `api:read`; operator: everything but
+  `admin`; admin: all). Expiry is optional.
+- The secret is shown **once**, in a dialog with a warning and copy buttons (secret, and the full
+  DoH URL when the token has `dns:query`). It lives only in that dialog's state: closing the dialog
+  (button or Escape) drops it, and it is never written to `localStorage`, `sessionStorage` or logs.
+  Lose it and you revoke the token and create a new one.
+- The list shows scopes, last use, expiry and status; revoking asks for confirmation.
+- DoH clients use `https://<host>/dns-query/<token>`; the page has a copy button for that form.
+- Creating a token needs a cookie session; the API refuses it with a token.
+
+**Profile** (`/profile`) shows the current user and how they signed in, changes the password (the
+strength hints are advisory; the server enforces the 8 character minimum and keeps this session,
+ending the others) and signs out. A wrong current password shows an error and does not sign you
+out.
+
+## Responsive layout
+
+Below the `md` breakpoint (768 px) the sidebar is an off-canvas drawer: a Menu button in the header
+opens it (`aria-expanded`, focus moves into the nav), Escape or the backdrop closes it and Escape
+returns focus to the button. From `md` up the sidebar is always visible. The page content clips
+horizontal overflow so wide tables scroll inside their own container; there is no horizontal page
+scroll at 360 px.

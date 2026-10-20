@@ -26,3 +26,11 @@ discards the presented session and issues a new id.
 After 5 failed logins for the same username and client IP within 15 minutes, further attempts
 are refused with HTTP 429 and a `Retry-After` header until the oldest failure leaves the
 window. A successful login clears the counter.
+
+## Web UI
+
+The users page (admin), the tokens page and the profile page in the web UI wrap this API; see
+[Web UI](web-ui.md#users-tokens-and-profile). The token secret is shown once in a dialog and held
+only in memory until the dialog closes. Changing a password keeps the current browser signed in
+(a new session is issued) and ends every other session; changing a user's role or resetting
+their password as an admin ends all of that user's sessions.

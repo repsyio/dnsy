@@ -1,4 +1,12 @@
-import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  computed,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import {
   NavigationCancel,
@@ -25,6 +33,8 @@ export const NAV_ITEMS = [
   { path: '/client-certs', label: 'Client certs' },
   { path: '/cache', label: 'Cache' },
   { path: '/settings', label: 'Settings' },
+  { path: '/tokens', label: 'Tokens' },
+  { path: '/profile', label: 'Profile' },
 ] as const;
 
 @Component({
@@ -37,14 +47,30 @@ export const NAV_ITEMS = [
     RouterOutlet,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(document:keydown.escape)': 'closeMenu(true)' },
   template: `
     <div class="flex min-h-screen">
-      <aside class="w-56 shrink-0 border-r border-cyan/40 bg-surface/90 shadow-glow-sm">
+      @if (menuOpen()) {
+        <button
+          type="button"
+          class="fixed inset-0 z-30 bg-bg/80 md:hidden"
+          tabindex="-1"
+          aria-label="Close menu"
+          (click)="closeMenu(false)"
+        ></button>
+      }
+      <aside
+        id="main-nav"
+        class="fixed inset-y-0 left-0 z-40 w-56 shrink-0 -translate-x-full overflow-y-auto border-r border-cyan/40 bg-surface shadow-glow-sm transition-transform invisible md:visible md:static md:translate-x-0 md:bg-surface/90"
+        [class.translate-x-0]="menuOpen()"
+        [class.visible]="menuOpen()"
+      >
         <nav aria-label="Main" class="py-4">
-          @for (item of nav; track item.path) {
+          @for (item of nav(); track item.path) {
             <a
               class="nav-link"
               [routerLink]="item.path"
+              (click)="closeMenu(false)"
               routerLinkActive="nav-link-active"
               ariaCurrentWhenActive="page"
               >{{ item.label }}</a
@@ -54,20 +80,30 @@ export const NAV_ITEMS = [
       </aside>
       <div class="flex min-w-0 flex-1 flex-col">
         <header
-          class="flex items-center justify-between border-b border-cyan/40 bg-surface/90 px-6 py-3"
+          class="flex items-center justify-between gap-2 border-b border-cyan/40 bg-surface/90 px-4 py-3 md:px-6"
         >
+          <button
+            #menuButton
+            class="btn md:hidden"
+            type="button"
+            aria-controls="main-nav"
+            [attr.aria-expanded]="menuOpen()"
+            (click)="toggleMenu()"
+          >
+            Menu
+          </button>
           <a routerLink="/dashboard" class="flex items-center gap-3">
             <img src="mark.svg" alt="" class="h-9 w-9" />
             <span class="font-display text-xl font-bold tracking-widest text-cyan">DNSY</span>
           </a>
           <div class="flex items-center gap-4 text-sm">
             @if (auth.user(); as user) {
-              <span class="text-muted">{{ user.username }} ({{ user.role }})</span>
+              <span class="hidden text-muted sm:inline">{{ user.username }} ({{ user.role }})</span>
             }
             <button class="btn" type="button" (click)="logout()">Sign out</button>
           </div>
         </header>
-        <main class="flex-1 p-6">
+        <main class="relative flex-1 overflow-x-clip p-4 md:p-6">
           @if (!online()) {
             <section class="panel mb-6">
               <dnsy-mascot-offline
@@ -88,7 +124,12 @@ export const NAV_ITEMS = [
 export class Shell {
   protected readonly auth = inject(AuthService);
   private readonly router = inject(Router);
-  protected readonly nav = NAV_ITEMS;
+  protected readonly nav = computed(() =>
+    NAV_ITEMS.filter((i) => i.path !== '/users' || this.auth.user()?.role === 'admin'),
+  );
+  protected readonly menuOpen = signal(false);
+  private readonly menuButton = viewChild<ElementRef<HTMLButtonElement>>('menuButton');
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   protected readonly navigating = toSignal(
     this.router.events.pipe(
       filter(
@@ -109,6 +150,28 @@ export class Shell {
     ),
     { initialValue: navigator.onLine },
   );
+
+  protected toggleMenu(): void {
+    if (this.menuOpen()) {
+      this.closeMenu(true);
+      return;
+    }
+    this.menuOpen.set(true);
+    // The drawer becomes visible on the next render; move focus into it then.
+    queueMicrotask(() =>
+      setTimeout(() => {
+        if (this.menuOpen())
+          this.host.nativeElement.querySelector<HTMLElement>('#main-nav a')?.focus();
+      }),
+    );
+  }
+
+  /** Close the off-canvas menu; Escape (or the toggle) returns focus to the menu button. */
+  protected closeMenu(restoreFocus: boolean): void {
+    if (!this.menuOpen()) return;
+    this.menuOpen.set(false);
+    if (restoreFocus) this.menuButton()?.nativeElement.focus();
+  }
 
   protected async logout(): Promise<void> {
     try {

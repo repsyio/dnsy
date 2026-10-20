@@ -80,4 +80,13 @@ describe('apiInterceptor', () => {
     expect(signedOut).toHaveBeenCalled();
     expect(nav).toHaveBeenCalledWith(['/login']);
   });
+
+  it('password_change_401_does_not_sign_out', () => {
+    const signedOut = vi.spyOn(TestBed.inject(AuthService), 'markSignedOut');
+    http.put('/api/v1/auth/me/password', {}).subscribe({ error: () => undefined });
+    ctrl
+      .expectOne('/api/v1/auth/me/password')
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+    expect(signedOut).not.toHaveBeenCalled();
+  });
 });

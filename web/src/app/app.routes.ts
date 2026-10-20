@@ -1,6 +1,7 @@
 import { isDevMode } from '@angular/core';
 import { Routes } from '@angular/router';
 import { authGuard } from './core/auth.guard';
+import { adminGuard } from './features/users/admin.guard';
 
 export const routes: Routes = [
   {
@@ -53,7 +54,18 @@ export const routes: Routes = [
       {
         path: 'users',
         title: 'Users',
-        loadComponent: () => import('./pages/users/users.page').then((m) => m.UsersPage),
+        canActivate: [adminGuard],
+        loadComponent: () => import('./features/users/users.page').then((m) => m.UsersPage),
+      },
+      {
+        path: 'tokens',
+        title: 'API tokens',
+        loadComponent: () => import('./features/tokens/tokens.page').then((m) => m.TokensPage),
+      },
+      {
+        path: 'profile',
+        title: 'Profile',
+        loadComponent: () => import('./features/profile/profile.page').then((m) => m.ProfilePage),
       },
       {
         path: 'settings',
