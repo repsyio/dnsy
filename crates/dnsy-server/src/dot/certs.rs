@@ -44,9 +44,9 @@ impl CertStore {
         match read(&self.cert, &self.key) {
             Ok(next) => {
                 self.current.store(Arc::new(next));
-                tracing::info!("dot certificate reloaded");
+                tracing::info!("tls certificate reloaded");
             }
-            Err(e) => tracing::warn!(error = %e, "dot certificate reload failed; keeping previous"),
+            Err(e) => tracing::warn!(error = %e, "tls certificate reload failed; keeping previous"),
         }
     }
 }

@@ -3,6 +3,9 @@
 //! Listeners only frame bytes: they decode a query, hand it to a [`dnsy_engine::Handler`] with a
 //! [`dnsy_engine::RequestContext`], and encode the response within the transport's size limit.
 //!
+//! `DoH` (RFC 8484) runs hyper (HTTP/1.1 and HTTP/2) behind the same rustls setup; see
+//! [`DohConfig`].
+//!
 //! `DoT` reuses the TCP framing and limits behind rustls; see [`DotConfig`].
 //!
 //! Hardening: TCP connections are capped (excess connections are closed at once), every TCP read
@@ -10,6 +13,7 @@
 //! per connection, malformed packets get a minimal FORMERR or are dropped, and UDP answers are
 //! truncated to the client's EDNS payload size (at most 1232, or 512 without EDNS).
 
+mod doh;
 mod dot;
 mod query;
 mod tcp;
@@ -24,6 +28,7 @@ use dnsy_engine::Handler;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+pub use doh::{DohAuthenticator, DohConfig, DohDenied, TokenAuth};
 pub use dot::DotConfig;
 pub use query::{MAX_UDP_PAYLOAD, MIN_UDP_PAYLOAD};
 
@@ -34,6 +39,8 @@ pub struct ServerConfig {
     pub tcp: Vec<SocketAddr>,
     /// Optional `DoT` listener; it shares the TCP idle timeout, connection cap and drain time.
     pub dot: Option<DotConfig>,
+    /// Optional `DoH` listener; it shares the TCP idle timeout, connection cap and drain time.
+    pub doh: Option<DohConfig>,
     /// Close a TCP connection that sends no complete frame for this long.
     pub tcp_idle: Duration,
     /// Maximum concurrent TCP connections; further connections are closed immediately.
@@ -50,6 +57,7 @@ impl ServerConfig {
             udp,
             tcp,
             dot: None,
+            doh: None,
             tcp_idle: Duration::from_millis(10_000),
             max_tcp_conns: 1024,
             drain: Duration::from_secs(5),
@@ -65,6 +73,7 @@ pub struct Server {
     udp_addrs: Vec<SocketAddr>,
     tcp_addrs: Vec<SocketAddr>,
     dot_addrs: Vec<SocketAddr>,
+    doh_addrs: Vec<SocketAddr>,
 }
 
 impl Server {
@@ -105,7 +114,11 @@ impl Server {
         let mut dot_addrs = Vec::new();
         if let Some(dot) = &config.dot {
             let store = dot::certs::CertStore::load(&dot.cert, &dot.key)?;
-            let acceptor = dot::acceptor(Arc::clone(&store), dot.client_verifier.clone())?;
+            let acceptor = dot::acceptor(
+                Arc::clone(&store),
+                dot.client_verifier.clone(),
+                &[dot::ALPN_DOT],
+            )?;
             for addr in &dot.listen {
                 let listener = tokio::net::TcpListener::bind(addr).await?;
                 dot_addrs.push(listener.local_addr()?);
@@ -119,12 +132,31 @@ impl Server {
             }
             tasks.push(dot::certs::watch_reloads(store, rx.clone())?);
         }
+        let mut doh_addrs = Vec::new();
+        if let Some(doh) = config.doh {
+            let store = dot::certs::CertStore::load(&doh.cert, &doh.key)?;
+            let acceptor = dot::acceptor(Arc::clone(&store), None, doh::ALPN)?;
+            let state = doh::State::new(&doh, Arc::clone(&handler), config.tcp_idle);
+            for addr in &doh.listen {
+                let listener = tokio::net::TcpListener::bind(addr).await?;
+                doh_addrs.push(listener.local_addr()?);
+                tasks.push(tokio::spawn(doh::serve(
+                    listener,
+                    acceptor.clone(),
+                    Arc::clone(&state),
+                    rx.clone(),
+                    limits,
+                )));
+            }
+            tasks.push(dot::certs::watch_reloads(store, rx.clone())?);
+        }
         Ok(Server {
             shutdown,
             tasks,
             udp_addrs,
             tcp_addrs,
             dot_addrs,
+            doh_addrs,
         })
     }
 
@@ -144,6 +176,12 @@ impl Server {
     #[must_use]
     pub fn dot_addrs(&self) -> &[SocketAddr] {
         &self.dot_addrs
+    }
+
+    /// Bound `DoH` addresses (useful with port 0).
+    #[must_use]
+    pub fn doh_addrs(&self) -> &[SocketAddr] {
+        &self.doh_addrs
     }
 
     /// Stops accepting work and waits for in-flight requests, at most the configured drain time.

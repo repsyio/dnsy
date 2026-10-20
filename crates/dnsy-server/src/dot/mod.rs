@@ -23,7 +23,7 @@ use tokio_rustls::TlsAcceptor;
 use crate::tcp::{self, Flavor, Limits};
 
 /// ALPN protocol id for DNS over TLS (RFC 7858 section 3.1 / IANA).
-const ALPN_DOT: &[u8] = b"dot";
+pub(crate) const ALPN_DOT: &[u8] = b"dot";
 
 /// `DoT` listener settings.
 #[derive(Clone)]
@@ -65,6 +65,7 @@ impl DotConfig {
 pub(crate) fn acceptor(
     store: Arc<certs::CertStore>,
     verifier: Option<Arc<dyn ClientCertVerifier>>,
+    alpn: &[&[u8]],
 ) -> io::Result<TlsAcceptor> {
     let builder = rustls::ServerConfig::builder_with_provider(Arc::new(default_provider()))
         .with_safe_default_protocol_versions()
@@ -74,7 +75,7 @@ pub(crate) fn acceptor(
         None => builder.with_no_client_auth(),
     };
     let mut config = builder.with_cert_resolver(store);
-    config.alpn_protocols = vec![ALPN_DOT.to_vec()];
+    config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
