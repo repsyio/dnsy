@@ -131,6 +131,58 @@ Query-log responses never contain a token: anything shaped like a DNSY token is 
 `querylog.redact_client_ip` on, client addresses are shown as their /24 or /48 network, and the
 `client` filter matches the redacted form.
 
+## Filtering, upstreams, client certificates and settings
+
+Changes made through these routes are stored and applied to the running server at once. Reads need
+`api:read`; changes need `api:write` unless noted. See [Filtering](filtering.md) for what the rules
+and lists do.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /acl`, `POST /acl`, `DELETE /acl/{id}` | CIDR (or client-certificate fingerprint) rules with action `allow`, `refuse` or `drop`; longest prefix wins. A single address blocks one IP |
+| `PUT /acl/rate-limit` | Per-client queries per second (`0` = unlimited, at most 1,000,000), persisted |
+| `GET/POST /blocklists`, `PATCH/DELETE /blocklists/{id}` | List sources and their last fetch status (`last_fetched`, `last_status`, `entries`); `PATCH` enables or disables |
+| `POST /blocklists/{id}/refresh` | Fetch now: `{"outcome": "updated" \| "not_modified"}`; a failed fetch is `422` and the previous list stays active |
+| `GET/POST /rules`, `DELETE /rules/{id}` | Custom `block` or `allow` rules for a domain and its subdomains (allow wins) |
+| `GET /upstream-groups`, `GET /upstream-groups/{name}`, `GET /upstream-groups/{name}/health` | Groups, members and live health (`available`, `consecutive_failures`, `latency_ms`) |
+| `POST /upstream-groups`, `PUT/DELETE /upstream-groups/{name}` | Create, replace, delete a group (**admin**) |
+| `POST /upstream-groups/{name}/upstreams`, `DELETE /upstream-groups/{name}/upstreams/{index}` | Add or remove one member (**admin**) |
+| `GET/POST /client-certs`, `PATCH/DELETE /client-certs/{id}` | mTLS fingerprint allowlist with label and optional expiry (**admin**, reads too) |
+| `GET/PATCH /settings` | The runtime-changeable settings (**admin**) |
+
+A group change is validated as a whole (one default group, no pattern routed twice) before
+anything is stored. Replacing a group set resets the health counters.
+
+**Blocklist sources and SSRF.** A source is an `http(s)` URL or a file path. A URL whose host is an
+IP literal in a private, loopback, link-local or otherwise non-public range, `localhost`, and any
+file path are refused unless `allow_private` is set, and setting it (or using such a location)
+needs the `admin` scope: a write-scope token gets `403`. Host names are resolved and pinned at
+fetch time, where every non-public address is refused for sources without `allow_private`.
+
+**Client certificates.** Adding, disabling, enabling or removing a fingerprint reloads the DoT
+allowlist, which bumps its generation so connections that are already open are checked again and
+a removed certificate is cut off, not only refused on the next handshake. If the reload fails the
+request answers `500`; the change is stored and the periodic reload applies it.
+
+**Settings.** `PATCH /settings` takes a partial document; `GET` returns the same shape:
+
+```json
+{
+  "filter":   { "block_mode": "null_ip" },
+  "querylog": { "retention_days": 30 },
+  "limits":   { "per_client_qps": 0 },
+  "cache":    { "min_ttl": 0, "max_ttl": 86400,
+                "serve_stale": { "enabled": true }, "prefetch": { "enabled": true } }
+}
+```
+
+The patch is applied to a copy of the running configuration and checked with the same validation
+the config loader uses (for example `min_ttl` must not exceed `max_ttl`) before anything changes;
+a bad value is `422` and nothing changes. Any other key, such as listeners, TLS paths or the
+DNSSEC key passphrase, is not part of the model and is rejected as unknown, so no secret is ever
+read or written here. Settings are in effect immediately but are not written to `dnsy.toml`; after
+a restart the file applies again (the rate limit is the exception, it is persisted with the ACL).
+
 ## Errors
 
 Errors are RFC 9457 `application/problem+json`:
