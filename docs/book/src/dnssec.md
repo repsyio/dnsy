@@ -393,5 +393,9 @@ are never dropped to make an answer fit.
 The tests in `crates/dnsy-zone/src/signed_tests.rs` sign zones with NSEC, NSEC3 and NSEC3
 opt-out, then check every RRSIG of the responses with `verify_rrsig` against the zone's DNSKEYs
 and check that every proof record matches or covers the names it must (hash order for NSEC3,
-canonical order for NSEC). The engine test `from_config_serves_signed_zone_with_aa_never_ad`
-runs a DO query through the full pipeline.
+canonical order for NSEC). `signed_responses_validate_secure` feeds the responses to the
+chain-of-trust validator, anchored at the zone's DS: answers, CNAME chains, NODATA, wildcard
+answers and wildcard NODATA, NXDOMAIN and DS validate `Secure` under NSEC, NSEC3 and NSEC3
+opt-out (except an NXDOMAIN inside an opt-out span, which is `Insecure` by RFC 5155 9.2), and
+data below the unsigned delegation validates `Insecure`. The engine test
+`from_config_serves_signed_zone_with_aa_never_ad` runs a DO query through the full pipeline.

@@ -595,6 +595,7 @@ dependencies = [
  "argon2",
  "base64",
  "dnsy-config",
+ "dnsy-core",
  "dnsy-dnssec",
  "dnsy-proto",
  "dnsy-store",

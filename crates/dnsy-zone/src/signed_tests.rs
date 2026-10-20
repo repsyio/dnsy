@@ -789,3 +789,146 @@ async fn signing_failure_keeps_zone_serving() {
         LookupResult::Answer { .. }
     ));
 }
+
+// End-to-end: responses built from DO lookups validate with the chain-of-trust validator.
+
+struct ZoneFetcher(Arc<ZoneSet>);
+
+/// The response the engine builds from a lookup: AA (not for referrals), NXDOMAIN rcode.
+fn response(set: &ZoneSet, q: &Question) -> Message {
+    let mut query = Message::decode(&[0; 12]).unwrap();
+    query.questions.push(q.clone());
+    let mut msg = Message::response_to(&query);
+    msg.header.aa = true;
+    match set.lookup(q, true).unwrap() {
+        LookupResult::Answer {
+            answers,
+            authority,
+            additional,
+        } => {
+            msg.answers = answers;
+            msg.authority = authority;
+            msg.additional = additional;
+        }
+        LookupResult::Referral {
+            ns,
+            ds_or_proof,
+            glue,
+        } => {
+            msg.header.aa = false;
+            msg.authority = ns;
+            msg.authority.extend(ds_or_proof);
+            msg.additional = glue;
+        }
+        LookupResult::NoData { authority } => msg.authority = authority,
+        LookupResult::NxDomain { authority } => {
+            msg.header.rcode = dnsy_proto::Rcode::NxDomain;
+            msg.authority = authority;
+        }
+    }
+    msg
+}
+
+impl dnsy_dnssec::DnssecFetcher for ZoneFetcher {
+    /// Answers like a recursive resolver would: a referral stands for the answer of the
+    /// (unsigned) child zone, which here is an empty unsigned NODATA.
+    fn fetch(
+        &self,
+        q: Question,
+    ) -> impl Future<Output = Result<Message, dnsy_dnssec::FetchError>> + Send {
+        let mut msg = response(&self.0, &q);
+        if !msg.header.aa {
+            msg.header.aa = true;
+            msg.authority.clear();
+            msg.additional.clear();
+        }
+        std::future::ready(Ok(msg))
+    }
+}
+
+fn validator(keys: &[Dnskey]) -> dnsy_dnssec::Validator {
+    let origin = name("example.com.");
+    let mut anchors = dnsy_dnssec::TrustAnchors::new();
+    let sep = keys.iter().find(|k| k.is_sep()).unwrap();
+    anchors.add_ds(
+        origin.clone(),
+        dnsy_dnssec::ds_for(&origin, sep, dnsy_dnssec::DigestType::Sha256).unwrap(),
+    );
+    dnsy_dnssec::Validator::new(anchors)
+}
+
+async fn validate(
+    set: &Arc<ZoneSet>,
+    keys: &[Dnskey],
+    q: &Question,
+    resp: &Message,
+) -> dnsy_core::DnssecStatus {
+    let out = validator(keys)
+        .validate(&ZoneFetcher(Arc::clone(set)), q, resp, T)
+        .await;
+    if out.status == dnsy_core::DnssecStatus::Secure {
+        assert_eq!(out.ede, None, "{q:?}");
+    }
+    assert_ne!(
+        out.status,
+        dnsy_core::DnssecStatus::Bogus,
+        "{q:?}: {:?}",
+        out.ede
+    );
+    out.status
+}
+
+#[tokio::test]
+async fn signed_responses_validate_secure() {
+    use dnsy_core::DnssecStatus::{Insecure, Secure};
+    for (denial, opt_out) in [("nsec", false), ("nsec3", false), ("nsec3", true)] {
+        let (set, keys) = signed_set(zone(denial, opt_out));
+        let set = Arc::new(set);
+        // RFC 5155 9.2: an NXDOMAIN whose next closer name is covered by an opt-out NSEC3
+        // only shows the name may be an unsigned delegation, so it is Insecure.
+        let nxdomain = if opt_out { Insecure } else { Secure };
+        for (qname, qtype, expected) in [
+            ("www.example.com.", RecordType::A, Secure),
+            ("alias.example.com.", RecordType::A, Secure),
+            ("example.com.", RecordType::Dnskey, Secure),
+            ("example.com.", RecordType::Mx, Secure),
+            ("nope.example.com.", RecordType::A, nxdomain),
+            ("nope.www.example.com.", RecordType::Aaaa, nxdomain),
+            ("www.example.com.", RecordType::Txt, Secure),
+            ("b.deep.example.com.", RecordType::A, Secure),
+            ("x.y.wild.example.com.", RecordType::Txt, Secure),
+            ("x.wild.example.com.", RecordType::A, Secure),
+            ("a.cw.example.com.", RecordType::A, Secure),
+            ("secure.example.com.", RecordType::Ds, Secure),
+        ] {
+            let q = Question {
+                name: name(qname),
+                qtype,
+                qclass: Class::In,
+            };
+            let status = validate(&set, &keys, &q, &response(&set, &q)).await;
+            assert_eq!(
+                status, expected,
+                "{denial} opt-out={opt_out}: {qname} {qtype:?}"
+            );
+        }
+        // An answer from the unsigned child: the parent proves there is no DS.
+        let q = Question {
+            name: name("host.insecure.example.com."),
+            qtype: RecordType::A,
+            qclass: Class::In,
+        };
+        let mut child = response(&set, &q);
+        child.authority.clear();
+        child.additional.clear();
+        child.answers = vec![Record {
+            name: q.name.clone(),
+            rtype: RecordType::A,
+            class: Class::In,
+            ttl: 60,
+            data: RData::A(std::net::Ipv4Addr::new(192, 0, 2, 7)),
+        }];
+        let status = validate(&set, &keys, &q, &child).await;
+        assert_eq!(status, Insecure, "{denial} opt-out={opt_out}");
+    }
+}
