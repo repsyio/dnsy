@@ -7,7 +7,6 @@
     reason = "fallible constructors and accessors are self-describing; error enums are documented"
 )]
 
-mod compress;
 mod error;
 mod header;
 mod message;
@@ -19,7 +18,7 @@ mod writer;
 
 pub use error::{NameError, WireError};
 pub use header::{Counts, HEADER_LEN, Header};
-pub use message::{DecodeError, EncodeError, Message, Question, RData, Record, Soa};
+pub use message::{DecodeError, EncodeError, Message, Question, Record};
 pub use name::{Labels, Name};
 pub use rdata::{RData, RdataParseError, Soa};
 pub use reader::WireReader;

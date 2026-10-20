@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use super::*;
-use crate::Opcode;
+use crate::{Opcode, Soa};
 
 fn n(s: &str) -> Name {
     Name::from_ascii(s).unwrap()
@@ -23,17 +23,7 @@ fn header(id: u16) -> Header {
 }
 
 fn rec(name: &str, data: RData) -> Record {
-    let rtype = match &data {
-        RData::A(_) => RecordType::A,
-        RData::Aaaa(_) => RecordType::Aaaa,
-        RData::Ns(_) => RecordType::Ns,
-        RData::Cname(_) => RecordType::Cname,
-        RData::Ptr(_) => RecordType::Ptr,
-        RData::Mx { .. } => RecordType::Mx,
-        RData::Soa(_) => RecordType::Soa,
-        RData::Srv { .. } => RecordType::Srv,
-        RData::Opaque { rtype, .. } => RecordType::from(*rtype),
-    };
+    let rtype = data.rtype();
     Record {
         name: n(name),
         rtype,
@@ -275,11 +265,24 @@ fn encode_rejects_oversized_sections() {
     msg.answers.push(rec(
         "example.com",
         RData::Opaque {
-            rtype: 16,
+            rtype: 99,
             data: vec![0; 65_536],
         },
     ));
     assert_eq!(msg.encode(usize::MAX), Err(EncodeError::RdataTooLong));
+    let mut msg = message(1);
+    msg.answers.push(rec(
+        "example.com",
+        RData::Caa {
+            flags: 0,
+            tag: "bad tag".into(),
+            value: Vec::new(),
+        },
+    ));
+    assert_eq!(
+        msg.encode(usize::MAX),
+        Err(EncodeError::BadRdata(WireError::BadRdata))
+    );
     let mut msg = message(1);
     msg.authority = vec![rec("a", RData::A(Ipv4Addr::LOCALHOST)); 65_536];
     assert_eq!(msg.encode(usize::MAX), Err(EncodeError::TooManyRecords));
@@ -425,7 +428,7 @@ fn decode_rejects_hostile_inputs() {
         (
             "A RDATA of 3 octets",
             a_record(b"\x00\x03", b"\xc0\x00\x02"),
-            DecodeError::BadRdata,
+            DecodeError::Wire(WireError::Truncated),
         ),
         (
             "name runs past RDLENGTH",
@@ -437,7 +440,7 @@ fn decode_rejects_hostile_inputs() {
                 b"\x00\x01\xc0\x0c".to_vec(),
             ]
             .concat(),
-            DecodeError::BadRdata,
+            DecodeError::Wire(WireError::BadRdata),
         ),
         (
             "trailing data",
@@ -502,8 +505,8 @@ fn error_display() {
         "message truncated"
     );
     assert_eq!(
-        DecodeError::BadRdata.to_string(),
-        "RDATA does not match RDLENGTH"
+        EncodeError::BadRdata(WireError::BadRdata).to_string(),
+        format!("unencodable RDATA: {}", WireError::BadRdata)
     );
     assert_eq!(
         DecodeError::TrailingData.to_string(),
@@ -558,7 +561,7 @@ impl Rng {
     }
 
     fn data(&mut self) -> RData {
-        match self.below(9) {
+        match self.below(11) {
             0 => RData::A(Ipv4Addr::from(self.u32())),
             1 => RData::Aaaa(Ipv6Addr::from(u128::from(self.next()) << 64)),
             2 => RData::Ns(self.name()),
@@ -583,8 +586,14 @@ impl Rng {
                 port: self.u16(),
                 target: self.name(),
             },
+            8 => RData::Txt(vec![b"v=spf1 -all".to_vec(), Vec::new()]),
+            9 => RData::Caa {
+                flags: 0,
+                tag: "issue".into(),
+                value: b"ca.example".to_vec(),
+            },
             _ => RData::Opaque {
-                rtype: [16, 99, 257, 65_280][self.below(4)],
+                rtype: [99, 1234, 65_280][self.below(3)],
                 data: (0..self.below(12))
                     .map(|i| u8::try_from(i).unwrap())
                     .collect(),

@@ -15,5 +15,6 @@
 - [REST API](rest-api.md)
 - [Operations](operations.md)
 - [Architecture](architecture.md)
+- [Wire protocol](wire-protocol.md)
 - [Contributing](contributing.md)
 - [Security](security.md)

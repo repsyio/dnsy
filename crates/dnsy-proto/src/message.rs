@@ -2,11 +2,10 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::compress::{read_rdata, write_rdata};
 use crate::{
-    Class, Counts, HEADER_LEN, Header, Name, Rcode, RecordType, WireError, WireReader, WireWriter,
+    Class, Counts, HEADER_LEN, Header, Name, RData, Rcode, RecordType, WireError, WireReader,
+    WireWriter,
 };
 
 /// A question section entry.
@@ -25,47 +24,6 @@ pub struct Record {
     pub class: Class,
     pub ttl: u32,
     pub data: RData,
-}
-
-/// SOA RDATA (RFC 1035 3.3.13).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Soa {
-    pub mname: Name,
-    pub rname: Name,
-    pub serial: u32,
-    pub refresh: u32,
-    pub retry: u32,
-    pub expire: u32,
-    pub minimum: u32,
-}
-
-/// Record data.
-///
-/// Minimal set the message codec needs: the remaining pinned variants (TXT, CAA and the DNSSEC
-/// types) and presentation format are added by the RDATA stories. Types without a variant decode
-/// as [`RData::Opaque`] (RFC 3597).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RData {
-    A(Ipv4Addr),
-    Aaaa(Ipv6Addr),
-    Ns(Name),
-    Cname(Name),
-    Ptr(Name),
-    Mx {
-        preference: u16,
-        exchange: Name,
-    },
-    Soa(Soa),
-    Srv {
-        priority: u16,
-        weight: u16,
-        port: u16,
-        target: Name,
-    },
-    Opaque {
-        rtype: u16,
-        data: Vec<u8>,
-    },
 }
 
 /// A complete DNS message.
@@ -88,8 +46,6 @@ pub enum DecodeError {
     ShortHeader,
     /// A malformed field, or a section count larger than the data.
     Wire(WireError),
-    /// RDATA whose fields do not fill exactly RDLENGTH octets.
-    BadRdata,
     /// Octets left over after the last section.
     TrailingData,
 }
@@ -99,7 +55,6 @@ impl fmt::Display for DecodeError {
         match self {
             Self::ShortHeader => f.write_str("message shorter than the header"),
             Self::Wire(e) => write!(f, "{e}"),
-            Self::BadRdata => f.write_str("RDATA does not match RDLENGTH"),
             Self::TrailingData => f.write_str("trailing data after the last section"),
         }
     }
@@ -120,17 +75,20 @@ pub enum EncodeError {
     TooManyRecords,
     /// A record's RDATA is longer than 65535 octets.
     RdataTooLong,
+    /// RDATA that cannot be represented on the wire (for example an invalid CAA tag).
+    BadRdata(WireError),
     /// The header, questions and OPT alone exceed the size limit.
     DoesNotFit,
 }
 
 impl fmt::Display for EncodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::TooManyRecords => "more than 65535 entries in a section",
-            Self::RdataTooLong => "RDATA longer than 65535 octets",
-            Self::DoesNotFit => "header, questions and OPT exceed the size limit",
-        })
+        match self {
+            Self::TooManyRecords => f.write_str("more than 65535 entries in a section"),
+            Self::RdataTooLong => f.write_str("RDATA longer than 65535 octets"),
+            Self::BadRdata(e) => write!(f, "unencodable RDATA: {e}"),
+            Self::DoesNotFit => f.write_str("header, questions and OPT exceed the size limit"),
+        }
     }
 }
 
@@ -333,7 +291,7 @@ fn read_record(r: &mut WireReader<'_>) -> Result<Record, DecodeError> {
     let class = Class::from(r.read_u16()?);
     let ttl = r.read_u32()?;
     let len = usize::from(r.read_u16()?);
-    let data = read_rdata(r, rtype, len)?;
+    let data = RData::decode(rtype, r, len)?;
     Ok(Record {
         name,
         rtype,
@@ -354,7 +312,7 @@ fn write_record(w: &mut WireWriter, rec: &Record, compress_owner: bool) -> Resul
     w.write_u32(rec.ttl);
     let len_at = w.len();
     w.write_u16(0);
-    write_rdata(w, &rec.data);
+    rec.data.encode(w).map_err(EncodeError::BadRdata)?;
     let len = u16::try_from(w.len() - len_at - 2).map_err(|_| EncodeError::RdataTooLong)?;
     w.patch_u16(len_at, len);
     Ok(())
