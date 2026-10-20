@@ -28,8 +28,9 @@ below zero. An expired entry is a miss and is dropped.
 only ever returned to a CD=0 query as SERVFAIL, and never replaces a live Secure entry.
 
 **Bounded size.** The cache is split into up to 16 shards, each with its own lock, so concurrent
-readers do not contend on a global lock. When a shard is full the least recently used entry (among
-a small sample) is evicted and counted.
+readers do not contend on a global lock. `max_entries` bounds the total number of entries across
+shards; when it is exceeded the least recently used entry (among a small per-shard sample) is
+evicted and counted.
 
 **Flush and statistics.** The cache can be flushed entirely or by name (optionally the whole
 subtree below it). Statistics report entries, capacity, hits, misses, inserts, evictions and
