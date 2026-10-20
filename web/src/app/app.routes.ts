@@ -1,3 +1,4 @@
+import { isDevMode } from '@angular/core';
 import { Routes } from '@angular/router';
 import { authGuard } from './core/auth.guard';
 
@@ -51,6 +52,17 @@ export const routes: Routes = [
         title: 'Settings',
         loadComponent: () => import('./pages/settings/settings.page').then((m) => m.SettingsPage),
       },
+      // Component gallery; production builds leave it out, so the path falls through to 404.
+      ...(isDevMode()
+        ? [
+            {
+              path: 'dev/mascot',
+              title: 'Mascot gallery',
+              loadComponent: () =>
+                import('./pages/dev/mascot-gallery.page').then((m) => m.MascotGalleryPage),
+            },
+          ]
+        : []),
       {
         path: '**',
         title: 'Not found',

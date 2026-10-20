@@ -1,16 +1,16 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core';
 import { RouterLink } from '@angular/router';
+import { MascotNotFoundComponent } from '../../shared/mascot';
 
 @Component({
   selector: 'app-not-found-page',
-  imports: [RouterLink],
+  imports: [MascotNotFoundComponent, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <section class="panel mx-auto mt-10 max-w-xl text-center">
-      <img src="mascot/nox-404.svg" alt="" class="mx-auto h-40 w-40" />
+      <dnsy-mascot-not-found size="lg" message="Nox could not find that page." />
       <h1 class="mt-4 text-3xl font-bold text-orange">404</h1>
-      <p class="my-4 text-muted">Nox could not find that page.</p>
-      <a class="btn inline-block" routerLink="/dashboard">Back to dashboard</a>
+      <a class="btn mt-4 inline-block" routerLink="/dashboard">Back to dashboard</a>
     </section>
   `,
 })
