@@ -242,6 +242,9 @@ async fn connection<H: Handler, S>(
     }
 }
 
+/// An early-exit response (boxed: it is large for an `Err` variant).
+type Rejection = Box<Response<Full<Bytes>>>;
+
 fn reply(status: StatusCode) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::from(
         status.canonical_reason().unwrap_or("error"),
@@ -289,7 +292,7 @@ async fn route<H: Handler>(
     }
     let principal = match authenticate(state, client, &req, path_token).await {
         Ok(p) => p,
-        Err(response) => return response,
+        Err(rejection) => return *rejection,
     };
     let bytes = if req.method() == Method::GET {
         match wire::decode_get(req.uri().query()) {
@@ -299,7 +302,7 @@ async fn route<H: Handler>(
     } else {
         match read_post(state, req).await {
             Ok(b) => b,
-            Err(response) => return response,
+            Err(rejection) => return *rejection,
         }
     };
     let Parsed::Query(query) = parse(&bytes) else {
@@ -335,14 +338,14 @@ async fn authenticate<H>(
     client: SocketAddr,
     req: &Request<Incoming>,
     path_token: Option<&str>,
-) -> Result<Option<Principal>, Response<Full<Bytes>>> {
+) -> Result<Option<Principal>, Rejection> {
     let ip = client.ip();
     if let Some(secs) = state.throttle.blocked(ip, Instant::now()) {
         let mut response = reply(StatusCode::TOO_MANY_REQUESTS);
         response
             .headers_mut()
             .insert(RETRY_AFTER, HeaderValue::from(secs));
-        return Err(response);
+        return Err(Box::new(response));
     }
     let header = req
         .headers()
@@ -351,36 +354,33 @@ async fn authenticate<H>(
         .and_then(wire::bearer);
     let Some(token) = path_token.or(header) else {
         return if state.require_token {
-            Err(unauthorized())
+            Err(Box::new(unauthorized()))
         } else {
             Ok(None)
         };
     };
     if token.len() > MAX_TOKEN {
         state.throttle.failure(ip, Instant::now());
-        return Err(unauthorized());
+        return Err(Box::new(unauthorized()));
     }
     match state.auth.authenticate(token).await {
         Ok(principal) => Ok(Some(principal)),
         Err(DohDenied::Invalid) => {
             state.throttle.failure(ip, Instant::now());
-            Err(unauthorized())
+            Err(Box::new(unauthorized()))
         }
-        Err(DohDenied::MissingScope) => Err(reply(StatusCode::FORBIDDEN)),
-        Err(DohDenied::Internal) => Err(reply(StatusCode::INTERNAL_SERVER_ERROR)),
+        Err(DohDenied::MissingScope) => Err(Box::new(reply(StatusCode::FORBIDDEN))),
+        Err(DohDenied::Internal) => Err(Box::new(reply(StatusCode::INTERNAL_SERVER_ERROR))),
     }
 }
 
-async fn read_post<H>(
-    state: &State<H>,
-    req: Request<Incoming>,
-) -> Result<Vec<u8>, Response<Full<Bytes>>> {
+async fn read_post<H>(state: &State<H>, req: Request<Incoming>) -> Result<Vec<u8>, Rejection> {
     let content_type = req
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok());
     if !content_type.is_some_and(wire::is_dns_message) {
-        return Err(reply(StatusCode::UNSUPPORTED_MEDIA_TYPE));
+        return Err(Box::new(reply(StatusCode::UNSUPPORTED_MEDIA_TYPE)));
     }
     let declared = req
         .headers()
@@ -388,19 +388,19 @@ async fn read_post<H>(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok());
     if declared.is_some_and(|n| n > MAX_MESSAGE) {
-        return Err(reply(StatusCode::BAD_REQUEST));
+        return Err(Box::new(reply(StatusCode::BAD_REQUEST)));
     }
     let body = Limited::new(req.into_body(), MAX_MESSAGE).collect();
     match timeout(state.body_timeout, body).await {
         Ok(Ok(collected)) => {
             let bytes = collected.to_bytes();
             if bytes.is_empty() {
-                Err(reply(StatusCode::BAD_REQUEST))
+                Err(Box::new(reply(StatusCode::BAD_REQUEST)))
             } else {
                 Ok(bytes.to_vec())
             }
         }
-        Ok(Err(_)) => Err(reply(StatusCode::BAD_REQUEST)),
-        Err(_) => Err(reply(StatusCode::REQUEST_TIMEOUT)),
+        Ok(Err(_)) => Err(Box::new(reply(StatusCode::BAD_REQUEST))),
+        Err(_) => Err(Box::new(reply(StatusCode::REQUEST_TIMEOUT))),
     }
 }

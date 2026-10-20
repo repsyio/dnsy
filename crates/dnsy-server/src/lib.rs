@@ -132,14 +132,14 @@ impl Server {
             }
             tasks.push(dot::certs::watch_reloads(store, rx.clone())?);
         }
-        let mut doh_addrs = Vec::new();
+        let mut doh_bound = Vec::new();
         if let Some(doh) = config.doh {
             let store = dot::certs::CertStore::load(&doh.cert, &doh.key)?;
             let acceptor = dot::acceptor(Arc::clone(&store), None, doh::ALPN)?;
             let state = doh::State::new(&doh, Arc::clone(&handler), config.tcp_idle);
             for addr in &doh.listen {
                 let listener = tokio::net::TcpListener::bind(addr).await?;
-                doh_addrs.push(listener.local_addr()?);
+                doh_bound.push(listener.local_addr()?);
                 tasks.push(tokio::spawn(doh::serve(
                     listener,
                     acceptor.clone(),
@@ -156,7 +156,7 @@ impl Server {
             udp_addrs,
             tcp_addrs,
             dot_addrs,
-            doh_addrs,
+            doh_addrs: doh_bound,
         })
     }
 
