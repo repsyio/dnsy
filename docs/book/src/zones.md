@@ -51,3 +51,34 @@ Writes are atomic (temp file, fsync, rename). The server watches the directory a
 250 ms after the last change. An invalid file never replaces a working zone: the previous
 version keeps serving and the error is kept as the zone's `load_error`, visible in the logs
 and through the API.
+
+## Answering queries
+
+The server answers authoritatively for every name inside a loaded zone, following RFC 1034
+section 4.3.2 and RFC 4592. Queries outside all zones, or for a class other than IN (or ANY),
+are not answered from zones.
+
+- **Closest enclosing zone.** When zones nest (`example.com.` and `dev.example.com.`), the
+  most specific zone answers.
+- **Exact match.** The RRset of the asked type, plus A/AAAA records from the zone for the
+  names that NS, MX and SRV answers point at (additional section). ANY returns every RRset
+  of the name, including the SOA at the apex.
+- **CNAME.** A CNAME is followed while its target stays in the same zone, for at most 8 links;
+  a loop stops at the first repeated name. The answer holds every CNAME followed and then the
+  target's data. A target outside the zone (or in another zone) ends the chain and the client
+  resolves the rest. A chain that ends in a missing name or type carries the SOA in the
+  authority section. Asking for CNAME (or ANY) returns the CNAME itself without following it.
+- **Wildcards.** A name that does not exist is answered from `*.<closest encloser>`, with the
+  owner rewritten to the query name. A wildcard never applies to a name that exists, and empty
+  non-terminals exist: with only `_ssh._tcp.host2.example.` present, `host2.example.` and
+  `_tcp.host2.example.` are NODATA, not wildcard matches. A `*` label asked for directly is
+  matched literally, and a wildcard CNAME is synthesised and then followed.
+- **Delegation.** An NS RRset below the apex is a zone cut. Any query at or below it gets a
+  referral: the cut's NS records plus glue, the A/AAAA records the zone holds for in-zone name
+  servers. Records below a cut are only served as glue. DS at the cut itself is answered by
+  the parent side (NODATA while the zone is unsigned).
+- **NODATA and NXDOMAIN.** A name that exists without the asked type is NODATA; a name that
+  does not exist and has no wildcard is NXDOMAIN. Both carry the zone SOA in the authority
+  section with TTL = min(SOA TTL, SOA `minimum`) (RFC 2308).
+- **Rotation.** Every query rotates the order of each RRset by one, so clients that pick the
+  first address spread across all of them.
