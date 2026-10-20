@@ -332,7 +332,12 @@ async fn blocked_returns_nxdomain_with_ede() {
         }
     );
 
-    h.engine.set_filter(fb.build());
+    let h = harness_with(
+        Fake::a_record(Ipv4Addr::LOCALHOST),
+        &Config::default(),
+        |b| b.filter(fb.build()),
+    );
+    assert!(h.engine.list_manager().is_none());
     let r = h
         .engine
         .handle(ctx(), query("ads.example.", RecordType::A))
@@ -720,6 +725,10 @@ async fn assembled(upstream: SocketAddr, timeout_ms: u64) -> (TempDir, Engine) {
     );
     let config = Config::from_toml(&toml).unwrap();
     let store = Store::open(&dir.path().join("dnsy.db")).unwrap();
+    dnsy_filter::SourceStore::new(store.clone())
+        .add_custom_rule(dnsy_filter::RuleKind::Block, "ads.example")
+        .await
+        .unwrap();
     let mut builder = EngineBuilder::from_config(&config, &store).await.unwrap();
     assert!(builder.take_querylog_task().is_some());
     (dir, builder.build())
@@ -738,6 +747,11 @@ async fn from_config_assembles_pipeline() {
         .await;
     assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 99)));
     assert!(engine.zone_store().is_some());
+    assert!(engine.list_manager().is_some());
+    let blocked = engine
+        .handle(ctx(), query("ads.example.", RecordType::A))
+        .await;
+    assert_eq!(ede_codes(&blocked), [ede::FILTERED]);
     let health = engine.groups().unwrap().health("default").unwrap();
     assert_eq!(health[0].upstream.port, upstream.port());
 }

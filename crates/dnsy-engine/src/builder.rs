@@ -6,8 +6,9 @@ use std::time::Duration;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use dnsy_config::Config;
 use dnsy_filter::{
-    Acl, AclAction, BlockMode, FilterError, FilterLimits, FilterSet, FilterSetBuilder, RateLimiter,
-    RuleStore,
+    Acl, AclAction, BlockMode, FETCH_TIMEOUT, Fetcher, FilterError, FilterLimits, FilterSet,
+    FilterSetBuilder, ListManager, MAX_LIST_BYTES, RateLimiter, RefreshError, RuleStore,
+    SourceStore,
 };
 use dnsy_observe::{QueryEventSink, QueryLogWriter, WriterConfig};
 use dnsy_resolver::groups::{
@@ -18,7 +19,7 @@ use dnsy_store::Store;
 use dnsy_zone::{ZoneError, ZoneStore};
 use tokio::task::JoinHandle;
 
-use crate::engine::{Engine, RATE_LIMIT_KEYS};
+use crate::engine::{Engine, Filters, RATE_LIMIT_KEYS};
 use crate::response::ResponseIpPolicy;
 
 /// Why the engine could not be assembled.
@@ -34,6 +35,8 @@ pub enum EngineError {
     GroupStore(#[from] GroupStoreError),
     #[error("filter rules: {0}")]
     Filter(#[from] FilterError),
+    #[error("blocklists: {0}")]
+    Lists(#[from] RefreshError),
 }
 
 fn block_mode(mode: dnsy_config::BlockMode) -> BlockMode {
@@ -50,7 +53,7 @@ fn block_mode(mode: dnsy_config::BlockMode) -> BlockMode {
 pub struct EngineBuilder<E = UpstreamClient> {
     acl: Acl,
     rate_qps: u32,
-    filter: FilterSet,
+    filter: Filters,
     block_mode: BlockMode,
     response_ip: ResponseIpPolicy,
     zones: Option<Arc<ZoneStore>>,
@@ -67,7 +70,9 @@ impl EngineBuilder<UpstreamClient> {
     /// Wires the full pipeline:
     /// - ACL rules (default allow) and the rate limit from the store, falling back to
     ///   `[limits] per_client_qps`;
-    /// - an empty blocklist set answering in `[filter] block_mode` (list sources swap in theirs);
+    /// - blocklists from the persisted list sources (seeded from `[filter] blocklists` on first
+    ///   start) answering in `[filter] block_mode`; the filter starts from the custom rules and
+    ///   fills as the caller runs [`dnsy_filter::ListManager::run`] (via [`Engine::list_manager`]);
     /// - local zones from `[zones] dir` (the caller starts the watcher via
     ///   [`Engine::zone_store`]);
     /// - the cache from `[cache]`;
@@ -101,6 +106,20 @@ impl EngineBuilder<UpstreamClient> {
         if let Some(qps) = rules.rate_limit_qps().await? {
             builder.rate_qps = qps;
         }
+
+        let sources = SourceStore::new(store.clone());
+        sources
+            .seed(&config.filter.blocklists, config.filter.refresh_interval)
+            .await?;
+        let lists = ListManager::new(
+            sources,
+            builder.block_mode,
+            FilterLimits::default(),
+            Fetcher::new(MAX_LIST_BYTES, FETCH_TIMEOUT),
+            Arc::new(dnsy_filter::SystemClock),
+        );
+        lists.reload().await?;
+        builder.filter = Filters::Lists(lists);
 
         builder.zones = Some(ZoneStore::open(&config.zones.dir)?);
 
@@ -141,7 +160,9 @@ impl<E: Exchange> EngineBuilder<E> {
         Self {
             acl: Acl::new(AclAction::Allow, []),
             rate_qps: config.limits.per_client_qps,
-            filter: FilterSetBuilder::new(mode, FilterLimits::default()).build(),
+            filter: Filters::Fixed(Arc::new(
+                FilterSetBuilder::new(mode, FilterLimits::default()).build(),
+            )),
             block_mode: mode,
             response_ip: ResponseIpPolicy::default(),
             zones: None,
@@ -169,7 +190,14 @@ impl<E: Exchange> EngineBuilder<E> {
 
     #[must_use]
     pub fn filter(mut self, filter: FilterSet) -> Self {
-        self.filter = filter;
+        self.filter = Filters::Fixed(Arc::new(filter));
+        self
+    }
+
+    /// Takes the filter from persisted list sources instead of a fixed set.
+    #[must_use]
+    pub fn list_manager(mut self, manager: ListManager) -> Self {
+        self.filter = Filters::Lists(manager);
         self
     }
 
@@ -208,7 +236,7 @@ impl<E: Exchange> EngineBuilder<E> {
         Engine {
             acl: ArcSwap::from_pointee(self.acl),
             rate: ArcSwap::from_pointee(RateLimiter::new(self.rate_qps, RATE_LIMIT_KEYS)),
-            filter: ArcSwap::from_pointee(self.filter),
+            filter: self.filter,
             response_ip: ArcSwap::from_pointee(self.response_ip),
             groups: ArcSwapOption::from(self.groups.map(Arc::new)),
             zones: self.zones,

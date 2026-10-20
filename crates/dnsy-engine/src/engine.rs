@@ -11,7 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use dnsy_core::{DnssecStatus, Principal};
 use dnsy_filter::{
-    Acl, AclAction, BlockMode, FilterSet, RateLimiter, RateVerdict, Verdict, block_response,
+    Acl, AclAction, BlockMode, FilterSet, ListManager, RateLimiter, RateVerdict, Verdict,
+    block_response,
 };
 use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink};
 use dnsy_proto::{EDNS_VERSION, Edns, Message, Name, Opcode, Question, Rcode, RecordType, ede};
@@ -27,12 +28,12 @@ use crate::response::{
 /// Clients tracked by the rate limiter.
 pub(crate) const RATE_LIMIT_KEYS: usize = 100_000;
 
-/// The request pipeline. Built by [`crate::EngineBuilder`]; policy snapshots (ACL, filters,
+/// The request pipeline. Built by [`crate::EngineBuilder`]; policy snapshots (ACL,
 /// response-IP policy, upstream groups, rate limit) can be swapped while serving.
 pub struct Engine<E = UpstreamClient> {
     pub(crate) acl: ArcSwap<Acl>,
     pub(crate) rate: ArcSwap<RateLimiter>,
-    pub(crate) filter: ArcSwap<FilterSet>,
+    pub(crate) filter: Filters,
     pub(crate) response_ip: ArcSwap<ResponseIpPolicy>,
     pub(crate) groups: ArcSwapOption<GroupSet>,
     pub(crate) zones: Option<Arc<ZoneStore>>,
@@ -42,6 +43,22 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) block_mode: BlockMode,
     pub(crate) attempts: u32,
     pub(crate) deadline: Duration,
+}
+
+/// Where the active blocklist filter comes from.
+pub(crate) enum Filters {
+    Fixed(Arc<FilterSet>),
+    /// Persisted list sources; the manager swaps in rebuilt filters.
+    Lists(ListManager),
+}
+
+impl Filters {
+    fn current(&self) -> Arc<FilterSet> {
+        match self {
+            Self::Fixed(set) => Arc::clone(set),
+            Self::Lists(manager) => manager.current(),
+        }
+    }
 }
 
 /// What the pipeline decided, before the event is emitted.
@@ -158,8 +175,14 @@ impl<E: Exchange> Engine<E> {
             .store(Arc::new(RateLimiter::new(qps, RATE_LIMIT_KEYS)));
     }
 
-    pub fn set_filter(&self, filter: FilterSet) {
-        self.filter.store(Arc::new(filter));
+    /// The blocklist manager, when the filter comes from persisted list sources (spawn its
+    /// `run` loop, refresh sources, reload after rule changes).
+    #[must_use]
+    pub fn list_manager(&self) -> Option<&ListManager> {
+        match &self.filter {
+            Filters::Lists(manager) => Some(manager),
+            Filters::Fixed(_) => None,
+        }
     }
 
     pub fn set_response_ip_policy(&self, policy: ResponseIpPolicy) {
@@ -224,7 +247,7 @@ impl<E: Exchange> Engine<E> {
             RateVerdict::Drop => return dropped,
         }
 
-        if let Verdict::Block { list, mode } = self.filter.load().check(&question.name)
+        if let Verdict::Block { list, mode } = self.filter.current().check(&question.name)
             && let Some(blocked) = block_response(query, mode, &list)
         {
             return Outcome::new(finish(query, blocked), AnswerSource::Blocked { list });
