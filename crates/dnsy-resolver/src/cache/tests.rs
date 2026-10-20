@@ -531,6 +531,31 @@ fn bogus_never_served_as_secure() {
 }
 
 #[test]
+fn bogus_keeps_its_ede_and_is_data_only_when_asked() {
+    let c = Cache::new(&cfg());
+    let t0 = Instant::now();
+    let k = key("bad.example.com", RecordType::A);
+    let mut m = positive("bad.example.com", 300);
+    m.set_ede(7, "signature expired");
+    c.insert(k.clone(), &m, DnssecStatus::Bogus, t0);
+    let CacheLookup::Fresh { msg, .. } = c.get(&k, t0) else {
+        panic!("expected entry");
+    };
+    assert_eq!(msg.header.rcode, Rcode::ServFail);
+    let opts = msg.edns.unwrap().options;
+    assert!(matches!(
+        opts[..],
+        [EdnsOption::ExtendedError { code: 7, .. }]
+    ));
+    let CacheLookup::Fresh { msg, dnssec } = c.get_for(&k, t0, true) else {
+        panic!("expected entry");
+    };
+    assert_eq!(dnssec, DnssecStatus::Bogus);
+    assert_eq!(msg.header.rcode, Rcode::NoError);
+    assert_eq!(msg.answers.len(), 1);
+}
+
+#[test]
 fn secure_not_overwritten_by_bogus() {
     let c = Cache::new(&cfg());
     let t0 = Instant::now();

@@ -63,6 +63,20 @@ pub(crate) fn error_response(query: &Message, rcode: Rcode, ede: Option<(u16, &s
     response
 }
 
+/// SERVFAIL for a Bogus answer in strict mode, keeping `msg`'s Extended DNS Errors (the
+/// validator's reason).
+pub(crate) fn bogus_servfail(query: &Message, msg: &Message) -> Message {
+    let mut response = Message::response_to(query);
+    response.header.rcode = Rcode::ServFail;
+    response.edns.clone_from(&msg.edns);
+    response
+}
+
+/// Whether `resp` carries exactly `question` (names compared case-insensitively).
+pub(crate) fn answers_question(question: &Question, resp: &Message) -> bool {
+    resp.questions.len() == 1 && resp.questions[0] == *question
+}
+
 /// Final shaping for the client: the client's id, flags and question (preserving its name case),
 /// RA set, and an OPT record only when the client sent one, carrying our payload size, the
 /// client's DO bit and only the Extended DNS Error options of `msg`.
@@ -185,7 +199,7 @@ fn is_dnssec_type(t: RecordType) -> bool {
 /// AA and AD are cleared: we are not authoritative for forwarded data and the answer has not
 /// been validated.
 pub(crate) fn scrub(question: &Question, mut resp: Message, dnssec_ok: bool) -> Option<Message> {
-    if resp.questions.len() != 1 || resp.questions[0] != *question {
+    if !answers_question(question, &resp) {
         return None;
     }
     resp.header.aa = false;

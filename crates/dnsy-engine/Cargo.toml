@@ -24,6 +24,7 @@ arc-swap = { workspace = true }
 ipnet = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

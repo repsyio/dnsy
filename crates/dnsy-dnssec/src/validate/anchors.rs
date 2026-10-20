@@ -32,6 +32,11 @@ impl TrustAnchors {
         self.negative.push(name);
     }
 
+    /// Replaces every negative trust anchor with `names`.
+    pub fn set_negative(&mut self, names: impl IntoIterator<Item = Name>) {
+        self.negative = names.into_iter().collect();
+    }
+
     /// True when there is no positive (DS or DNSKEY) anchor.
     pub fn is_empty(&self) -> bool {
         self.ds.is_empty() && self.keys.is_empty()
@@ -115,5 +120,8 @@ mod tests {
         assert!(ta.is_negative(&n("a.BROKEN.example.")));
         assert!(!ta.is_negative(&n("example.")));
         assert!(ta.is_empty());
+        ta.set_negative([n("other.test.")]);
+        assert!(!ta.is_negative(&n("broken.example.")));
+        assert!(ta.is_negative(&n("x.other.test.")));
     }
 }

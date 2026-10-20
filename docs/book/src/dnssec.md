@@ -399,3 +399,84 @@ answers and wildcard NODATA, NXDOMAIN and DS validate `Secure` under NSEC, NSEC3
 opt-out (except an NXDOMAIN inside an opt-out span, which is `Insecure` by RFC 5155 9.2), and
 data below the unsigned delegation validates `Insecure`. The engine test
 `from_config_serves_signed_zone_with_aa_never_ad` runs a DO query through the full pipeline.
+
+## Validation in the forwarding path
+
+Forwarded answers are validated according to `dnssec.validation`:
+
+| Mode | Upstream query | Bogus answer | Status |
+| --- | --- | --- | --- |
+| `off` | the client's DO and CD bits | served as received | `unchecked` |
+| `permissive` | DO=1, CD=1 | served without AD, with the validator's EDE, logged as a warning | validated |
+| `strict` (default) | DO=1, CD=1 | SERVFAIL with the validator's EDE | validated |
+
+Validating modes always ask upstream with DO=1 and CD=1, so the upstream returns signatures
+and denial records but does not validate (and SERVFAIL) for us. The raw answer is validated,
+then scrubbed for the client: RRSIG, NSEC and NSEC3 records are returned only to clients that
+set DO. `Secure` and `Insecure` answers are served; `Indeterminate` answers (no trust anchor
+covers the name) are served without AD.
+
+### AD and CD
+
+- AD is set only when the status is `Secure` and the client set DO or AD (RFC 6840 5.7). It
+  is cleared in every other case, including answers served from the cache.
+- A client that sets CD=1 gets no validation: its query goes upstream with CD=1, the answer is
+  returned as received (status `unchecked`), and it is cached under the CD=1 key. Those
+  entries are never served to CD=0 clients, and a CD=0 client's Bogus entry is never served to
+  anyone as validated data.
+
+### Extended DNS errors on Bogus answers
+
+The EDE is the validator's reason (see the table above): 6 DNSSEC bogus (bad signature, work
+limit exceeded, failed DS/DNSKEY fetch), 7 signature expired, 8 signature not yet valid,
+9 DNSKEY missing, 10 RRSIGs missing, 12 NSEC missing. It is stored with the cache entry, so
+cached replies carry the same code.
+
+A DS or DNSKEY fetch that fails or times out makes the answer `Bogus`, not `Indeterminate`.
+This is deliberate: an attacker who can block those fetches must not get unvalidated answers
+served in strict mode.
+
+### Cache
+
+- The status is stored with each cache entry. A `Bogus` entry lives at most `cache.bogus_ttl`
+  seconds, is returned to CD=0 clients only as SERVFAIL (strict) or without AD (permissive),
+  and never replaces a live `Secure` entry.
+- The lifetime of validated data is capped by its signatures: record TTLs are lowered to the
+  validator's `min_ttl` (the lowest record TTL, RRSIG original TTL and seconds until the
+  RRSIGs expire), so a cached `Secure` answer never outlives its RRSIGs.
+- DS and DNSKEY answers fetched for validation are memoised in the same cache under the
+  DO=1/CD=1 key with status `unchecked`; the validator checks them on every use.
+- Changing the validation mode (`Engine::set_dnssec_mode`) or the negative trust anchors
+  (`Engine::set_negative_trust_anchors`, from `dnssec.negative_trust_anchors` at start or the
+  API at run time) flushes the cache.
+
+### Amplification bounds
+
+One client query cannot make the validator fetch without limit:
+
+- `ValidationLimits` caps a validation at 32 DS/DNSKEY fetches and 64 signature checks
+  (see Work limits above);
+- at most 64 validation fetches are in flight across all clients; a fetch waits for a slot only
+  until its deadline;
+- every fetch of one validation shares a deadline of `resolver.timeout_ms * resolver.attempts`,
+  so a slow upstream turns the answer Bogus instead of hanging the client;
+- fetched DS/DNSKEY sets are cached, so popular zones cost one fetch per TTL.
+
+### Clock safety
+
+A device without a real-time clock (a Raspberry Pi, for one) may boot in 1970, when every
+RRSIG looks "not yet valid". Validating then would SERVFAIL every name, including the NTP
+server that would fix the clock. So while the system clock is earlier than the build time
+(passed by the binary through `EngineBuilder::build_time`; 2026-10-01 by default), DNSY:
+
+- does not validate: answers are served without AD and logged as `indeterminate`;
+- logs a warning once, and `/readyz` returns `"warnings": ["dnssec_clock_untrusted"]`;
+- resumes validation as soon as the clock is plausible, flushing the cache of the
+  `indeterminate` entries.
+
+### Query log and statistics
+
+Every query event carries its validation status (`secure`, `insecure`, `bogus`,
+`indeterminate`, `unchecked`), whether the answer came from the upstream or the cache. The
+query log stores it and the statistics count it per status (`by_dnssec`, with `secure` and
+`bogus` totals).

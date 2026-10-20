@@ -22,6 +22,8 @@ use tempfile::TempDir;
 
 use crate::{Engine, EngineBuilder, Handler, RESPONSE_IP_LIST, RequestContext, ResponseIpPolicy};
 
+mod dnssec;
+
 const ZONE: &str = r#"{"schema":1,"origin":"home.test.","default_ttl":3600,
   "soa":{"mname":"ns.home.test.","rname":"h.home.test.","serial":1,"refresh":1,"retry":1,
          "expire":1,"minimum":300},
@@ -720,7 +722,7 @@ async fn assembled(upstream: SocketAddr, timeout_ms: u64) -> (TempDir, Engine) {
     std::fs::create_dir_all(&zones_dir).unwrap();
     std::fs::write(zones_dir.join("home.test.json"), ZONE).unwrap();
     let toml = format!(
-        "[zones]\ndir = {:?}\n[resolver]\nupstreams = [\"{upstream}\"]\ntimeout_ms = {timeout_ms}\nattempts = 2\n",
+        "[zones]\ndir = {:?}\n[resolver]\nupstreams = [\"{upstream}\"]\ntimeout_ms = {timeout_ms}\nattempts = 2\n[dnssec]\nvalidation = \"permissive\"\n",
         zones_dir.display().to_string()
     );
     let config = Config::from_toml(&toml).unwrap();
@@ -746,6 +748,20 @@ async fn from_config_assembles_pipeline() {
         .handle(ctx(), query("www.example.", RecordType::A))
         .await;
     assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 99)));
+    // Validation is wired from `[dnssec]` with the root anchors: the unsigned answer is Bogus,
+    // served in permissive mode and refused once the mode is strict.
+    assert_eq!(engine.dnssec_mode(), dnsy_config::Validation::Permissive);
+    assert!(!r.header.ad && !ede_codes(&r).is_empty());
+    engine.set_dnssec_mode(dnsy_config::Validation::Strict);
+    let strict = engine
+        .handle(ctx(), query("www.example.", RecordType::A))
+        .await;
+    assert_eq!(strict.header.rcode, Rcode::ServFail);
+    assert!(
+        ede_codes(&strict)
+            .iter()
+            .all(|c| (ede::DNSSEC_BOGUS..=ede::NSEC_MISSING).contains(c))
+    );
     assert!(engine.zone_store().is_some());
     assert!(engine.list_manager().is_some());
     let blocked = engine

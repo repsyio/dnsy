@@ -1,5 +1,6 @@
 //! Shared state handed to every handler.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -32,6 +33,9 @@ pub struct ApiState {
     pub live_tail: Arc<Semaphore>,
     /// How often a live-tail connection looks for new rows.
     pub live_tail_poll: Duration,
+    /// Set by the engine while the system clock is before the build time (DNSSEC validation
+    /// suspended); `/readyz` reports it as the `dnssec_clock_untrusted` warning.
+    pub dnssec_clock_untrusted: Arc<AtomicBool>,
 }
 
 /// Default cap on concurrent live-tail connections.
@@ -53,6 +57,7 @@ impl ApiState {
             redact_client_ip: false,
             live_tail: Arc::new(Semaphore::new(MAX_LIVE_TAILS)),
             live_tail_poll: Duration::from_millis(500),
+            dnssec_clock_untrusted: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -67,6 +72,13 @@ impl ApiState {
     #[must_use]
     pub fn with_zones(mut self, zones: Arc<ZoneStore>) -> ApiState {
         self.zones = Some(zones);
+        self
+    }
+
+    /// Share the engine's clock-sanity flag (`Engine::dnssec_clock_flag`) with `/readyz`.
+    #[must_use]
+    pub fn with_dnssec_clock_flag(mut self, flag: Arc<AtomicBool>) -> ApiState {
+        self.dnssec_clock_untrusted = flag;
         self
     }
 }
