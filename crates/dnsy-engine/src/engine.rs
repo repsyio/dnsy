@@ -56,7 +56,7 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) cache: Arc<Cache>,
     pub(crate) exchange: E,
     pub(crate) sink: Option<Arc<dyn QueryEventSink>>,
-    pub(crate) block_mode: BlockMode,
+    pub(crate) block_mode: ArcSwap<BlockMode>,
     pub(crate) attempts: u32,
     pub(crate) deadline: Duration,
     pub(crate) dnssec: ArcSwap<DnssecPolicy>,
@@ -213,6 +213,12 @@ impl<E: Exchange> Engine<E> {
         }
     }
 
+    /// Changes how blocked names are answered. With persisted list sources, also call
+    /// [`ListManager::set_block_mode`] and reload it (the filter bakes the mode in).
+    pub fn set_block_mode(&self, mode: BlockMode) {
+        self.block_mode.store(Arc::new(mode));
+    }
+
     pub fn set_response_ip_policy(&self, policy: ResponseIpPolicy) {
         self.response_ip.store(Arc::new(policy));
     }
@@ -353,7 +359,7 @@ impl<E: Exchange> Engine<E> {
         };
 
         if self.response_ip.load().blocks(&msg)
-            && let Some(blocked) = block_response(query, self.block_mode, RESPONSE_IP_LIST)
+            && let Some(blocked) = block_response(query, **self.block_mode.load(), RESPONSE_IP_LIST)
         {
             return Outcome {
                 dnssec,

@@ -538,6 +538,7 @@ dependencies = [
 name = "dnsy-resolver"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "dnsy-config",
  "dnsy-core",
  "dnsy-dnssec",

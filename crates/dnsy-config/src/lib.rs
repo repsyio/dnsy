@@ -90,8 +90,16 @@ impl Config {
             apply_override(&mut table, &name, &key, &value)?;
         }
         let config: Self = table.try_into()?;
-        validate::validate(&config)?;
+        config.validate()?;
         Ok(config)
+    }
+
+    /// Cross-field validation, as run by every loader. Use it after changing a loaded config.
+    ///
+    /// # Errors
+    /// [`ConfigError::Invalid`] naming the offending key.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        validate::validate(self)
     }
 }
 
