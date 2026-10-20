@@ -351,6 +351,11 @@ dependencies = [
 [[package]]
 name = "dnsy-dnssec"
 version = "0.1.0"
+dependencies = [
+ "dnsy-proto",
+ "ring",
+ "zeroize",
+]
 
 [[package]]
 name = "dnsy-engine"
