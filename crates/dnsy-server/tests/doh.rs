@@ -421,6 +421,19 @@ impl<'a> MakeWriter<'a> for Capture {
 
 #[tokio::test]
 async fn doh_path_token_redacted_in_logs_and_querylog() {
+    redaction_scenario().await;
+}
+
+/// Tokens are random, so a leak check that depends on the token's bytes must hold for all of
+/// them: repeat with fresh tokens (both path and header forms run in every round).
+#[tokio::test]
+async fn doh_token_redaction_holds_for_many_tokens() {
+    for _ in 0..50 {
+        redaction_scenario().await;
+    }
+}
+
+async fn redaction_scenario() {
     let capture = Capture::default();
     let _guard = tracing::subscriber::set_default(
         tracing_subscriber::fmt()
@@ -445,8 +458,16 @@ async fn doh_path_token_redacted_in_logs_and_querylog() {
         replies.push(c.send(get(&format!("/dns-query/{secret}"), None)).await);
     }
     f.server.shutdown().await;
-    let secret_part = secret.rsplit('_').next().unwrap();
+    // The secret is `dnsy_<id>_<base64url secret>` and the base64url part may itself contain
+    // `_`, so split at the second underscore only: a shorter fragment would match ordinary log
+    // text by chance.
+    let secret_part = secret.splitn(3, '_').nth(2).unwrap();
+    assert!(
+        secret_part.len() >= 40,
+        "secret fragment too short to be meaningful"
+    );
     let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(!logs.contains(&secret) && !logs.contains(secret.splitn(3, '_').nth(1).unwrap()));
     assert!(!logs.is_empty(), "the test must actually capture logs");
     assert!(!logs.contains(secret_part) && !logs.contains(&f.no_scope));
     for r in &replies {
