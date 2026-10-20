@@ -40,6 +40,8 @@ pub enum WireError {
     BadLabelType,
     /// A decoded name violating the length limits.
     BadName(NameError),
+    /// RDATA whose content does not match its type or declared length.
+    BadRdata,
 }
 
 impl fmt::Display for WireError {
@@ -49,6 +51,7 @@ impl fmt::Display for WireError {
             Self::BadPointer => f.write_str("bad compression pointer"),
             Self::BadLabelType => f.write_str("unsupported label type"),
             Self::BadName(e) => write!(f, "bad name: {e}"),
+            Self::BadRdata => f.write_str("malformed rdata"),
         }
     }
 }
