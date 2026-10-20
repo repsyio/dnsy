@@ -23,7 +23,14 @@ export const routes: Routes = [
       {
         path: 'zones',
         title: 'Zones',
-        loadComponent: () => import('./pages/zones/zones.page').then((m) => m.ZonesPage),
+        loadComponent: () =>
+          import('./features/zones/zones-list.page').then((m) => m.ZonesListPage),
+      },
+      {
+        path: 'zones/:name',
+        title: 'Zone',
+        loadComponent: () =>
+          import('./features/zones/zone-detail.page').then((m) => m.ZoneDetailPage),
       },
       {
         path: 'filtering',

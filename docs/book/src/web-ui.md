@@ -4,8 +4,8 @@ The web interface is an Angular single-page app in `web/`. It is built to `web/d
 and embedded into the binary by `dnsy-api` (feature `embed-ui`), which serves it from `/` with a
 single-page-app fallback.
 
-This page covers the shell; the pages themselves (dashboard, zones, filtering, upstreams, query
-log, users, settings) arrive with later stories and are placeholders for now.
+This page covers the shell and the zones pages; the other pages (dashboard, filtering, upstreams,
+query log, users, settings) arrive with later stories and are placeholders for now.
 
 ## Stack
 
@@ -131,3 +131,32 @@ registered when Angular runs in dev mode, so production builds answer with the 4
   "First run? Set up the admin account" switches the form to setup mode (one-time code printed at
   server start, username, password of 8+ characters), which calls `POST /auth/bootstrap` and then
   signs in. A 409 (admin exists) returns to the sign-in form.
+
+## Zones and records
+
+Code lives in `web/src/app/features/zones/`. Routes: `/zones` (list) and `/zones/:name` (detail).
+
+- **List**: one row per zone with serial and record count, a `signed` badge when DNSSEC signing is
+  enabled and a `load error` badge (with the message) when the zone file on disk is not being
+  served. Loading, empty and error states use the Nox mascot components; the error state has a
+  retry button. "Create zone" opens a dialog (name, apex name servers, SOA, TTLs) and, on success,
+  opens the new zone.
+- **Detail**: zone header, record table (50 per page, filter by type), "Download BIND" and, for
+  signed zones, "Download signed" (`GET /zones/{name}/export?signed=...`, saved as
+  `<zone>.zone` / `<zone>.signed.zone`). "Delete zone" asks you to type the zone name.
+- **Records**: add and edit open an inline form; delete asks for confirmation. Types are A, AAAA,
+  NS, CNAME, PTR, MX, TXT, SRV and CAA. The form validates the name, the TTL (whole seconds,
+  empty means the zone default) and the value for the selected type (for example an IPv4 address
+  for A, `<preference> <host>` for MX, four fields for SRV) before anything is sent. Server-side
+  rejections (409, 422) are shown in the form.
+- **Concurrency**: the zone `ETag` from every read and write is sent back as `If-Match` on
+  writes. A 412 means the zone changed elsewhere: nothing was written, and a banner offers
+  "Reload latest" (discard the edit and re-read) or "Overwrite anyway" (repeat the write with
+  `If-Match: *`).
+- **Tabs**: the detail page has a tab list with the Records tab; the DNSSEC tab (DNSY-52) is added
+  next to it.
+
+Accessibility: every control has a label, dialogs trap focus, close on Escape and return focus to
+their opener, table actions carry descriptive `aria-label`s, and errors are announced through
+`role="alert"`. Forms collapse to one column and tables scroll horizontally below 640 px, so the
+pages work at 360 px.
