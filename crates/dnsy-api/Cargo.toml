@@ -22,11 +22,14 @@ path = "src/bin/gen-openapi.rs"
 axum = { workspace = true }
 dnsy-auth = { version = "0.1.0", path = "../dnsy-auth" }
 dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
+dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
+dnsy-zone = { version = "0.1.0", path = "../dnsy-zone" }
 rand = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 subtle = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
