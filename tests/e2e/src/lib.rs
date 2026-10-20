@@ -10,12 +10,14 @@
     reason = "test support code: helpers panic with a message instead of returning errors"
 )]
 
+pub mod api;
 pub mod clients;
 pub mod harness;
 pub mod pki;
 pub mod upstream;
 pub mod zones;
 
+pub use api::{Api, Auth, Resp, Session};
 pub use clients::{DohClient, Framed, Token, query, query_edns, udp_exchange, udp_raw, udp_silent};
 pub use harness::{Harness, MtlsPolicy, Opts};
 pub use pki::{ClientIdentity, Pki};
