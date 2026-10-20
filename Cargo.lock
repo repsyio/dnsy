@@ -300,6 +300,11 @@ version = "0.1.0"
 [[package]]
 name = "dnsy-engine"
 version = "0.1.0"
+dependencies = [
+ "dnsy-core",
+ "dnsy-proto",
+ "tokio",
+]
 
 [[package]]
 name = "dnsy-filter"
@@ -355,6 +360,13 @@ dependencies = [
 [[package]]
 name = "dnsy-server"
 version = "0.1.0"
+dependencies = [
+ "dnsy-core",
+ "dnsy-engine",
+ "dnsy-proto",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "dnsy-store"

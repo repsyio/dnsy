@@ -9,3 +9,10 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
+dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
+
+[dev-dependencies]
+tokio = { workspace = true }
