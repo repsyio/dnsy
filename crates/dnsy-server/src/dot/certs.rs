@@ -104,8 +104,7 @@ pub(crate) fn watch_reloads(
             .map_err(io::Error::other)?;
     }
     #[cfg(unix)]
-    let mut hangup =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+    let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     Ok(tokio::spawn(async move {
         let _watcher = watcher; // dropping it stops the watch
         loop {
