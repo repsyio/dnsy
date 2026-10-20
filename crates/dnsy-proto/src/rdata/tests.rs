@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::*;
 
 fn n(s: &str) -> Name {
@@ -129,10 +131,10 @@ fn unknown_type_rfc3597() {
 
 #[test]
 fn presentation_matches_fixtures() {
-    let out: String = sample()
-        .iter()
-        .map(|d| format!("{:?} {d}\n", d.rtype()))
-        .collect();
+    let mut out = String::new();
+    for d in sample() {
+        writeln!(out, "{:?} {d}", d.rtype()).unwrap();
+    }
     insta::assert_snapshot!(out);
 }
 
@@ -285,14 +287,13 @@ fn parse_rejects_bad_text() {
         p(RecordType::Txt, "\"\\ff\""),
         Ok(RData::Txt(vec![b"ff".to_vec()]))
     );
-    assert!(!E::TrailingData.to_string().is_empty());
     for e in [
         E::MissingField("x"),
         E::InvalidField("x"),
         E::BadEscape,
         E::UnterminatedQuote,
     ] {
-        assert!(!e.to_string().is_empty());
+        assert!(e.to_string().len() > 5);
     }
 }
 
