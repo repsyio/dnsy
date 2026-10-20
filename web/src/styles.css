@@ -1,0 +1,73 @@
+@import 'tailwindcss';
+@import '../../branding/tokens.css';
+
+@theme inline {
+  --color-bg: var(--dnsy-bg);
+  --color-surface: var(--dnsy-surface);
+  --color-cyan: var(--dnsy-cyan);
+  --color-orange: var(--dnsy-orange);
+  --color-text: var(--dnsy-text);
+  --color-muted: var(--dnsy-muted);
+  --color-grid: var(--dnsy-grid);
+  --color-secure: var(--dnsy-secure);
+  --color-bogus: var(--dnsy-bogus);
+  --font-display: var(--dnsy-font-display);
+  --font-mono: var(--dnsy-font-mono);
+  --shadow-glow-sm: var(--dnsy-glow-sm);
+  --shadow-glow-md: var(--dnsy-glow-md);
+  --shadow-glow-lg: var(--dnsy-glow-lg);
+  --shadow-glow-orange: var(--dnsy-glow-orange);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--dnsy-bg);
+    background-image:
+      linear-gradient(var(--dnsy-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--dnsy-grid) 1px, transparent 1px);
+    background-size: 48px 48px;
+    color: var(--dnsy-text);
+    font-family: var(--dnsy-font-body);
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--dnsy-font-display);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  :focus-visible {
+    outline: 2px solid var(--dnsy-cyan);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-sm border border-cyan/40 bg-surface/90 p-5 shadow-glow-md;
+  }
+  .btn {
+    @apply cursor-pointer rounded-sm border border-cyan bg-transparent px-4 py-2 font-display text-sm uppercase tracking-widest text-cyan shadow-glow-sm transition hover:bg-cyan/10 hover:shadow-glow-md disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-danger {
+    @apply border-orange text-orange shadow-glow-orange hover:bg-orange/10;
+  }
+  .nav-link {
+    @apply flex items-center gap-3 border-l-2 border-transparent px-4 py-2 text-sm uppercase tracking-wider text-muted transition hover:text-cyan;
+  }
+  .nav-link-active {
+    @apply border-cyan bg-cyan/10 text-cyan;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

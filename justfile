@@ -27,9 +27,18 @@ cov:
 e2e:
     @if [ -d tests/e2e ]; then cargo nextest run -p dnsy-e2e --no-tests=pass; else echo "no e2e suite yet"; fi
 
-# Web UI: install, lint, unit tests with coverage, build (no-op until web/ exists).
+# Web UI: install, lint, unit tests with coverage, build, types drift (no-op without node/pnpm or web/).
 web:
-    @if [ -f web/package.json ]; then cd web && pnpm install --frozen-lockfile && pnpm ng lint && pnpm ng test --coverage --watch=false && pnpm ng build; else echo "no web app yet"; fi
+    @if [ -f web/package.json ] && command -v node >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then cd web && pnpm install --frozen-lockfile && pnpm lint && pnpm ng test --coverage --no-watch && pnpm build && cd .. && just web-types-check; else echo "node/pnpm or web/ missing; skipping web"; fi
+
+# Regenerate web/src/app/api/schema.d.ts from openapi/dnsy.json.
+web-types:
+    cd web && pnpm types && pnpm prettier --write src/app/api/schema.d.ts
+
+# Fail when the checked-in web API types differ from openapi/dnsy.json.
+web-types-check:
+    cd web && pnpm types >/dev/null && pnpm prettier --write src/app/api/schema.d.ts >/dev/null
+    git diff --exit-code -- web/src/app/api/schema.d.ts || { echo "web API types are stale: run 'just web-types'"; exit 1; }
 
 # Regenerate openapi/dnsy.json from the handler annotations.
 openapi:

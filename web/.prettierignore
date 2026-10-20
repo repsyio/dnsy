@@ -1,0 +1,7 @@
+dist
+.angular
+coverage
+node_modules
+pnpm-lock.yaml
+src/app/api/schema.d.ts
+public
