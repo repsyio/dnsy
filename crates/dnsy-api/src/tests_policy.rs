@@ -1153,7 +1153,7 @@ async fn cache_settings_patch_applies_live() {
     });
     let ttl = |key: &CacheKey| match cache.get(key, Instant::now()) {
         dnsy_resolver::CacheLookup::Fresh { msg, .. } => msg.answers[0].ttl,
-        dnsy_resolver::CacheLookup::Miss => panic!("expected a fresh hit"),
+        other => panic!("expected a fresh hit, got {other:?}"),
     };
     cache.insert(
         key.clone(),
