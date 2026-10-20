@@ -100,6 +100,7 @@ fn secs(d: Duration) -> u32 {
 
 impl Cache {
     /// A cache sized and tuned by `[cache]`.
+    #[must_use]
     pub fn new(cfg: &CacheConfig) -> Cache {
         let count = cfg.max_entries.clamp(1, MAX_SHARDS);
         let (base, extra) = (cfg.max_entries / count, cfg.max_entries % count);
@@ -179,10 +180,10 @@ impl Cache {
         for r in section_records_mut(&mut msg) {
             r.ttl = r.ttl.saturating_sub(elapsed);
         }
-        if stored_key.qtype == ANY_TYPE {
-            if let Some(q) = msg.questions.first_mut() {
-                q.qtype = asked.qtype;
-            }
+        if stored_key.qtype == ANY_TYPE
+            && let Some(q) = msg.questions.first_mut()
+        {
+            q.qtype = asked.qtype;
         }
         Some(CacheLookup::Fresh {
             msg,
