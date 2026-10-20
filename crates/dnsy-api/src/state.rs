@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 
 use crate::routes::RuntimeSettings;
 
-/// Reloads the DoT client-certificate fingerprint allowlist from the database, which bumps its
+/// Reloads the `DoT` client-certificate fingerprint allowlist from the database, which bumps its
 /// generation so open connections are re-checked. The binary builds it from the server's
 /// allowlist (the API never depends on the server crate).
 pub type CertReload =

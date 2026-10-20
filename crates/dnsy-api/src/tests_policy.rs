@@ -1,4 +1,9 @@
 //! ACL, upstream, blocklist, rule, client-certificate and settings routes against a real engine.
+#![expect(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "end-to-end route tests read top to bottom"
+)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -184,6 +189,10 @@ async fn ask(fx: &Fx, client: [u8; 4], qname: &str) -> Option<Message> {
     fx.engine.process(&ctx, &query(qname)).await
 }
 
+async fn answer_count(fx: &Fx, client: [u8; 4], qname: &str) -> usize {
+    ask(fx, client, qname).await.unwrap().answers.len()
+}
+
 #[tokio::test]
 async fn acl_crud_applies_live() {
     let f = fx().await;
@@ -350,8 +359,12 @@ async fn rate_limit_is_persisted_and_applied() {
 struct Down;
 
 impl Exchange for Down {
-    async fn exchange(&self, _: &Upstream, _: &Message) -> Result<Message, UpstreamError> {
-        Err(UpstreamError::Timeout)
+    fn exchange(
+        &self,
+        _: &Upstream,
+        _: &Message,
+    ) -> impl std::future::Future<Output = Result<Message, UpstreamError>> + Send {
+        std::future::ready(Err(UpstreamError::Timeout))
     }
 }
 
@@ -583,7 +596,7 @@ async fn custom_rule_applies_live() {
     let f = fx().await;
     let a = &f.operator;
     let unblocked = ask(&f, [192, 0, 2, 1], "ads.example.com.").await.unwrap();
-    assert!(unblocked.answers.is_empty());
+    assert_eq!(unblocked.answers.len(), 0);
     let (s, rule) = call(
         &f,
         a,
@@ -612,7 +625,7 @@ async fn custom_rule_applies_live() {
     let allowed = ask(&f, [192, 0, 2, 1], "ok.ads.example.com.")
         .await
         .unwrap();
-    assert!(allowed.answers.is_empty());
+    assert_eq!(allowed.answers.len(), 0);
 
     let (s, _) = call(
         &f,
@@ -640,12 +653,9 @@ async fn custom_rule_applies_live() {
     let id = rule["id"].as_i64().unwrap();
     let (s, _) = call(&f, a, Method::DELETE, &format!("/rules/{id}"), None).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    assert!(
-        ask(&f, [192, 0, 2, 1], "sub.ads.example.com.")
-            .await
-            .unwrap()
-            .answers
-            .is_empty()
+    assert_eq!(
+        answer_count(&f, [192, 0, 2, 1], "sub.ads.example.com.").await,
+        0
     );
     let (s, _) = call(&f, a, Method::DELETE, &format!("/rules/{id}"), None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
@@ -705,13 +715,7 @@ async fn blocklist_refresh_endpoint() {
     assert!(created["last_fetched"].is_null());
     let id = created["id"].as_i64().unwrap();
 
-    assert!(
-        ask(&f, [192, 0, 2, 1], "listed.example.")
-            .await
-            .unwrap()
-            .answers
-            .is_empty()
-    );
+    assert_eq!(answer_count(&f, [192, 0, 2, 1], "listed.example.").await, 0);
     let (s, r) = call(
         &f,
         &f.operator,
@@ -734,7 +738,7 @@ async fn blocklist_refresh_endpoint() {
 
     let (_, all) = call(&f, &f.viewer, Method::GET, "/blocklists", None).await;
     assert_eq!(all[0]["entries"], 2);
-    assert_eq!(all[0]["last_status"].as_str().is_some(), true);
+    assert!(all[0]["last_status"].as_str().is_some());
 
     // Disable drops its entries from the filter, enable does not refetch (kept until refresh).
     let (s, v) = call(
@@ -747,13 +751,7 @@ async fn blocklist_refresh_endpoint() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["enabled"], false);
-    assert!(
-        ask(&f, [192, 0, 2, 1], "listed.example.")
-            .await
-            .unwrap()
-            .answers
-            .is_empty()
-    );
+    assert_eq!(answer_count(&f, [192, 0, 2, 1], "listed.example.").await, 0);
     let (s, _) = call(
         &f,
         &f.operator,
@@ -985,7 +983,7 @@ async fn client_cert_fingerprint_crud() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["enabled"], false);
     assert_eq!(f.reloads.load(Ordering::SeqCst), 2);
-    assert!(f.state.client_certs.active().await.unwrap().is_empty());
+    assert_eq!(f.state.client_certs.active().await.unwrap().len(), 0);
     let (s, _) = call(
         &f,
         a,
@@ -1085,7 +1083,7 @@ async fn settings_patch_validates() {
     assert_eq!(f.state.rules.rate_limit_qps().await.unwrap(), Some(50));
     assert_eq!(
         *f.state.settings.retention_updates().borrow(),
-        std::time::Duration::from_secs(7 * 86_400)
+        std::time::Duration::from_hours(7 * 24)
     );
     // The response never carries anything but the subset.
     let keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
@@ -1155,7 +1153,7 @@ async fn cache_settings_patch_applies_live() {
     });
     let ttl = |key: &CacheKey| match cache.get(key, Instant::now()) {
         dnsy_resolver::CacheLookup::Fresh { msg, .. } => msg.answers[0].ttl,
-        other => panic!("expected a fresh hit, got {other:?}"),
+        dnsy_resolver::CacheLookup::Miss => panic!("expected a fresh hit"),
     };
     cache.insert(
         key.clone(),

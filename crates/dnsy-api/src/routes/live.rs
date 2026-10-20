@@ -9,6 +9,7 @@ use dnsy_resolver::groups::{GroupSet, GroupSpec, GroupStoreError, SystemClock, T
 use crate::error::ApiError;
 use crate::state::ApiState;
 
+#[expect(clippy::needless_pass_by_value, reason = "used as a map_err callback")]
 pub(super) fn filter_err(e: FilterError) -> ApiError {
     match e {
         FilterError::Duplicate => ApiError::Conflict(e.to_string()),

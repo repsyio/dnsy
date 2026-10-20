@@ -314,10 +314,6 @@ impl SourceStore {
             .map_err(constraint)
     }
 
-    /// All custom rules, oldest first.
-    ///
-    /// # Errors
-    /// Store failure or a corrupt row.
     /// Custom rules with their ids, oldest first.
     ///
     /// # Errors
@@ -360,6 +356,10 @@ impl SourceStore {
         }
     }
 
+    /// All custom rules, oldest first.
+    ///
+    /// # Errors
+    /// Store failure or a corrupt row.
     pub async fn custom_rules(&self) -> Result<Vec<(RuleKind, String)>, FilterError> {
         let rows: Vec<(String, String)> = self
             .store

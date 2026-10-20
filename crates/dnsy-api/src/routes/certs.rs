@@ -1,4 +1,4 @@
-//! mTLS client-certificate fingerprint allowlist for DoT (admin only).
+//! mTLS client-certificate fingerprint allowlist for `DoT` (admin only).
 //!
 //! Every change reloads the server's allowlist through [`ApiState::cert_reload`], which bumps
 //! its generation so connections that are already open are re-checked against the new list.
