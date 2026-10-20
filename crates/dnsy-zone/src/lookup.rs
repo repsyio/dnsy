@@ -1,14 +1,17 @@
 //! Authoritative lookup: RFC 1034 4.3.2 with RFC 4592 wildcards.
 //!
-//! Unsigned behaviour only; the DO paths are added with online signing.
+//! For a zone served signed, a DO lookup adds the RRSIGs of every `RRset`, DS (or the proof
+//! of its absence) at delegations and the NSEC or NSEC3 proofs of RFC 4035 3.1.3 and
+//! RFC 5155 7.2 (see [`crate::signed`]). Without DO no DNSSEC record is added.
 
 use std::collections::BTreeMap;
-use std::iter;
 use std::sync::atomic::Ordering;
 
+use dnsy_dnssec::SignedZone;
 use dnsy_proto::{Class, Name, Question, RData, Record, RecordType};
 
 use crate::model::Zone;
+use crate::signed::{Proof, SignedIndex, Trace, wildcard_of};
 use crate::store::ZoneSet;
 
 /// Most CNAMEs followed for one query.
@@ -49,15 +52,23 @@ pub(crate) struct ZoneIndex {
     nodes: BTreeMap<Name, Node>,
     /// The SOA as sent in negative answers.
     negative_soa: Record,
+    /// RRSIGs and the denial chain when the zone is served signed.
+    signed: Option<SignedIndex>,
 }
 
 /// Where the descent through the zone tree stopped.
 enum Found<'a> {
-    /// An existing or wildcard-synthesised node, with the owner name to answer with.
-    Node(Name, &'a Node),
+    /// An existing or wildcard-synthesised node, with the owner name to answer with and, for
+    /// a synthesised one, the closest encloser whose wildcard child supplied it.
+    Node {
+        owner: Name,
+        node: &'a Node,
+        wildcard: Option<&'a Name>,
+    },
     /// A zone cut at this name.
     Cut(&'a Name),
-    NxDomain,
+    /// The name does not exist; the closest encloser.
+    NxDomain(&'a Name),
 }
 
 fn record(name: Name, ttl: u32, data: RData) -> Record {
@@ -71,22 +82,38 @@ fn record(name: Name, ttl: u32, data: RData) -> Record {
 }
 
 impl ZoneIndex {
-    pub(crate) fn build(zone: &Zone) -> Self {
+    /// The index of `zone`, served from `signed` when given: then the nodes are the signed
+    /// snapshot's `RRsets` (with the apex DNSKEY, CDS, CDNSKEY, NSEC3PARAM and the NSEC
+    /// records) and the RRSIGs and denial chain come with it. NSEC3 records stay out of the
+    /// tree: their hashed owner names do not exist (RFC 5155 7.2.8).
+    pub(crate) fn build(zone: &Zone, signed: Option<&SignedZone>) -> Self {
         let soa = RData::Soa(zone.soa.clone());
         let mut nodes: BTreeMap<Name, Node> = BTreeMap::new();
-        let apex = record(zone.origin.clone(), zone.soa_ttl, soa.clone());
-        nodes
-            .entry(zone.origin.clone())
-            .or_default()
-            .insert(RecordType::Soa, vec![apex]);
-        for r in &zone.records {
-            let rec = record(r.name.clone(), r.ttl, r.rdata.clone());
+        if let Some(signed) = signed {
+            for ((owner, code), set) in &signed.rrsets {
+                let rtype = RecordType::from(*code);
+                if rtype != RecordType::Nsec3 {
+                    nodes
+                        .entry(owner.clone())
+                        .or_default()
+                        .insert(rtype, set.records.clone());
+                }
+            }
+        } else {
+            let apex = record(zone.origin.clone(), zone.soa_ttl, soa.clone());
             nodes
-                .entry(r.name.clone())
+                .entry(zone.origin.clone())
                 .or_default()
-                .entry(rec.rtype)
-                .or_default()
-                .push(rec);
+                .insert(RecordType::Soa, vec![apex]);
+            for r in &zone.records {
+                let rec = record(r.name.clone(), r.ttl, r.rdata.clone());
+                nodes
+                    .entry(r.name.clone())
+                    .or_default()
+                    .entry(rec.rtype)
+                    .or_default()
+                    .push(rec);
+            }
         }
         let owners: Vec<Name> = nodes.keys().cloned().collect();
         for owner in owners {
@@ -101,6 +128,7 @@ impl ZoneIndex {
             origin: zone.origin.clone(),
             nodes,
             negative_soa: record(zone.origin.clone(), ttl, soa),
+            signed: signed.map(SignedIndex::build),
         }
     }
 
@@ -130,18 +158,77 @@ impl ZoneIndex {
             .nodes
             .get_key_value(name)
             .expect("every name on the path exists");
-        Found::Node(owner.clone(), node)
+        Found::Node {
+            owner: owner.clone(),
+            node,
+            wildcard: None,
+        }
     }
 
     /// RFC 4592: only the source of synthesis `*.<closest encloser>` may answer for a name
     /// that does not exist.
-    fn wildcard(&self, closest_encloser: &Name, name: &Name) -> Found<'_> {
-        let star: &[u8] = b"*";
-        let source = Name::from_labels(iter::once(star).chain(closest_encloser.labels()));
-        match source.ok().and_then(|s| self.nodes.get(&s)) {
-            Some(node) => Found::Node(name.clone(), node),
-            None => Found::NxDomain,
+    fn wildcard<'a>(&'a self, closest_encloser: &'a Name, name: &Name) -> Found<'a> {
+        match wildcard_of(closest_encloser).and_then(|s| self.nodes.get(&s)) {
+            Some(node) => Found::Node {
+                owner: name.clone(),
+                node,
+                wildcard: Some(closest_encloser),
+            },
+            None => Found::NxDomain(closest_encloser),
         }
+    }
+
+    /// DS at a cut for a DO referral, or a note that its absence must be proven.
+    fn delegation_ds(&self, cut: &Name, trace: &mut Trace) -> Vec<Record> {
+        if !trace.enabled() {
+            return Vec::new();
+        }
+        if let Some(ds) = self.nodes[cut].get(&RecordType::Ds) {
+            return ds.clone();
+        }
+        trace.proof(|| Proof::InsecureDelegation { cut: cut.clone() });
+        Vec::new()
+    }
+
+    /// The `RRsets` of `qtype` (every type for ANY) at `node`, owned by `owner`, noting the
+    /// wildcard or NODATA proof the outcome needs.
+    fn answers_at(
+        node: &Node,
+        owner: &Name,
+        qtype: RecordType,
+        rotation: usize,
+        wildcard: Option<&Name>,
+        trace: &mut Trace,
+    ) -> Vec<Record> {
+        let mut answers = Vec::new();
+        if qtype == RecordType::Any {
+            // NSEC is a DNSSEC record: only DO queries see it (RFC 4035 3.2.1).
+            for (rtype, rrset) in node {
+                if trace.enabled() || *rtype != RecordType::Nsec {
+                    answers.extend(rotated(rrset, owner, rotation));
+                }
+            }
+        } else if let Some(rrset) = node.get(&qtype) {
+            answers = rotated(rrset, owner, rotation);
+        }
+        match (wildcard, answers.is_empty()) {
+            (Some(encloser), false) => {
+                trace.expansion(owner, encloser);
+                trace.proof(|| Proof::WildcardAnswer {
+                    qname: owner.clone(),
+                    encloser: encloser.clone(),
+                });
+            }
+            (Some(encloser), true) => trace.proof(|| Proof::WildcardNoData {
+                qname: owner.clone(),
+                encloser: encloser.clone(),
+            }),
+            (None, true) => trace.proof(|| Proof::NoData {
+                qname: owner.clone(),
+            }),
+            (None, false) => {}
+        }
+        answers
     }
 
     /// The NS records at a cut plus the address records of in-zone name servers.
@@ -182,41 +269,72 @@ impl ZoneIndex {
     }
 
     /// RFC 1034 4.3.2 steps 3 to 6 for `qname`, following CNAMEs while `in_zone` holds for
-    /// their targets.
+    /// their targets. With `dnssec_ok` and a signed zone the result carries RRSIGs, DS and
+    /// denial proofs.
     fn resolve(
         &self,
         qname: &Name,
         qtype: RecordType,
         rotation: usize,
         in_zone: impl Fn(&Name) -> bool,
+        dnssec_ok: bool,
+    ) -> LookupResult {
+        let mut trace = Trace::new(dnssec_ok && self.signed.is_some());
+        let result = self.resolve_unsigned(qname, qtype, rotation, in_zone, &mut trace);
+        match &self.signed {
+            Some(signed) if trace.enabled() => signed.secure(result, &trace),
+            _ => result,
+        }
+    }
+
+    fn resolve_unsigned(
+        &self,
+        qname: &Name,
+        qtype: RecordType,
+        rotation: usize,
+        in_zone: impl Fn(&Name) -> bool,
+        trace: &mut Trace,
     ) -> LookupResult {
         let mut chain: Vec<Record> = Vec::new();
         let mut visited: Vec<Name> = Vec::new();
         let mut name = qname.clone();
         loop {
-            let (owner, node) = match self.find(&name, qtype) {
+            let (owner, node, wildcard) = match self.find(&name, qtype) {
                 Found::Cut(cut) => {
                     let (ns, glue) = self.referral(cut, rotation);
+                    let ds = self.delegation_ds(cut, trace);
                     if chain.is_empty() {
                         return LookupResult::Referral {
                             ns,
-                            ds_or_proof: Vec::new(),
+                            ds_or_proof: ds,
                             glue,
                         };
                     }
+                    let mut authority = ns;
+                    authority.extend(ds);
                     return LookupResult::Answer {
                         answers: chain,
-                        authority: ns,
+                        authority,
                         additional: glue,
                     };
                 }
-                Found::NxDomain if chain.is_empty() => {
-                    return LookupResult::NxDomain {
-                        authority: vec![self.negative_soa.clone()],
-                    };
+                Found::NxDomain(encloser) => {
+                    trace.proof(|| Proof::NxDomain {
+                        qname: name.clone(),
+                        encloser: encloser.clone(),
+                    });
+                    if chain.is_empty() {
+                        return LookupResult::NxDomain {
+                            authority: vec![self.negative_soa.clone()],
+                        };
+                    }
+                    return self.negative_after(chain);
                 }
-                Found::NxDomain => return self.negative_after(chain),
-                Found::Node(owner, node) => (owner, node),
+                Found::Node {
+                    owner,
+                    node,
+                    wildcard,
+                } => (owner, node, wildcard),
             };
             if !matches!(qtype, RecordType::Cname | RecordType::Any)
                 && let Some(cname) = node.get(&RecordType::Cname)
@@ -227,6 +345,13 @@ impl ZoneIndex {
                         authority: Vec::new(),
                         additional: Vec::new(),
                     };
+                }
+                if let Some(encloser) = wildcard {
+                    trace.expansion(&owner, encloser);
+                    trace.proof(|| Proof::WildcardAnswer {
+                        qname: owner.clone(),
+                        encloser: encloser.clone(),
+                    });
                 }
                 let rec = record(owner.clone(), cname[0].ttl, cname[0].data.clone());
                 let RData::Cname(target) = &rec.data else {
@@ -248,14 +373,7 @@ impl ZoneIndex {
                 name = target;
                 continue;
             }
-            let mut answers = Vec::new();
-            if qtype == RecordType::Any {
-                for rrset in node.values() {
-                    answers.extend(rotated(rrset, &owner, rotation));
-                }
-            } else if let Some(rrset) = node.get(&qtype) {
-                answers = rotated(rrset, &owner, rotation);
-            }
+            let answers = Self::answers_at(node, &owner, qtype, rotation, wildcard, trace);
             if answers.is_empty() {
                 if chain.is_empty() {
                     return LookupResult::NoData {
@@ -301,8 +419,10 @@ fn rotated(rrset: &[Record], owner: &Name, rotation: usize) -> Vec<Record> {
 impl ZoneSet {
     /// Answers `q` from the closest enclosing zone; `None` when no zone encloses the name or
     /// the class is not IN (or ANY). Every call rotates the order of each record set by one.
-    /// `dnssec_ok` is ignored until online signing.
-    pub fn lookup(&self, q: &Question, _dnssec_ok: bool) -> Option<LookupResult> {
+    /// With `dnssec_ok`, answers from a zone served signed carry RRSIGs, DS at delegations and
+    /// NSEC/NSEC3 denial proofs; without it no DNSSEC record is added (types asked for
+    /// explicitly, such as DNSKEY, are still answered).
+    pub fn lookup(&self, q: &Question, dnssec_ok: bool) -> Option<LookupResult> {
         if !matches!(q.qclass, Class::In | Class::Any) {
             return None;
         }
@@ -310,7 +430,7 @@ impl ZoneSet {
         let index = self.indexes.get(origin)?;
         let rotation = self.rotation.fetch_add(1, Ordering::Relaxed);
         let in_zone = |n: &Name| self.find(n).is_some_and(|z| z.origin == *origin);
-        Some(index.resolve(&q.name, q.qtype, rotation, in_zone))
+        Some(index.resolve(&q.name, q.qtype, rotation, in_zone, dnssec_ok))
     }
 }
 

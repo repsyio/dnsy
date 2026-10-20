@@ -472,6 +472,7 @@ dependencies = [
  "arc-swap",
  "dnsy-config",
  "dnsy-core",
+ "dnsy-dnssec",
  "dnsy-filter",
  "dnsy-observe",
  "dnsy-proto",

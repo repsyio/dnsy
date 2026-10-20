@@ -407,6 +407,11 @@ impl KeyStore {
         self
     }
 
+    /// The clock key states and signatures are timed by.
+    pub(crate) fn clock(&self) -> Arc<dyn Clock> {
+        Arc::clone(&self.clock)
+    }
+
     /// True when new private keys are encrypted at rest (the API's `keys_encrypted` flag).
     #[must_use]
     pub fn keys_encrypted(&self) -> bool {
