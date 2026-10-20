@@ -11,6 +11,7 @@
 - [Filtering](filtering.md)
 - [DoT and mTLS](dot.md)
 - [DoH and tokens](doh.md)
+- [Users, tokens and sessions](auth.md)
 - [Web UI](web-ui.md)
 - [REST API](rest-api.md)
 - [Operations](operations.md)

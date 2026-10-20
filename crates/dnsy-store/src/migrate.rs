@@ -36,6 +36,11 @@ pub static MIGRATIONS: &[Migration] = &[
         sql: include_str!("../migrations/0001_users.sql"),
     },
     Migration {
+        version: 2,
+        name: "tokens_sessions",
+        sql: include_str!("../migrations/0002_tokens_sessions.sql"),
+    },
+    Migration {
         version: 3,
         name: "querylog_stats",
         sql: include_str!("../migrations/0003_querylog_stats.sql"),
