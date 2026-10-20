@@ -219,6 +219,10 @@ impl Cache {
     /// Not cached: truncated or authoritative messages, rcodes other than NOERROR, NXDOMAIN and
     /// SERVFAIL, negative answers without an SOA, and anything whose lifetime works out to zero.
     /// A Bogus message never replaces a live Secure entry.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "signature pinned by the plan"
+    )]
     pub fn insert(&self, key: CacheKey, msg: &Message, dnssec: DnssecStatus, now: Instant) {
         if !self.cfg.enabled || msg.header.tc || msg.header.aa || key.qtype == RESERVED_TYPE {
             return;
