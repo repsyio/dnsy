@@ -7,9 +7,9 @@
     reason = "fallible constructors and accessors are self-describing; error enums are documented"
 )]
 
-mod edns;
 mod bitmap;
 pub mod canonical;
+mod edns;
 mod error;
 mod header;
 mod message;
@@ -19,8 +19,8 @@ mod reader;
 mod types;
 mod writer;
 
-pub use edns::{DEFAULT_UDP_PAYLOAD, EDNS_VERSION, Edns, EdnsOption, PADDING_BLOCK, ede};
 pub use bitmap::TypeBitmap;
+pub use edns::{DEFAULT_UDP_PAYLOAD, EDNS_VERSION, Edns, EdnsOption, PADDING_BLOCK, ede};
 pub use error::{NameError, WireError};
 pub use header::{Counts, HEADER_LEN, Header};
 pub use message::{DecodeError, EncodeError, Message, Question, Record};
