@@ -9,4 +9,4 @@ mod migrate;
 mod store;
 
 pub use migrate::{MIGRATIONS, Migration, MigrationStatus};
-pub use store::{Store, StoreError};
+pub use store::{Store, StoreError, migration_status_at};

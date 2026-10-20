@@ -271,9 +271,17 @@ impl Handler for Dropper {
 #[tokio::test]
 async fn udp_drop_sends_no_reply() {
     let server = Server::start(config(), Arc::new(Dropper)).await.unwrap();
-    let dropped = udp_exchange(&server, &query(1, "drop.example.", None).encode(512).unwrap()).await;
+    let dropped = udp_exchange(
+        &server,
+        &query(1, "drop.example.", None).encode(512).unwrap(),
+    )
+    .await;
     assert!(dropped.is_none(), "dropped query must get no reply");
-    let kept = udp_exchange(&server, &query(2, "keep.example.", None).encode(512).unwrap()).await;
+    let kept = udp_exchange(
+        &server,
+        &query(2, "keep.example.", None).encode(512).unwrap(),
+    )
+    .await;
     assert!(kept.is_some());
     server.shutdown().await;
 }

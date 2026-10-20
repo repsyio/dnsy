@@ -134,6 +134,40 @@ impl Store {
     }
 }
 
+/// Applied/pending state of every known migration of the database at `path`, without creating
+/// or migrating it (a missing file or table means everything is pending).
+///
+/// # Errors
+/// SQLite failure.
+pub fn migration_status_at(path: &Path) -> Result<Vec<MigrationStatus>, StoreError> {
+    let mut done = std::collections::BTreeMap::new();
+    if path.exists() {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let table: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |r| r.get(0),
+        )?;
+        if table > 0 {
+            let mut stmt = conn.prepare("SELECT version, applied_at FROM schema_migrations")?;
+            for row in stmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, i64>(1)?)))? {
+                let (version, at) = row?;
+                done.insert(version, at);
+            }
+        }
+    }
+    let mut out: Vec<MigrationStatus> = MIGRATIONS
+        .iter()
+        .map(|m| MigrationStatus {
+            version: m.version,
+            name: m.name.to_owned(),
+            applied_at: done.get(&m.version).copied(),
+        })
+        .collect();
+    out.sort_by_key(|s| s.version);
+    Ok(out)
+}
+
 async fn join<T>(h: tokio::task::JoinHandle<Result<T, StoreError>>) -> Result<T, StoreError> {
     h.await.map_err(|e| StoreError::Task(e.to_string()))?
 }
@@ -169,6 +203,17 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    #[test]
+    fn status_at_reports_pending_then_applied_without_migrating() {
+        let (_d, p) = db();
+        let before = migration_status_at(&p).unwrap();
+        assert!(!before.is_empty() && before.iter().all(|m| m.applied_at.is_none()));
+        assert!(!p.exists(), "status must not create the database");
+        Store::open(&p).unwrap();
+        let after = migration_status_at(&p).unwrap();
+        assert!(after.iter().all(|m| m.applied_at.is_some()));
     }
 
     #[tokio::test]
