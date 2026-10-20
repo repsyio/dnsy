@@ -35,6 +35,11 @@ streams). `GET /api/v1/stats/*` serves the summary, timeseries and top lists, an
 `GET /api/v1/cache` the live cache counters. See [REST API](rest-api.md). The API applies client
 redaction again on output and replaces anything shaped like a token with `[redacted]`.
 
+## In the web UI
+
+The query log page (`/query-log`, see [Web UI](web-ui.md#query-log)) is a front end for the search
+and the live tail: filters, a cursor-paged table, a detail drawer and a tail toggle.
+
 ## Retention
 
 A background task deletes raw rows older than the retention period, and hourly top-N rollups that
