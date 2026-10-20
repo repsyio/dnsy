@@ -45,6 +45,11 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "querylog_stats",
         sql: include_str!("../migrations/0003_querylog_stats.sql"),
     },
+    Migration {
+        version: 4,
+        name: "acl",
+        sql: include_str!("../migrations/0004_acl.sql"),
+    },
 ];
 
 /// Applied state of one known migration.
