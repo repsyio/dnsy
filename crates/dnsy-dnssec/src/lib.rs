@@ -1,1 +1,25 @@
-//! dnsy-dnssec.
+//! dnsy-dnssec: in-house DNSSEC cryptography over `ring` primitives.
+//!
+//! The DNSSEC logic (RRSIG signed-data construction, key conversion, DS digests, NSEC3
+//! hashing, limits) is written here; `ring` supplies only signatures and digests.
+
+#![expect(
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    reason = "fallible functions return documented error enums; accessors are self-describing"
+)]
+
+mod algorithm;
+mod ds;
+mod error;
+mod nsec3;
+mod pubkey;
+mod signing;
+mod verify;
+
+pub use algorithm::{Algorithm, DigestType};
+pub use ds::ds_for;
+pub use error::{DnssecError, VerifyError};
+pub use nsec3::{MAX_NSEC3_ITERATIONS, checked_nsec3_hash, nsec3_hash};
+pub use signing::SigningKey;
+pub use verify::{MAX_CLOCK_SKEW, verify_rrsig, verify_rrsig_with_skew};

@@ -7,5 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
+ring = { workspace = true }
+zeroize = { workspace = true }
+
 [lints]
 workspace = true
