@@ -213,6 +213,15 @@ version = "0.1.0"
 [[package]]
 name = "dnsy-filter"
 version = "0.1.0"
+dependencies = [
+ "dnsy-core",
+ "dnsy-store",
+ "ipnet",
+ "rusqlite",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "dnsy-observe"
@@ -423,6 +432,12 @@ dependencies = [
  "similar",
  "tempfile",
 ]
+
+[[package]]
+name = "ipnet"
+version = "2.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "itoa"
