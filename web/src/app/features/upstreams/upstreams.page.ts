@@ -159,7 +159,7 @@ type Pending =
                                 {{ h.latency_ms }} ms
                               }
                               @if (h.consecutive_failures > 0) {
-                                , {{ h.consecutive_failures }} failures
+                                {{ h.consecutive_failures }} failures
                               }
                             </span>
                           } @else {
