@@ -40,6 +40,7 @@ impl Hasher {
     }
 }
 
+#[derive(Clone)]
 struct NsecRec {
     owner: Name,
     next: Name,
@@ -68,6 +69,7 @@ impl NsecRec {
     }
 }
 
+#[derive(Clone)]
 struct Nsec3Rec {
     hash: Vec<u8>,
     zone: Name,
@@ -162,6 +164,38 @@ impl Denial {
                 _ => {}
             }
         }
+    }
+
+    /// Only the records signed by `zone`: a proof never mixes records of different zones.
+    pub(super) fn for_zone(&self, zone: &Name) -> Denial {
+        Denial {
+            nsec: self
+                .nsec
+                .iter()
+                .filter(|r| &r.zone == zone)
+                .cloned()
+                .collect(),
+            nsec3: self
+                .nsec3
+                .iter()
+                .filter(|r| &r.zone == zone)
+                .cloned()
+                .collect(),
+            max_iterations: self.max_iterations,
+        }
+    }
+
+    /// The deepest zone with denial records enclosing `name`. A deeper zone hidden by the
+    /// sender cannot be skipped: the parent's records show the delegation, and the delegation
+    /// rules make such a proof fail.
+    pub(super) fn deepest_zone(&self, name: &Name) -> Option<Name> {
+        self.nsec
+            .iter()
+            .map(|r| &r.zone)
+            .chain(self.nsec3.iter().map(|r| &r.zone))
+            .filter(|z| name.is_subdomain_of(z))
+            .max_by_key(|z| z.label_count())
+            .cloned()
     }
 
     pub(super) fn is_empty(&self) -> bool {

@@ -269,11 +269,12 @@ anchor proves an insecure delegation above it, and `Bogus` (EDE 10) otherwise.
 The answer chain is followed from the question name: each CNAME and DNAME RRset is validated
 on its own, so a chain that leaves a signed zone for an unsigned one is `Insecure` and a
 broken link anywhere is `Bogus`. The CNAME synthesized from a DNAME is unsigned (RFC 6672)
-and must equal the substitution. Any other RRset in the answer section is validated too.
+and must equal the substitution. Any other RRset in the answer section is validated too, and
+an unsigned one next to a secure chain makes the answer `Bogus` rather than downgrading it.
 
 A positive answer whose RRSIG `labels` field is shorter than the owner name is a wildcard
 expansion; the authority section must prove that the name itself does not exist (RFC 4035
-5.3.4, RFC 5155 8.8).
+5.3.4, RFC 5155 8.8), using only denial records signed by the zone that signed the wildcard.
 
 ### Denial of existence
 
@@ -288,6 +289,12 @@ expansion; the authority section must prove that the name itself does not exist 
   wildcard NODATA, and opt-out: a DS NODATA or NXDOMAIN proven only through an opt-out span
   is `Insecure`. NSEC3 records with more than 100 iterations make the answer `Insecure`
   (RFC 9276 3.2) without being hashed.
+
+A proof never mixes records of different zones. A negative answer is proven with the records
+of the deepest zone that encloses the name; a hidden deeper zone cannot be skipped because the
+parent's records show its delegation. If that proof fails, the name's own chain is walked: an
+insecure delegation above it (for example after a CNAME from a signed zone into an unsigned
+one) makes the answer `Insecure`, anything else leaves it `Bogus`.
 
 ### Extended DNS errors
 
@@ -319,8 +326,10 @@ Each validation runs under `ValidationLimits` so that a hostile zone cannot exha
 | `max_nsec3_hashes`: distinct NSEC3 hashes per validation | 64 |
 | `clock_skew`: seconds the RRSIG validity window is widened (`dnssec.clock_skew_s`) | 300 |
 
-Only RRSIG/DNSKEY pairs whose key tag and algorithm match are tried, and the validity window
-is checked before any signature math.
+Only RRSIG/DNSKEY pairs whose key tag and algorithm match are tried, the validity window is
+checked before any signature math, and DS digest computations count against
+`max_verifications`. A failed DS or DNSKEY fetch is `Bogus`, not `Indeterminate`: an attacker
+who can block those fetches must not get unvalidated answers served in strict mode.
 
 ### Tests
 

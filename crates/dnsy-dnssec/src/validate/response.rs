@@ -31,14 +31,16 @@ impl<F: DnssecFetcher> Ctx<'_, F> {
             return Ok(verdict);
         }
         let denial = self.authority_denial(resp).await?;
-        for (owner, labels) in wildcards {
-            if denial.is_empty() {
+        for (owner, labels, zone) in wildcards {
+            // Only the zone that signed the expansion can prove it.
+            let proof = denial.for_zone(&zone);
+            if proof.is_empty() {
                 return Err(Failure::bogus(
                     ede::NSEC_MISSING,
-                    format!("no denial proves the wildcard expansion of {owner}"),
+                    format!("no denial from {zone} proves the wildcard expansion of {owner}"),
                 ));
             }
-            verdict = verdict.and(denial.wildcard_expansion(&owner, labels, &mut self.hasher)?);
+            verdict = verdict.and(proof.wildcard_expansion(&owner, labels, &mut self.hasher)?);
         }
         if answered {
             return Ok(verdict);
@@ -46,7 +48,7 @@ impl<F: DnssecFetcher> Ctx<'_, F> {
         if self.validator.anchors.is_negative(&sname) {
             return Ok(verdict.and(Verdict::Insecure(None)));
         }
-        if denial.is_empty() {
+        let Some(zone) = denial.deepest_zone(&sname) else {
             return match self.trust_for(&sname).await? {
                 Trust::Insecure(e) => Ok(verdict.and(Verdict::Insecure(e))),
                 Trust::Secure { .. } => Err(Failure::bogus(
@@ -54,11 +56,21 @@ impl<F: DnssecFetcher> Ctx<'_, F> {
                     format!("no NSEC or NSEC3 proves the negative answer for {sname}"),
                 )),
             };
-        }
+        };
+        let denial = denial.for_zone(&zone);
         let proof = if nxdomain {
-            denial.nxdomain(&sname, &mut self.hasher)?
+            denial.nxdomain(&sname, &mut self.hasher)
         } else {
-            denial.nodata(&sname, q.qtype, &mut self.hasher)?
+            denial.nodata(&sname, q.qtype, &mut self.hasher)
+        };
+        // A failed proof is still insecure when the name's own chain proves it (for example
+        // after a CNAME from a signed zone into an unsigned one).
+        let proof = match proof {
+            Ok(v) => v,
+            Err(f) => match self.trust_for(&sname).await {
+                Ok(Trust::Insecure(e)) => Verdict::Insecure(e),
+                _ => return Err(f),
+            },
         };
         Ok(verdict.and(proof))
     }
@@ -125,10 +137,19 @@ impl<F: DnssecFetcher> Ctx<'_, F> {
             }
             break;
         }
+        // Records off the chain must not downgrade a secure chain to insecure.
         for i in 0..sets.len() {
-            if !done[i] {
-                verdict = verdict.and(self.rrset(&sets[i], &resp.answers).await?.0);
+            if done[i] {
+                continue;
             }
+            let extra = self.rrset(&sets[i], &resp.answers).await?.0;
+            if verdict == Verdict::Secure && extra != Verdict::Secure {
+                return Err(Failure::bogus(
+                    ede::DNSSEC_BOGUS,
+                    format!("unsigned {} outside the answer chain", sets[i][0].name),
+                ));
+            }
+            verdict = verdict.and(extra);
         }
 
         Ok((verdict, sname, answered))

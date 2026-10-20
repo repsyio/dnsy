@@ -29,8 +29,8 @@ pub(super) struct Ctx<'a, F> {
     trust: HashMap<Name, Trust>,
     pub(super) hasher: Hasher,
     min_ttl: Option<u32>,
-    /// Wildcard expansions seen among validated `RRsets`: (owner, RRSIG labels).
-    pub(super) wildcards: Vec<(Name, u8)>,
+    /// Wildcard expansions seen among validated `RRsets`: (owner, RRSIG labels, signer).
+    pub(super) wildcards: Vec<(Name, u8, Name)>,
 }
 
 impl<'a, F: DnssecFetcher> Ctx<'a, F> {
@@ -135,7 +135,8 @@ impl<'a, F: DnssecFetcher> Ctx<'a, F> {
         let literal_wildcard =
             owner.labels().next() == Some(b"*".as_slice()) && sig.labels + 1 == owner.label_count();
         if sig.labels < owner.label_count() && !literal_wildcard {
-            self.wildcards.push((owner.clone(), sig.labels));
+            self.wildcards
+                .push((owner.clone(), sig.labels, signer.clone()));
         }
         Ok((Verdict::Secure, Some(signer)))
     }
@@ -289,19 +290,30 @@ impl<'a, F: DnssecFetcher> Ctx<'a, F> {
                 format!("no DNSKEY RRset at {name}"),
             ));
         }
-        let trusted: Vec<Dnskey> = all
-            .iter()
-            .filter(|k| {
-                keys.contains(k)
-                    || usable.iter().any(|d| {
-                        d.key_tag == k.key_tag()
-                            && d.algorithm == k.algorithm
-                            && ds_for(name, k, DigestType::from(d.digest_type))
-                                .is_ok_and(|c| c.digest == d.digest)
-                    })
-            })
-            .cloned()
-            .collect();
+        // DS digests are charged to the verification budget: colliding key tags must not
+        // buy unbounded hashing.
+        let mut trusted: Vec<Dnskey> = Vec::new();
+        for k in &all {
+            let tag = k.key_tag();
+            let mut matched = keys.contains(&k);
+            for d in usable
+                .iter()
+                .filter(|d| d.key_tag == tag && d.algorithm == k.algorithm)
+            {
+                if matched {
+                    break;
+                }
+                if self.verifications >= self.validator.limits.max_verifications {
+                    return Err(Failure::limit("DS digest computations"));
+                }
+                self.verifications += 1;
+                matched = ds_for(name, k, DigestType::from(d.digest_type))
+                    .is_ok_and(|c| c.digest == d.digest);
+            }
+            if matched {
+                trusted.push(k.clone());
+            }
+        }
         if trusted.is_empty() {
             return Err(Failure::bogus(
                 ede::DNSKEY_MISSING,

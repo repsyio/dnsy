@@ -1134,3 +1134,89 @@ fn rrsig_expiry_caps_min_ttl() {
     assert_eq!(out.status, DnssecStatus::Secure);
     assert_eq!(out.min_ttl, Some(60));
 }
+
+/// `example.` and its secure child `sub.example.`, both signed with NSEC3.
+fn nsec3_parent_and_child() -> (World, Zone, fixture::Nsec3Chain, fixture::Nsec3Chain) {
+    let mut w = world();
+    let sub = Zone::new("sub.example.");
+    w.net.delegate(&w.example, &sub);
+    let parent = w.example.nsec3_chain(
+        &[
+            ("example.", apex_types()),
+            ("sub.example.", &[Ns, DsType, Rrsig]),
+        ],
+        false,
+        0,
+    );
+    let child = sub.nsec3_chain(
+        &[
+            ("sub.example.", apex_types()),
+            ("*.sub.example.", &[A, Rrsig]),
+            ("www.sub.example.", &[A, Rrsig]),
+        ],
+        false,
+        0,
+    );
+    (w, sub, parent, child)
+}
+
+#[test]
+fn nsec3_proof_cannot_mix_zones() {
+    // Forged NXDOMAIN for an existing name: the child's apex NSEC3 plus parent records
+    // covering the name and the wildcard.
+    let (w, sub, parent, child) = nsec3_parent_and_child();
+    let mut auth = child.proof(&sub, &["sub.example."]);
+    auth.extend(parent.proof(&w.example, &["www.sub.example.", "*.sub.example."]));
+    auth.extend(sub.soa());
+    let resp = msg("www.sub.example.", A, Rcode::NxDomain, vec![], auth);
+    assert_eq!(w.check(&resp).0, DnssecStatus::Bogus);
+}
+
+#[test]
+fn wildcard_proof_must_come_from_the_signer_zone() {
+    // *.sub.example. replayed as www.sub.example. with a parent NSEC3 covering the name.
+    let (w, sub, parent, _) = nsec3_parent_and_child();
+    let mut answers = sub.sign(vec![a("*.sub.example.")]);
+    for r in &mut answers {
+        r.name = n("www.sub.example.");
+    }
+    let proof = parent.proof(&w.example, &["www.sub.example."]);
+    let resp = msg("www.sub.example.", A, Rcode::NoError, answers, proof);
+    assert_eq!(
+        w.check(&resp),
+        (DnssecStatus::Bogus, Some(ede::NSEC_MISSING))
+    );
+}
+
+#[test]
+fn nodata_after_wildcard_cname_into_insecure_zone() {
+    let mut w = world();
+    w.insecure_child();
+    let mut answers = w.example.sign(vec![rec(
+        "*.example.",
+        RData::Cname(n("www.insecure.example.")),
+    )]);
+    for r in &mut answers {
+        r.name = n("foo.example.");
+    }
+    let mut auth = w
+        .example
+        .nsec("*.example.", "www.example.", &[Cname, Rrsig, Nsec]);
+    auth.push(unsigned_soa("insecure.example."));
+    let resp = msg("foo.example.", Aaaa, Rcode::NoError, answers, auth);
+    assert_eq!(w.check(&resp), (DnssecStatus::Insecure, None));
+}
+
+#[test]
+fn unsigned_extra_record_cannot_downgrade_secure_answer() {
+    let mut w = world();
+    w.insecure_child();
+    let answers = concat(vec![
+        w.signed_a("www.example."),
+        vec![a("www.insecure.example.")],
+    ]);
+    assert_eq!(
+        w.check(&positive("www.example.", answers)),
+        (DnssecStatus::Bogus, Some(ede::DNSSEC_BOGUS))
+    );
+}

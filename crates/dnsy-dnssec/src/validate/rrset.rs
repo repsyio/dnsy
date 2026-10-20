@@ -65,14 +65,16 @@ impl<F: DnssecFetcher> Ctx<'_, F> {
         let limits = self.validator.limits;
         let mut tries = 0usize;
         let mut last: Option<VerifyError> = None;
+        let tags: Vec<u16> = keys.iter().map(Dnskey::key_tag).collect();
         for sig in sigs {
             if !Algorithm::from(sig.algorithm).is_supported() {
                 last.get_or_insert(VerifyError::UnsupportedAlgorithm(sig.algorithm));
                 continue;
             }
-            for key in keys
+            for (key, _) in keys
                 .iter()
-                .filter(|k| k.algorithm == sig.algorithm && k.key_tag() == sig.key_tag)
+                .zip(&tags)
+                .filter(|(k, t)| k.algorithm == sig.algorithm && **t == sig.key_tag)
             {
                 if tries >= limits.max_rrsig_verifications {
                     return Err(Failure::limit("RRSIG verifications per RRset"));
