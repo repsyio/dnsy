@@ -5,7 +5,17 @@ import { extname, join } from 'node:path';
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 
 const root = new URL('../dist/dnsy/browser', import.meta.url).pathname;
-const compressible = new Set(['.html', '.js', '.mjs', '.css', '.svg', '.json', '.txt', '.webmanifest', '.ico']);
+const compressible = new Set([
+  '.html',
+  '.js',
+  '.mjs',
+  '.css',
+  '.svg',
+  '.json',
+  '.txt',
+  '.webmanifest',
+  '.ico',
+]);
 const minBytes = 256;
 
 function* walk(dir) {
