@@ -1,0 +1,154 @@
+# CI mirrors `just ci` (see AGENTS.md); the recipes are called wherever possible so the pipeline and
+# the local merge gate cannot drift apart. `e2e` and `e2e-ui` live in e2e.yml.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+
+jobs:
+  # `just check` (fmt --check, clippy -D warnings, cargo-deny, cargo-audit advisory, OpenAPI drift)
+  # and `just cov-rust` (cargo llvm-cov nextest: runs the whole suite, then the coverage gates).
+  rust:
+    name: rust (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: just,cargo-nextest,cargo-llvm-cov,cargo-deny,cargo-audit
+      - run: just check
+      - run: just cov-rust
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: llvm-cov-html
+          path: target/llvm-cov/html
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The embedded-UI code paths are compiled out of the default build, so `just test` and
+  # `just cov-rust` skip them (e.g. `ui_serves_brotli_when_accepted` returns early). Build the
+  # web UI first (rust-embed reads web/dist/dnsy/browser), then run the API suite with the feature.
+  embed-ui:
+    name: rust (embed-ui)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm build
+        working-directory: web
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: embed-ui
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-nextest
+      - run: cargo clippy -p dnsy-api -p dnsy --all-targets --features dnsy/embed-ui,dnsy-api/embed-ui -- -D warnings
+      - run: cargo nextest run -p dnsy-api --features embed-ui
+      - name: The brotli test must actually run with the feature on
+        run: cargo nextest run -p dnsy-api --features embed-ui ui_serves_brotli_when_accepted --no-tests=fail
+
+  # `just web`: pnpm install, dedupe check, ng lint + prettier, ng test --coverage (gate in
+  # web/angular.json), ng build, OpenAPI types drift.
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: just
+      - run: just web
+      - name: Audit npm dependencies (advisory)
+        continue-on-error: true
+        run: pnpm audit --audit-level=high
+        working-directory: web
+
+  # Build and unit-test on the other platforms. Coverage, deny, e2e and browser suites are
+  # Linux-only; this only proves the workspace compiles and the unit/integration tests pass.
+  cross-platform:
+    name: build-and-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-nextest
+      - run: cargo build --workspace --exclude dnsy-bench --all-targets
+      - run: cargo nextest run --workspace --exclude dnsy-e2e --exclude dnsy-bench --no-tests=pass
+
+  # Single required check for branch protection: `ci` passes only when every job above passed.
+  ci:
+    name: ci
+    if: always()
+    needs: [rust, embed-ui, web, cross-platform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to have succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            [ "$r" = success ] || { echo "a required job did not succeed"; exit 1; }
+          done
