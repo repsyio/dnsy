@@ -75,6 +75,16 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "user_disabled",
         sql: include_str!("../migrations/0009_user_disabled.sql"),
     },
+    Migration {
+        version: 10,
+        name: "querylog_client_index",
+        sql: include_str!("../migrations/0010_querylog_client_index.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "querylog_rare_index",
+        sql: include_str!("../migrations/0011_querylog_rare_index.sql"),
+    },
 ];
 
 /// Applied state of one known migration.
@@ -135,6 +145,13 @@ pub(crate) fn run(conn: &mut Connection, known: &[Migration]) -> Result<(), Stor
         .collect();
     pending.sort_by_key(|m| m.version);
     for m in pending {
+        if m.sql.contains("CREATE INDEX") {
+            tracing::info!(
+                "applying migration {:04}_{}, this can take a while on a large query log",
+                m.version,
+                m.name
+            );
+        }
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(m.sql)
             .map_err(|source| StoreError::Migration {
