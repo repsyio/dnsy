@@ -518,9 +518,11 @@ mod tests {
         for f in fast.collect::<Vec<_>>() {
             f.await.unwrap().unwrap();
         }
+        // Quick when idle (a few ms); the margin only absorbs a loaded machine, a read stuck
+        // behind the slow one would take at least 450 ms.
         assert!(
-            start.elapsed() < std::time::Duration::from_millis(50),
-            "fast reads waited behind the slow one: {:?}",
+            start.elapsed() < std::time::Duration::from_millis(250),
+            "fast reads waited behind the slow one (500 ms): {:?}",
             start.elapsed()
         );
         slow.await.unwrap().unwrap();
