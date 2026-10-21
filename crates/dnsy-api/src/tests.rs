@@ -274,6 +274,51 @@ async fn unknown_api_path_is_404_problem_json() {
 }
 
 #[tokio::test]
+async fn framework_rejections_are_problem_json() {
+    let f = fixture();
+    let post = |ct: &str, body: &str| {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/auth/login")
+            .header(header::CONTENT_TYPE, ct)
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    };
+    for (ct, body, status) in [
+        ("application/json", "{", StatusCode::BAD_REQUEST),
+        (
+            "application/json",
+            r#"{"username": 5}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        ("text/plain", "x", StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    ] {
+        let res = send(&f.app, post(ct, body)).await;
+        assert_eq!(res.status(), status, "{ct} {body}");
+        assert_eq!(res.headers()[header::CONTENT_TYPE], PROBLEM_JSON);
+        let p = body_json(res).await;
+        assert_eq!(p["status"], status.as_u16());
+        assert_ne!(p["detail"].as_str().unwrap(), "");
+    }
+    let res = send(&f.app, req(Method::GET, "/api/v1/auth/login", &[])).await;
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], PROBLEM_JSON);
+    assert!(res.headers().contains_key(header::ALLOW));
+    let big = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/zones")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(vec![b' '; 2 << 20]))
+        .unwrap();
+    let res = send(&f.app, big).await;
+    assert!(matches!(
+        res.status(),
+        StatusCode::PAYLOAD_TOO_LARGE | StatusCode::UNAUTHORIZED
+    ));
+    assert_eq!(res.headers()[header::CONTENT_TYPE], PROBLEM_JSON);
+}
+
+#[tokio::test]
 async fn security_headers_present() {
     let f = fixture();
     let res = send(&f.app, req(Method::GET, "/healthz", &[])).await;

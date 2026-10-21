@@ -63,6 +63,11 @@ pub struct Opts {
     /// Serve UDP and TCP on one shared port (picked free beforehand), for tools that retry a
     /// truncated UDP answer on the same port.
     pub same_udp_tcp_port: bool,
+    /// Skip creating the admin user and tokens, so the server prints a bootstrap code
+    /// ([`Harness::bootstrap_code`]). `api_token` and `doh_token` are empty then.
+    pub no_users: bool,
+    /// `(min_hits, remaining_ttl_pct)` enables cache prefetch; `None` keeps it off.
+    pub prefetch: Option<(u32, u8)>,
 }
 
 impl Default for Opts {
@@ -87,6 +92,8 @@ impl Default for Opts {
             validation: "off",
             trust_anchors: Vec::new(),
             same_udp_tcp_port: false,
+            no_users: false,
+            prefetch: None,
         }
     }
 }
@@ -180,7 +187,7 @@ fn config(dir: &Path, o: &Opts, upstream: Option<SocketAddr>) -> String {
          [dnssec]\nvalidation = \"{validation}\"\n{anchors}\
          [resolver]\ntimeout_ms = {to}\nattempts = {att}\nupstreams = [{ups}]\n\
          [cache]\nmin_ttl = {minttl}\nmax_ttl = {maxttl}\n\
-         [cache.prefetch]\nenabled = false\n\
+         [cache.prefetch]\n{prefetch}\
          [filter]\nblock_mode = \"{bm}\"\nblocklists = [{lists}]\n\
          [limits]\nper_client_qps = {qps}\ntcp_idle_ms = {idle}\n\
          [logging]\nlevel = \"{lvl}\"\n",
@@ -201,6 +208,12 @@ fn config(dir: &Path, o: &Opts, upstream: Option<SocketAddr>) -> String {
         idle = o.tcp_idle_ms,
         lvl = o.log_level,
         validation = o.validation,
+        prefetch = match o.prefetch {
+            Some((hits, pct)) => {
+                format!("enabled = true\nmin_hits = {hits}\nremaining_ttl_pct = {pct}\n")
+            }
+            None => "enabled = false\n".to_owned(),
+        },
         anchors = if o.trust_anchors.is_empty() {
             String::new()
         } else {
@@ -285,6 +298,16 @@ async fn create_token(bin: &Path, config: &Path, name: &str, scopes: &[&str]) ->
         .to_owned()
 }
 
+/// Creates the `e2e` admin with the CLI plus a `dns:query` token and an admin API token.
+async fn create_user_and_tokens(bin: &Path, config_path: &Path) -> (String, String) {
+    let mut create = cli(bin, config_path);
+    create.env("DNSY_PASSWORD", "e2e-password-1234");
+    run_cli(create, &["user", "create", "e2e", "--role", "admin"]).await;
+    let doh = create_token(bin, config_path, "doh", &["dns:query"]).await;
+    let api = create_token(bin, config_path, "api", &["admin", "api:read", "api:write"]).await;
+    (doh, api)
+}
+
 impl Harness {
     /// Builds the temp directory, creates a user and tokens, starts `dnsy serve` and waits for
     /// its ready file.
@@ -326,17 +349,11 @@ impl Harness {
         )
         .expect("write config");
 
-        let mut create = cli(bin, &config_path);
-        create.env("DNSY_PASSWORD", "e2e-password-1234");
-        run_cli(create, &["user", "create", "e2e", "--role", "admin"]).await;
-        let doh_token = create_token(bin, &config_path, "doh", &["dns:query"]).await;
-        let api_token = create_token(
-            bin,
-            &config_path,
-            "api",
-            &["admin", "api:read", "api:write"],
-        )
-        .await;
+        let (doh_token, api_token) = if opts.no_users {
+            (String::new(), String::new())
+        } else {
+            create_user_and_tokens(bin, &config_path).await
+        };
 
         let ready = root.join("ready.json");
         let log = std::fs::File::create(root.join("dnsy.log")).expect("log file");
@@ -486,6 +503,19 @@ impl Harness {
             .await
             .expect("server exits after SIGTERM within the deadline")
             .expect("wait")
+    }
+
+    /// The one-time bootstrap code the server printed (needs [`Opts::no_users`]).
+    pub async fn bootstrap_code(&self) -> String {
+        const MARK: &str = "shown once): ";
+        eventually(DEADLINE, "the bootstrap code in the log", || {
+            let code = self
+                .logs()
+                .split_once(MARK)
+                .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned));
+            async move { code }
+        })
+        .await
     }
 
     /// Waits until the log contains `needle`.

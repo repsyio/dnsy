@@ -110,6 +110,26 @@ impl ApiError {
     }
 }
 
+/// A problem+json response for a status that has no [`ApiError`] variant.
+pub(crate) fn problem_response(
+    status: StatusCode,
+    slug: &str,
+    title: &str,
+    detail: String,
+) -> Response {
+    let problem = Problem {
+        type_: format!("{TYPE_BASE}{slug}"),
+        title: title.to_owned(),
+        status: status.as_u16(),
+        detail,
+        retry_after_secs: None,
+    };
+    let mut res = (status, Json(problem)).into_response();
+    res.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(PROBLEM_JSON));
+    res
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         if let ApiError::Internal(msg) = &self {
