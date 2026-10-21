@@ -6,7 +6,7 @@ updates:
     directory: /
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 5
-    commit-message: { prefix: "⬆️" }
+    commit-message: { prefix: "DNSY-115: ⬆️" }
     groups:
       tokio-stack:
         patterns: [tokio, hyper, hyper-util, http-body-util, axum, tower, futures-util, h2]
@@ -34,7 +34,7 @@ updates:
     directory: /web
     schedule: { interval: weekly, day: monday }
     open-pull-requests-limit: 5
-    commit-message: { prefix: "⬆️" }
+    commit-message: { prefix: "DNSY-115: ⬆️" }
     groups:
       angular:
         patterns: ["@angular/*", "@angular-eslint/*", angular-eslint]
@@ -62,7 +62,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }
-    commit-message: { prefix: "👷" }
+    commit-message: { prefix: "DNSY-115: 👷" }
     groups:
       actions:
         patterns: ["*"]

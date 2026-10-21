@@ -318,3 +318,8 @@ The jobs named `ci` and `e2e` only aggregate the others, so branch protection ne
 version in a comment; Dependabot (`.github/dependabot.yml`) bumps them weekly together with the
 cargo and `web/` npm dependencies (minor and patch grouped, majors individual). Workflows use
 `permissions: contents: read`, never `pull_request_target`, and pass no untrusted input to `run:`.
+
+Dependabot commit and PR titles use the prefix `DNSY-115: ⬆️` (cargo, npm) or `DNSY-115: 👷`
+(github-actions), where DNSY-115 is the tracking story for dependency updates, so they satisfy the
+`pr-title` check, e.g. `DNSY-115: ⬆️ Bump tokio from 1.40.0 to 1.41.0 in the tokio-stack group`.
+No `include: scope` is set, which would insert `(deps)` after the prefix.
