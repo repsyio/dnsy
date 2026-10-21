@@ -12,7 +12,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
 
 use crate::event::{
-    QueryEvent, QueryEventSink, SourceKind, dnssec_str, redact_client_ip, transport_str,
+    QueryEvent, QueryEventSink, SourceKind, client_bytes, dnssec_code, dnssec_str,
+    redact_client_ip, transport_code,
 };
 
 /// Query-log writer tuning.
@@ -254,6 +255,7 @@ fn flush(tx: &mut Transaction, batch: &[Queued], redact: bool) -> Result<(), Sto
     // Strings are built into these buffers, reused for the whole batch.
     let mut qname = String::new();
     let mut client_s = String::new();
+    let mut client_buf = [0_u8; 16];
     let mut rcode_s = String::new();
     {
         let mut insert = tx.prepare_cached(
@@ -272,6 +274,7 @@ fn flush(tx: &mut Transaction, batch: &[Queued], redact: bool) -> Result<(), Sto
             qname.make_ascii_lowercase();
             client_s.clear();
             let _ = write!(client_s, "{client}");
+            let client_len = client_bytes(&client, &mut client_buf);
             let kind = ev.source.kind();
             let rcode = u16::from(ev.rcode);
             rcode_s.clear();
@@ -279,15 +282,15 @@ fn flush(tx: &mut Transaction, batch: &[Queued], redact: bool) -> Result<(), Sto
             if *raw {
                 insert.execute(params![
                     ev.ts_unix_ms,
-                    client_s,
-                    transport_str(ev.transport),
+                    &client_buf[..client_len],
+                    transport_code(ev.transport),
                     ev.principal,
                     qname,
                     u16::from(ev.qtype),
                     rcode,
-                    kind.as_str(),
+                    kind.code(),
                     ev.source.detail(),
-                    dnssec_str(ev.dnssec),
+                    dnssec_code(ev.dnssec),
                     ev.latency_us,
                 ])?;
             }
@@ -399,12 +402,12 @@ mod tests {
         let client = store
             .read(|c| {
                 Ok(c.query_row("SELECT client FROM query_log", [], |r| {
-                    r.get::<_, String>(0)
+                    r.get::<_, Vec<u8>>(0)
                 })?)
             })
             .await
             .unwrap();
-        assert_eq!(client, "192.0.2.0");
+        assert_eq!(client, [192, 0, 2, 0]);
     }
 
     #[tokio::test]

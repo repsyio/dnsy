@@ -81,8 +81,9 @@ impl Zone { pub fn add_record(&mut self, r: Record) -> RecordId; pub fn replace_
 | `0012_stats_top_day.sql` | DNSY-87 | `stats_top_day(day, kind, key, count)` WITHOUT ROWID |
 | `0013_stats_day.sql` | DNSY-87 | `stats_day(day, dimension, key, count, latency_sum_us, latency_max_us)` WITHOUT ROWID |
 | `0014_client_certs_autoincrement.sql` | DNSY-80 | rebuild `client_certs` with `INTEGER PRIMARY KEY AUTOINCREMENT` |
+| `0015_querylog_compact.sql` | DNSY-95 | rebuild `query_log`: integer enumeration codes and binary `client` |
 
-`migrate.rs` registration is append-only; the set-based runner makes merge order irrelevant (0014 may land before 0010). Each owning story also appends its rows to the table in `2026-10-20-dnsy-implementation.md`. Next free number for post-1.0 stories: 0015.
+`migrate.rs` registration is append-only; the set-based runner makes merge order irrelevant (0014 may land before 0010). Each owning story also appends its rows to the table in `2026-10-20-dnsy-implementation.md`. Next free number for post-1.0 stories: 0016.
 
 ## Jira story table
 

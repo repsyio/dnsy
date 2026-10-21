@@ -7,7 +7,9 @@ use rusqlite::params_from_iter;
 use rusqlite::types::Value;
 
 use crate::ObserveError;
-use crate::event::{SourceKind, dnssec_str};
+use crate::event::{
+    DNSSEC, SOURCES, SourceKind, TRANSPORTS, client_bytes, client_from_bytes, dnssec_code, name_of,
+};
 
 const MAX_LIMIT: usize = 1000;
 
@@ -72,9 +74,10 @@ fn like_escape(s: &str) -> String {
     out
 }
 
-/// The predicate of `query_log_rare` (migration 0011), verbatim: SQLite uses a partial index only
+/// The predicate of `query_log_rare` (migrations 0011, 0015; source codes 4 to 6 are blocked,
+/// refused, error), verbatim: SQLite uses a partial index only
 /// when the query's WHERE clause contains the index's predicate.
-const RARE_PREDICATE: &str = "(source IN ('blocked', 'refused', 'error') OR rcode NOT IN (0, 3))";
+const RARE_PREDICATE: &str = "(source IN (4, 5, 6) OR rcode NOT IN (0, 3))";
 
 fn is_rare(q: &QueryLogQuery) -> bool {
     q.source.is_some_and(|s| {
@@ -112,7 +115,9 @@ fn build(q: &QueryLogQuery, limit: usize) -> (String, Vec<Value>) {
         add("ts_ms < ?", &[v.into()]);
     }
     if let Some(v) = q.client {
-        add("client = ?", &[v.to_string().into()]);
+        let mut buf = [0; 16];
+        let n = client_bytes(&v, &mut buf);
+        add("client = ?", &[buf[..n].to_vec().into()]);
     }
     if let Some(v) = &q.qname_contains {
         let pat = format!("%{}%", like_escape(&v.to_ascii_lowercase()));
@@ -125,10 +130,10 @@ fn build(q: &QueryLogQuery, limit: usize) -> (String, Vec<Value>) {
         add("rcode = ?", &[i64::from(u16::from(v)).into()]);
     }
     if let Some(v) = q.source {
-        add("source = ?", &[v.as_str().to_owned().into()]);
+        add("source = ?", &[i64::from(v.code()).into()]);
     }
     if let Some(v) = q.dnssec {
-        add("dnssec = ?", &[dnssec_str(v).to_owned().into()]);
+        add("dnssec = ?", &[i64::from(dnssec_code(v)).into()]);
     }
     if let Some(c) = q.after {
         // The tie-break; the time bound above is what lets the index start at the cursor.
@@ -151,6 +156,26 @@ fn build(q: &QueryLogQuery, limit: usize) -> (String, Vec<Value>) {
     (sql, args)
 }
 
+fn bad_column(idx: usize, what: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        idx,
+        rusqlite::types::Type::Blob,
+        format!("stored {what} is not valid").into(),
+    )
+}
+
+/// The text name of the stored code in column `idx`.
+fn code_name(
+    r: &rusqlite::Row<'_>,
+    idx: usize,
+    table: &'static [&'static str],
+    what: &str,
+) -> rusqlite::Result<String> {
+    name_of(table, r.get(idx)?)
+        .map(str::to_owned)
+        .ok_or_else(|| bad_column(idx, what))
+}
+
 /// Keyset-paginated query-log search, ordered by `(ts_ms, id)` descending.
 pub async fn search(store: &Store, q: QueryLogQuery) -> Result<LogPage, ObserveError> {
     let limit = q.limit.clamp(1, MAX_LIMIT);
@@ -159,18 +184,21 @@ pub async fn search(store: &Store, q: QueryLogQuery) -> Result<LogPage, ObserveE
         .read(move |c| {
             let mut stmt = c.prepare(&sql)?;
             let rows = stmt.query_map(params_from_iter(args), |r| {
+                let client: Vec<u8> = r.get(2)?;
                 Ok(LogEntry {
                     id: r.get(0)?,
                     ts_ms: r.get(1)?,
-                    client: r.get(2)?,
-                    transport: r.get(3)?,
+                    client: client_from_bytes(&client)
+                        .ok_or_else(|| bad_column(2, "client address"))?
+                        .to_string(),
+                    transport: code_name(r, 3, &TRANSPORTS, "transport")?,
                     principal: r.get(4)?,
                     qname: r.get(5)?,
                     qtype: r.get(6)?,
                     rcode: r.get(7)?,
-                    source: r.get(8)?,
+                    source: code_name(r, 8, &SOURCES, "source")?,
                     source_detail: r.get(9)?,
-                    dnssec: r.get(10)?,
+                    dnssec: code_name(r, 10, &DNSSEC, "dnssec status")?,
                     latency_us: r.get(11)?,
                 })
             })?;
@@ -308,6 +336,72 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn compact_columns_read_back_as_the_same_text() {
+        let (store, _d) = open_store();
+        let mut e = event("v6.example.", 10);
+        e.client = "2001:db8::8a2e:370:7334".parse().unwrap();
+        e.transport = dnsy_core::Transport::Doh;
+        e.dnssec = DnssecStatus::Indeterminate;
+        e.source = AnswerSource::CacheStale;
+        ingest(&store, vec![e, event("v4.example.", 11)]).await;
+        let page = search(
+            &store,
+            QueryLogQuery {
+                limit: 10,
+                client: Some("2001:db8::8a2e:370:7334".parse().unwrap()),
+                dnssec: Some(DnssecStatus::Indeterminate),
+                source: Some(SourceKind::CacheStale),
+                ..QueryLogQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.entries.len(), 1);
+        let got = &page.entries[0];
+        assert_eq!(got.client, "2001:db8::8a2e:370:7334");
+        assert_eq!(got.transport, "doh");
+        assert_eq!(got.dnssec, "indeterminate");
+        assert_eq!(got.source, "cache_stale");
+        let all = search(
+            &store,
+            QueryLogQuery {
+                limit: 10,
+                ..QueryLogQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.entries[0].client, "192.0.2.77");
+        assert_eq!(all.entries[0].transport, "udp");
+        assert_eq!(all.entries[0].source, "upstream");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_stored_code_is_an_error_not_a_guess() {
+        let (store, _d) = open_store();
+        ingest(&store, vec![event("a.example.", 1)]).await;
+        store
+            .write(|t| {
+                // The CHECK constraints refuse a bad code; this simulates a newer writer.
+                t.execute_batch(
+                    "PRAGMA ignore_check_constraints = ON; UPDATE query_log SET source = 99;",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let r = search(
+            &store,
+            QueryLogQuery {
+                limit: 10,
+                ..QueryLogQuery::default()
+            },
+        )
+        .await;
+        assert!(r.is_err());
+    }
+
     /// 10 000 rows over 10 clients, a rare row every 97th; ts = i / 3 so timestamps repeat.
     async fn generated(store: &Store) {
         store
@@ -316,10 +410,10 @@ mod tests {
                     "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 9999)
                      INSERT INTO query_log (ts_ms, client, transport, principal, qname, qtype, rcode,
                                             source, source_detail, dnssec, latency_us)
-                     SELECT i / 3, '192.0.2.' || (i % 10), 'udp', NULL, 'h' || i || '.example.', 1,
+                     SELECT i / 3, unhex('C00002' || printf('%02x', i % 10)), 0, NULL, 'h' || i || '.example.', 1,
                             CASE WHEN i % 97 = 0 THEN 2 ELSE 0 END,
-                            CASE WHEN i % 97 = 1 THEN 'refused' ELSE 'upstream' END,
-                            NULL, 'unchecked', 10 FROM n;
+                            CASE WHEN i % 97 = 1 THEN 5 ELSE 3 END,
+                            NULL, 0, 10 FROM n;
                      ANALYZE;",
                 )?;
                 Ok(())
@@ -504,11 +598,11 @@ mod tests {
         .unwrap();
         let expected: i64 = store
             .read(|c| {
-                Ok(c.query_row(
-                    "SELECT count(*) FROM query_log WHERE source = 'refused'",
-                    [],
-                    |r| r.get(0),
-                )?)
+                Ok(
+                    c.query_row("SELECT count(*) FROM query_log WHERE source = 5", [], |r| {
+                        r.get(0)
+                    })?,
+                )
             })
             .await
             .unwrap();

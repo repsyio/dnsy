@@ -213,6 +213,7 @@ impl FilterSet { pub fn check(&self, qname: &Name) -> Verdict; }
 | `0012_stats_top_day.sql` | DNSY-87 | `stats_top_day (day, kind, key, count)` WITHOUT ROWID: top 5000 per day and kind |
 | `0013_stats_day.sql` | DNSY-87 | `stats_day (day, dimension, key, count, latency_sum_us, latency_max_us)` WITHOUT ROWID |
 | `0014_client_certs_autoincrement.sql` | DNSY-80 | rebuild `client_certs` with `INTEGER PRIMARY KEY AUTOINCREMENT` (ids never reused) |
+| `0015_querylog_compact.sql` | DNSY-95 | rebuild `query_log` with integer `transport`/`source`/`dnssec` codes and a 4/16-byte binary `client`; indexes recreated |
 
 The runner's own table `schema_migrations(version, name, checksum, applied_at)` is created by DNSY-6. The runner applies every known migration missing from that table in version order (set-based, not "max version"), so two migrations merged in the same wave in either order still converge.
 

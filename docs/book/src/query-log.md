@@ -78,11 +78,32 @@ to 0.01 ms and a deep `source = refused` page from 274 ms to 24 ms (measurements
 analysis). Other filters (query name substring, type, DNSSEC status, common sources) still scan the
 time index, which is fast for common values and slow for values that almost never match.
 
+Migration 0015 recreates all three indexes over the compact columns (the partial index tests the source codes 4 to 6).
+
 The first start after an upgrade builds the two indexes while holding the database: about 7 s per
 10 million rows for the client index. The server logs `applying migration 0010, this can take a
 while on a large query log` before it starts and does not accept connections until it finishes.
 The indexes add write work per logged query (two indexes instead of one) and file size
 (about 30 percent for the client index).
+
+## Row encoding
+
+Rows are stored compactly (migration 0015): `transport`, `source` and `dnssec` are small integers
+and `client` is the 4 (IPv4) or 16 (IPv6) address bytes. The API, the stream and the web UI show
+the same text values as before; the mapping lives in `dnsy-observe` and the codes are fixed.
+
+| Column | Codes |
+| --- | --- |
+| `transport` | udp 0, tcp 1, dot 2, doh 3 |
+| `source` | authoritative 0, cache 1, cache_stale 2, upstream 3, blocked 4, refused 5, error 6 |
+| `dnssec` | unchecked 0, secure 1, insecure 2, bogus 3, indeterminate 4 |
+
+The migration rebuilds the table in one transaction, so the first start after the upgrade holds
+the database while it copies the log (the server logs `applying migration 0015` first) and an
+interrupted or failing run leaves the old table untouched. Expect minutes at tens of millions of
+rows. Rows keep their ids. The table is about 24 percent smaller (200 000 rows, three indexes:
+26.3 MB to 20.2 MB after `VACUUM`). The freed pages stay inside the file for reuse until the
+database is vacuumed. Back up first, as for any upgrade.
 
 ## Reading it over the API
 
