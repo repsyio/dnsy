@@ -208,4 +208,25 @@ describe('DashboardPage', () => {
     ctrl.match(() => true);
     expect(el.querySelector('[data-testid="loading"]')).not.toBeNull();
   });
+
+  it('does_not_stack_a_tick_on_a_running_load', async () => {
+    await mount();
+    // first load still pending: ticks must not issue a second batch
+    vi.advanceTimersByTime(REFRESH_MS * 3);
+    expect(ctrl.match((r) => r.url === '/api/v1/stats/summary')).toHaveLength(1);
+    ctrl.match(() => true);
+  });
+
+  it('skips_polling_while_the_tab_is_hidden_and_refreshes_on_return', async () => {
+    const { fixture } = await mount();
+    answer();
+    await fixture.whenStable();
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    vi.advanceTimersByTime(REFRESH_MS * 2);
+    ctrl.expectNone((r) => r.url === '/api/v1/stats/summary');
+    hidden.mockReturnValue(false);
+    document.dispatchEvent(new Event('visibilitychange'));
+    answer();
+    hidden.mockRestore();
+  });
 });
