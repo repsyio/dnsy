@@ -383,8 +383,12 @@ async fn doh_method_and_path_mapping() {
 async fn doh_auth_failures_throttled_without_leaking_token_existence() {
     let f = fixture(true, 3).await;
     let mut c = Client::connect(&f, false).await;
+    // Well-formed, but no such token id. Change a char in the low end of the id: the leading
+    // chars are not random (ids are 53 bits), so overwriting them can be a no-op.
     let mut unknown = f.good.clone();
-    unknown.replace_range(5..8, "AAA"); // well-formed, but no such token id
+    let flipped = if &unknown[14..15] == "A" { "B" } else { "A" };
+    unknown.replace_range(14..15, flipped);
+    assert_ne!(unknown, f.good);
     let mut bodies = Vec::new();
     for t in [&unknown, "garbage", &format!("{}x", f.good)] {
         let r = c.send(get_dns("/dns-query", Some(t))).await;
