@@ -373,6 +373,8 @@ pub struct KeyStore {
     passphrase: Option<Arc<Passphrase>>,
     clock: Arc<dyn Clock>,
     cost: KdfCost,
+    /// Serialises `bootstrap`: its check for existing keys and the insert must not interleave.
+    bootstrap_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl fmt::Debug for KeyStore {
@@ -397,6 +399,7 @@ impl KeyStore {
             passphrase: passphrase.map(Arc::new),
             clock,
             cost: KdfCost::default(),
+            bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -530,6 +533,7 @@ impl KeyStore {
         zone: &Name,
         policy: &DnssecPolicy,
     ) -> Result<Vec<KeyRecord>, KeyStoreError> {
+        let _guard = self.bootstrap_lock.lock().await;
         let existing = self.keys(zone).await?;
         if existing.iter().any(|k| k.state != KeyState::Removed) {
             return Ok(existing);
@@ -1219,6 +1223,23 @@ mod tests {
             ..f.ks.clone()
         };
         assert!(locked.active_keys(&zone()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_bootstrap_creates_one_key_set() {
+        let f = fixture(None);
+        let p = policy("{}");
+        let z = zone();
+        let (a, b, c) = tokio::join!(
+            f.ks.bootstrap(&z, &p),
+            f.ks.bootstrap(&z, &p),
+            f.ks.bootstrap(&z, &p)
+        );
+        for r in [a, b, c] {
+            r.unwrap();
+        }
+        let live = f.ks.keys(&z).await.unwrap();
+        assert_eq!(live.len(), 1, "racing bootstraps must not each add a CSK");
     }
 
     #[tokio::test]
