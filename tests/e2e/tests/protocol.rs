@@ -334,3 +334,71 @@ async fn silence_helper_sees_no_reply_to_nothing() {
     let q = query("www.example.test.", RecordType::A);
     assert!(udp_silent(sock.local_addr().unwrap(), &q).await);
 }
+
+/// TYPE HINFO, used by the RFC 8482 minimal ANY answer.
+const HINFO: u16 = 13;
+
+#[tokio::test]
+async fn any_on_local_zone_is_answered_minimally_over_udp_and_tcp() {
+    let h = start().await;
+    let q = query_edns("many.example.test.", RecordType::Any, 1232);
+    let bytes = udp_raw(h.udp, &wire(&q), dnsy_e2e::DEADLINE)
+        .await
+        .expect("a UDP reply");
+    assert!(
+        bytes.len() <= 100,
+        "no amplification: {} octets for a {} octet query",
+        bytes.len(),
+        wire(&q).len()
+    );
+    let mut c = h.tcp_client().await;
+    let tcp = c.ask(&q).await.unwrap();
+    for r in [Message::decode(&bytes).unwrap(), tcp] {
+        assert_eq!(r.header.rcode, Rcode::NoError);
+        assert!(r.header.aa && !r.header.tc);
+        assert_eq!(r.answers.len(), 1, "{:?}", r.answers);
+        assert_eq!(r.answers[0].ttl, 3789);
+        assert!(matches!(
+            &r.answers[0].data,
+            RData::Opaque { rtype: HINFO, data } if data.as_slice() == b"\x07RFC8482\x00"
+        ));
+    }
+}
+
+async fn start_forwarding() -> Harness {
+    Harness::start(
+        Opts {
+            upstream: true,
+            ..Opts::default()
+        }
+        .zone("example.test.", example_zone()),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn any_for_forwarded_name_is_refused_without_upstream() {
+    let h = start_forwarding().await;
+    let r = udp_exchange(h.udp, &query("www.example.org.", RecordType::Any)).await;
+    assert_eq!(r.header.rcode, Rcode::Refused);
+    assert!(r.answers.is_empty());
+    assert_eq!(h.upstream.as_ref().unwrap().total(), 0);
+}
+
+#[tokio::test]
+async fn axfr_and_ixfr_are_refused_without_upstream() {
+    let h = start_forwarding().await;
+    let mut c = h.tcp_client().await;
+    for qtype in [RecordType::Unknown(252), RecordType::Unknown(251)] {
+        for name in ["example.test.", "example.org."] {
+            let q = query(name, qtype);
+            let udp = udp_exchange(h.udp, &q).await;
+            let tcp = c.ask(&q).await.unwrap();
+            for r in [udp, tcp] {
+                assert_eq!(r.header.rcode, Rcode::Refused, "{name} {qtype:?}");
+                assert!(r.answers.is_empty() && r.authority.is_empty());
+            }
+        }
+    }
+    assert_eq!(h.upstream.as_ref().unwrap().total(), 0);
+}

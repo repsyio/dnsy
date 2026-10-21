@@ -17,6 +17,14 @@ pub struct RequestContext {
     pub received_at: Instant,
 }
 
+/// Whether a client may be answered at all, decided from its address and transport alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    Answer,
+    /// Send nothing (ACL `drop`, or over the rate limit on UDP).
+    Drop,
+}
+
 /// Answers one decoded query. Implementations never panic on hostile queries and always return
 /// a response to the query they were given; transports apply size limits and framing.
 pub trait Handler: Send + Sync + 'static {
@@ -30,6 +38,14 @@ pub trait Handler: Send + Sync + 'static {
         query: Message,
     ) -> impl Future<Output = Option<Message>> + Send {
         async move { Some(self.handle(ctx, query).await) }
+    }
+
+    /// Admission for replies a listener sends on its own (the FORMERR for a packet that cannot
+    /// be decoded into one question), consulted before that reply is sent. It may consume a
+    /// rate-limit token. The default admits everyone.
+    fn admit(&self, client: SocketAddr, transport: Transport) -> Admission {
+        let _ = (client, transport);
+        Admission::Answer
     }
 }
 
@@ -71,5 +87,9 @@ mod tests {
         assert_eq!(response.header.id, 0x1234);
         assert_eq!(response.header.rcode, Rcode::Refused);
         assert_eq!(response.questions, query.questions);
+        assert_eq!(
+            RefusedHandler.admit(([127, 0, 0, 1], 5353).into(), Transport::Udp),
+            Admission::Answer
+        );
     }
 }

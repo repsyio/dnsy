@@ -1114,3 +1114,29 @@ async fn ksk_rollover_timeline_keeps_every_dnskey_signature_valid() {
         ksk_tags(&f, &[KeyState::Active]).await
     );
 }
+
+#[test]
+fn any_do_on_signed_zone_gets_one_signed_rrset() {
+    let (set, keys) = signed_set(zone("nsec", false));
+    let result = lookup(&set, "www.example.com.", RecordType::Any, true);
+    let LookupResult::Answer { answers, .. } = &result else {
+        panic!("{result:?}")
+    };
+    let types: BTreeSet<RecordType> = answers
+        .iter()
+        .map(|r| r.rtype)
+        .filter(|t| *t != RecordType::Rrsig)
+        .collect();
+    assert_eq!(types.len(), 1, "RFC 8482 4.1: one RRset, {answers:?}");
+    let rtype = *types.iter().next().unwrap();
+    assert_ne!(rtype, RecordType::Nsec);
+    assert_eq!(verify_signed(answers, &keys, &[rtype]), 1);
+    // Without DO the same name gets the unsigned synthesised HINFO.
+    let LookupResult::Answer { answers, .. } =
+        lookup(&set, "www.example.com.", RecordType::Any, false)
+    else {
+        panic!()
+    };
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0].ttl, 3789);
+}

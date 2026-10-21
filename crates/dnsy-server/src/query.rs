@@ -1,5 +1,9 @@
 //! Transport-independent query parsing and UDP sizing.
 
+use std::net::SocketAddr;
+
+use dnsy_core::Transport;
+use dnsy_engine::{Admission, Handler};
 use dnsy_proto::{Edns, EdnsOption, Message, PADDING_BLOCK, Rcode};
 
 /// Largest UDP response we send, whatever the client advertises (avoids fragmentation).
@@ -30,6 +34,21 @@ pub(crate) fn parse(buf: &[u8]) -> Incoming {
                 .map_or(Incoming::Drop, Incoming::Reply)
         }
         Ok(query) => Incoming::Query(query),
+    }
+}
+
+/// [`parse`] for a listener: its own FORMERR goes out only when [`Handler::admit`] admits the
+/// client (an ACL `drop` or an exhausted UDP rate limit means silence). Decoded queries pass
+/// through; the pipeline applies admission to them.
+pub(crate) fn parse_admitted<H: Handler>(
+    buf: &[u8],
+    handler: &H,
+    client: SocketAddr,
+    transport: Transport,
+) -> Incoming {
+    match parse(buf) {
+        Incoming::Reply(_) if handler.admit(client, transport) == Admission::Drop => Incoming::Drop,
+        other => other,
     }
 }
 
@@ -80,7 +99,26 @@ pub(crate) fn pad_response(response: &mut Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dnsy_engine::{RefusedHandler, RequestContext};
     use dnsy_proto::{Class, Header, Name, Opcode, Question, RecordType};
+    use std::future::Future;
+
+    /// A handler whose ACL drops everyone.
+    struct DropAll;
+
+    impl Handler for DropAll {
+        fn handle(
+            &self,
+            ctx: RequestContext,
+            query: Message,
+        ) -> impl Future<Output = Message> + Send {
+            RefusedHandler.handle(ctx, query)
+        }
+
+        fn admit(&self, _: SocketAddr, _: Transport) -> Admission {
+            Admission::Drop
+        }
+    }
 
     fn query(questions: usize, edns: Option<Edns>) -> Message {
         Message {
@@ -156,6 +194,30 @@ mod tests {
             assert_eq!(m.header.rcode, Rcode::FormErr);
             assert!(m.edns.is_none());
         }
+    }
+
+    #[test]
+    fn listener_formerr_respects_drop_acl() {
+        let client: SocketAddr = ([192, 0, 2, 9], 5300).into();
+        let mut truncated = wire(&query(1, None));
+        truncated.truncate(14);
+        for packet in [truncated, wire(&query(0, None)), wire(&query(2, None))] {
+            for transport in [Transport::Udp, Transport::Tcp] {
+                assert!(matches!(
+                    parse_admitted(&packet, &DropAll, client, transport),
+                    Incoming::Drop
+                ));
+                assert!(matches!(
+                    parse_admitted(&packet, &RefusedHandler, client, transport),
+                    Incoming::Reply(_)
+                ));
+            }
+        }
+        // A decoded query is left to the pipeline, which applies the same admission.
+        assert!(matches!(
+            parse_admitted(&wire(&query(1, None)), &DropAll, client, Transport::Udp),
+            Incoming::Query(_)
+        ));
     }
 
     #[test]

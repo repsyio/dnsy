@@ -178,22 +178,28 @@ fn exact_match() {
 }
 
 #[test]
-fn any_returns_all_rrsets() {
+fn any_returns_the_rfc8482_minimal_answer() {
     let set = set();
-    let got = sorted(answer_lines(lookup(
-        &set,
-        "www.example.com.",
-        RecordType::Any,
-    )));
-    assert_eq!(got.len(), 4);
-    assert_eq!(got[3], "www.example.com. 300 Aaaa 2001:db8::1");
-    let apex = answer_lines(lookup(&set, "example.com.", RecordType::Any));
-    assert_eq!(apex.len(), 3, "{apex:?}");
-    assert!(apex.iter().any(|r| r.contains(" Soa ")));
-    // ANY at a CNAME returns the CNAME without following it.
+    for owner in ["www.example.com.", "example.com.", "c1.example.com."] {
+        let got = answer_lines(lookup(&set, owner, RecordType::Any));
+        assert_eq!(got.len(), 1, "{owner}: {got:?}");
+        assert!(got[0].starts_with(&format!("{owner} 3789 ")), "{got:?}");
+    }
+    let LookupResult::Answer {
+        answers,
+        authority,
+        additional,
+    } = lookup(&set, "www.example.com.", RecordType::Any)
+    else {
+        panic!("expected an answer")
+    };
+    assert!(authority.is_empty() && additional.is_empty());
     assert_eq!(
-        answer_lines(lookup(&set, "c1.example.com.", RecordType::Any)),
-        ["c1.example.com. 3600 Cname c2.example.com."]
+        answers[0].data,
+        RData::Opaque {
+            rtype: 13,
+            data: b"\x07RFC8482\x00".to_vec()
+        }
     );
     // ANY at an empty non-terminal is NODATA.
     assert!(matches!(
@@ -353,10 +359,10 @@ fn wildcard_rules_rfc4592() {
         answer_lines(lookup(&set, "*.example.", RecordType::Txt)),
         ["*.example. 3600 Txt \"this is a wildcard\""]
     );
-    // ANY collects every wildcard RRset under the query name.
-    let got = sorted(answer_lines(lookup(&set, "any.example.", RecordType::Any)));
-    assert_eq!(got.len(), 2);
-    assert!(got.iter().all(|r| r.starts_with("any.example. 3600 ")));
+    // ANY under a wildcard gets the minimal answer, owned by the query name.
+    let got = answer_lines(lookup(&set, "any.example.", RecordType::Any));
+    assert_eq!(got.len(), 1);
+    assert!(got[0].starts_with("any.example. 3789 "), "{got:?}");
     // A wildcard CNAME is synthesised and then followed.
     assert_eq!(
         answer_lines(lookup(&set, "x.y.wc.example.", RecordType::A)),

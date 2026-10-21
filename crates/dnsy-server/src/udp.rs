@@ -9,7 +9,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::query::{Incoming, encode_response, parse, udp_limit};
+use crate::query::{Incoming, encode_response, parse_admitted, udp_limit};
 
 /// Largest query datagram accepted; anything at least this large is dropped.
 const MAX_QUERY: usize = 4096;
@@ -46,7 +46,7 @@ pub(crate) async fn serve<H: Handler>(
         let handler = Arc::clone(&handler);
         let received_at = Instant::now();
         tasks.spawn(async move {
-            let reply = match parse(&packet) {
+            let reply = match parse_admitted(&packet, &*handler, client, Transport::Udp) {
                 Incoming::Drop => return,
                 Incoming::Reply(bytes) => bytes,
                 Incoming::Query(query) => {

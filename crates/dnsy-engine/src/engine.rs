@@ -1,9 +1,12 @@
 //! The request pipeline (spec 5.2).
 //!
-//! ACL -> rate limit -> blocklist/allowlist -> local zones (authoritative, never cached) ->
-//! RD check -> cache (keyed by the query's DO/CD bits) -> upstream groups (bounded by the overall
-//! deadline) -> DNSSEC validation (per mode; the status is stored with the cache entry) ->
-//! response-IP policy -> AD / EDE / DNSSEC-record shaping -> one `QueryEvent`.
+//! ACL -> rate limit (both before any other reply, error replies included) -> FORMERR / NOTIMP /
+//! BADVERS -> AXFR/IXFR refused -> blocklist/allowlist -> local zones (authoritative, never
+//! cached; ANY gets the RFC 8482 minimal answer) -> ANY refused -> RD check -> cache (keyed by
+//! the query's DO/CD bits) -> upstream groups (identical concurrent misses share one exchange,
+//! bounded by the overall deadline) -> DNSSEC validation (per mode; the status is stored with
+//! the cache entry) -> response-IP policy -> AD / EDE / DNSSEC-record shaping -> one
+//! `QueryEvent`.
 //!
 //! Validation (modes `permissive` and `strict`, client CD=0): the query goes upstream with DO=1
 //! and CD=1, the raw answer is validated (DS/DNSKEY fetched through the cache by
@@ -21,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use dnsy_config::Validation;
-use dnsy_core::{DnssecStatus, Principal};
+use dnsy_core::{DnssecStatus, Principal, Transport};
 use dnsy_filter::{
     Acl, AclAction, BlockMode, FilterSet, ListManager, RateLimiter, RateVerdict, Verdict,
     block_response,
@@ -31,12 +34,13 @@ use dnsy_proto::{EDNS_VERSION, Edns, Message, Name, Opcode, Question, Rcode, Rec
 use dnsy_resolver::forward::{DnssecPolicy, UpstreamFetcher, cap_ttls, dnssec_query, unix_now};
 use dnsy_resolver::groups::{Exchange, GroupError, GroupSet};
 use dnsy_resolver::{
-    Cache, CacheKey, CacheLookup, Refreshes, Upstream, UpstreamClient, UpstreamError,
+    Cache, CacheKey, CacheLookup, Joined, RefreshGuard, Refreshes, Upstream, UpstreamClient,
+    UpstreamError,
 };
 use dnsy_zone::{ZoneSigning, ZoneStore};
 use tokio::sync::{Semaphore, mpsc};
 
-use crate::handler::{Handler, RequestContext};
+use crate::handler::{Admission, Handler, RequestContext};
 use crate::response::{
     RESPONSE_IP_LIST, ResponseIpPolicy, answers_question, authoritative, bogus_servfail, dnssec_ok,
     error_response, finish, scrub,
@@ -51,6 +55,18 @@ pub(crate) const CLOCK_UNTRUSTED_WARNING: &str = "system clock is earlier than t
 pub(crate) const RATE_LIMIT_KEYS: usize = 100_000;
 /// Prefetches waiting for a worker; further ones are dropped, the entry then just expires.
 pub(crate) const PREFETCH_QUEUE: usize = 64;
+
+/// Requests that may wait for one cache miss already being forwarded; further identical
+/// misses are answered SERVFAIL (EDE 22) at once instead of holding a listener slot.
+pub const MAX_MISS_WAITERS: usize = 256;
+
+/// QTYPE AXFR (RFC 5936) and IXFR (RFC 1995): zone transfers are never served or forwarded.
+const AXFR: u16 = 252;
+const IXFR: u16 = 251;
+
+/// What a forwarded (and validated) query resolved to: the message to serve, the upstream that
+/// answered and the validation status. Shared with every request coalesced onto it.
+pub(crate) type Resolved = Result<(Message, SocketAddr, DnssecStatus), UpstreamFailure>;
 
 /// The time source the cache is driven by.
 pub(crate) type Now = Arc<dyn Fn() -> Instant + Send + Sync>;
@@ -105,8 +121,8 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) now: Now,
     /// How long a client waits for a refresh before it is answered from a stale entry.
     pub(crate) stale_wait: Duration,
-    /// Refreshes in flight, per key (serve-stale and prefetch share it).
-    pub(crate) refreshes: Arc<Refreshes>,
+    /// Upstream work in flight, per key (cache misses, serve-stale and prefetch share it).
+    pub(crate) refreshes: Arc<Refreshes<Resolved>>,
     /// Running [`Engine::run_prefetch`] calls; with none, nothing is queued.
     pub(crate) prefetch_workers: AtomicUsize,
     pub(crate) prefetch_tx: mpsc::Sender<PrefetchJob>,
@@ -149,7 +165,7 @@ impl Outcome {
 
 /// An upstream failure, as the EDE we report for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UpstreamFailure {
+pub(crate) enum UpstreamFailure {
     /// EDE 22: nothing answered in time or no upstream is available.
     Unreachable,
     /// EDE 23: upstreams answered with errors, garbage or a mismatching response.
@@ -370,6 +386,26 @@ impl<E: Exchange> Engine<E> {
     }
 
     async fn pipeline(&self, ctx: &RequestContext, query: &Message) -> Outcome {
+        let refused = || {
+            Outcome::new(
+                finish(query, error_response(query, Rcode::Refused, None)),
+                AnswerSource::Refused,
+            )
+        };
+        // Admission first: a client set to `drop` gets nothing, not even an error reply, and
+        // every reply (error replies too) consumes rate-limit tokens.
+        match self.admission(ctx.client.ip(), ctx.principal.as_ref(), ctx.transport) {
+            AclAction::Allow => {}
+            AclAction::Refuse => return refused(),
+            AclAction::Drop => {
+                return Outcome {
+                    response: None,
+                    source: AnswerSource::Refused,
+                    dnssec: DnssecStatus::Unchecked,
+                };
+            }
+        }
+
         let Some(question) = query.questions.first() else {
             return Outcome::new(
                 error_response(query, Rcode::FormErr, None),
@@ -389,28 +425,9 @@ impl<E: Exchange> Engine<E> {
         {
             return Outcome::new(Message::badvers_for(query), AnswerSource::Error);
         }
-
-        let refused = || {
-            Outcome::new(
-                finish(query, error_response(query, Rcode::Refused, None)),
-                AnswerSource::Refused,
-            )
-        };
-        let dropped = Outcome {
-            response: None,
-            source: AnswerSource::Refused,
-            dnssec: DnssecStatus::Unchecked,
-        };
-        let ip = ctx.client.ip();
-        match self.acl.load().check(ip, ctx.principal.as_ref()) {
-            AclAction::Allow => {}
-            AclAction::Refuse => return refused(),
-            AclAction::Drop => return dropped,
-        }
-        match self.rate.load().check(ip, ctx.transport, Instant::now()) {
-            RateVerdict::Allow => {}
-            RateVerdict::Refuse => return refused(),
-            RateVerdict::Drop => return dropped,
+        // Zone transfers are refused outright, for local zones and forwarded names alike.
+        if matches!(u16::from(question.qtype), AXFR | IXFR) {
+            return refused();
         }
 
         if let Verdict::Block { list, mode } = self.filter.current().check(&question.name)
@@ -430,7 +447,9 @@ impl<E: Exchange> Engine<E> {
             }
         }
 
-        if !query.header.rd {
+        // ANY is answered minimally for local zones only (RFC 8482); forwarding it would turn
+        // the server into an amplifier for whatever the upstream returns.
+        if !query.header.rd || question.qtype == RecordType::Any {
             return refused();
         }
 
@@ -502,9 +521,8 @@ impl<E: Exchange> Engine<E> {
             }
             CacheLookup::Miss => {
                 let (msg, from, dnssec) = self
-                    .resolve(ctx.received_at, query, question, &policy, validating)
+                    .coalesced_miss(ctx, query, question, &key, &policy, validating)
                     .await?;
-                self.cache.insert(key, &msg, dnssec, (self.now)());
                 (msg, AnswerSource::Upstream(from), dnssec)
             }
         };
@@ -530,20 +548,75 @@ impl<E: Exchange> Engine<E> {
         policy: &DnssecPolicy,
         validating: bool,
     ) -> Option<(Message, SocketAddr, DnssecStatus)> {
-        let _slot = self.refreshes.begin(key)?;
+        let slot = self.refreshes.begin(key)?;
+        // Past `stale_wait` the refresh is abandoned: dropping the slot lets a coalesced miss
+        // of the same key take over.
         let resolved = tokio::time::timeout(
             self.stale_wait,
             self.resolve(ctx.received_at, query, question, policy, validating),
         )
         .await
-        .ok()?
         .ok()?;
-        if resolved.0.header.rcode == Rcode::ServFail {
-            return None;
+        let resolved = self.store_refresh(key, resolved);
+        slot.finish(|| resolved.clone());
+        resolved
+            .ok()
+            .filter(|(msg, _, _)| msg.header.rcode != Rcode::ServFail)
+    }
+
+    /// Caches a refreshed answer unless it is a failure or SERVFAIL (the entry being refreshed
+    /// stays), returning it as served.
+    fn store_refresh(&self, key: &CacheKey, resolved: Resolved) -> Resolved {
+        match resolved {
+            Ok((msg, from, dnssec)) if msg.header.rcode != Rcode::ServFail => Ok((
+                self.cache.store(key.clone(), msg, dnssec, (self.now)()),
+                from,
+                dnssec,
+            )),
+            other => other,
         }
-        self.cache
-            .insert(key.clone(), &resolved.0, resolved.2, (self.now)());
-        Some(resolved)
+    }
+
+    /// Resolves a cache miss as a single flight per key: the first request forwards and caches,
+    /// identical requests arriving meanwhile wait for its result (success or failure alike; it
+    /// is not remembered once the flight ends). A waiter whose leader is cancelled takes over;
+    /// none waits longer than its own forwarding and validation deadlines, and at most
+    /// [`MAX_MISS_WAITERS`] wait per key.
+    async fn coalesced_miss(
+        &self,
+        ctx: &RequestContext,
+        query: &Message,
+        question: &Question,
+        key: &CacheKey,
+        policy: &DnssecPolicy,
+        validating: bool,
+    ) -> Resolved {
+        let give_up = tokio::time::Instant::from_std(ctx.received_at + self.deadline * 2);
+        loop {
+            match self.refreshes.join(key, MAX_MISS_WAITERS) {
+                Joined::Leader(slot) => {
+                    let resolved = self
+                        .resolve(ctx.received_at, query, question, policy, validating)
+                        .await
+                        .map(|(msg, from, dnssec)| {
+                            let served = self.cache.store(key.clone(), msg, dnssec, (self.now)());
+                            (served, from, dnssec)
+                        });
+                    slot.finish(|| resolved.clone());
+                    return resolved;
+                }
+                Joined::Waiter(wait) => match tokio::time::timeout_at(give_up, wait.wait()).await {
+                    Ok(Some(resolved)) => return resolved,
+                    // The leader was cancelled: join again, leading if nobody else does.
+                    Ok(None) => {}
+                    Err(_) => return Err(UpstreamFailure::Unreachable),
+                },
+                Joined::Busy => {
+                    tracing::debug!(qname = %key.name, "too many requests waiting for this miss");
+                    return Err(UpstreamFailure::Unreachable);
+                }
+            }
+        }
     }
 
     /// Queues a background refresh when the live entry for `key` is popular and close to expiry.
@@ -588,14 +661,14 @@ impl<E: Exchange> Engine<E> {
                 continue;
             }
             // A client-driven refresh of the same key is already in flight: nothing to add.
-            let Some(_slot) = self.refreshes.begin(&job.key) else {
+            let Some(slot) = self.refreshes.begin(&job.key) else {
                 continue;
             };
-            self.prefetch(&job.key).await;
+            self.prefetch(&job.key, slot).await;
         }
     }
 
-    async fn prefetch(&self, key: &CacheKey) {
+    async fn prefetch(&self, key: &CacheKey, slot: RefreshGuard<Resolved>) {
         let question = Question {
             name: key.name.clone(),
             qtype: key.qtype,
@@ -609,18 +682,18 @@ impl<E: Exchange> Engine<E> {
         let policy = self.dnssec.load_full();
         let validating = policy.mode != Validation::Off && !key.cd_bit;
         self.cache.note_prefetch();
-        match self
+        let resolved = self
             .resolve(Instant::now(), &query, &question, &policy, validating)
-            .await
-        {
-            Ok((msg, _, dnssec)) if msg.header.rcode != Rcode::ServFail => {
-                self.cache.insert(key.clone(), &msg, dnssec, (self.now)());
-            }
-            Ok(_) => {
+            .await;
+        match &resolved {
+            Ok((msg, _, _)) if msg.header.rcode == Rcode::ServFail => {
                 tracing::debug!(qname = %key.name, "prefetch answered SERVFAIL; kept the entry");
             }
+            Ok(_) => {}
             Err(e) => tracing::debug!(qname = %key.name, failure = ?e, "prefetch failed"),
         }
+        let resolved = self.store_refresh(key, resolved);
+        slot.finish(|| resolved.clone());
     }
 
     /// Forwards, validates (when `validating`) and scrubs one cache miss. Returns the message to
@@ -771,6 +844,24 @@ impl<E: Exchange> Engine<E> {
         Ok((resp, from))
     }
 
+    /// ACL, then rate limit (which takes a token): the checks that need only the client.
+    fn admission(
+        &self,
+        ip: IpAddr,
+        principal: Option<&Principal>,
+        transport: Transport,
+    ) -> AclAction {
+        match self.acl.load().check(ip, principal) {
+            AclAction::Allow => {}
+            other => return other,
+        }
+        match self.rate.load().check(ip, transport, Instant::now()) {
+            RateVerdict::Allow => AclAction::Allow,
+            RateVerdict::Refuse => AclAction::Refuse,
+            RateVerdict::Drop => AclAction::Drop,
+        }
+    }
+
     fn emit(&self, ctx: &RequestContext, query: &Message, outcome: &Outcome) {
         let Some(sink) = &self.sink else {
             return;
@@ -825,5 +916,14 @@ impl<E: Exchange + 'static> Handler for Engine<E> {
 
     async fn respond(&self, ctx: RequestContext, query: Message) -> Option<Message> {
         self.process(&ctx, &query).await
+    }
+
+    /// The ACL (without a principal: the listener has none for a packet it cannot decode) and
+    /// the rate limit; only an outright drop suppresses the listener's reply.
+    fn admit(&self, client: SocketAddr, transport: Transport) -> Admission {
+        match self.admission(client.ip(), None, transport) {
+            AclAction::Drop => Admission::Drop,
+            AclAction::Allow | AclAction::Refuse => Admission::Answer,
+        }
     }
 }

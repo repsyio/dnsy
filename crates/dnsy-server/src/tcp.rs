@@ -16,7 +16,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::dot::mtls::ClientSession;
-use crate::query::{Incoming, encode_response, pad_response, parse};
+use crate::query::{Incoming, encode_response, pad_response, parse_admitted};
 
 /// Concurrent requests per connection; the reader stops reading when reached (back-pressure).
 const MAX_IN_FLIGHT_PER_CONN: usize = 32;
@@ -137,7 +137,7 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
         };
         // Anything but a frame: peer closed, I/O error, empty frame or idle timeout.
         let Ok(Ok(Some(packet))) = frame else { break };
-        match parse(&packet) {
+        match parse_admitted(&packet, &*handler, client, flavor.transport) {
             // Garbage on a stream cannot be re-synchronised; answer if possible and close.
             Incoming::Drop => break,
             Incoming::Reply(bytes) => {
