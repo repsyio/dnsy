@@ -13,6 +13,8 @@ the previous state and logs the reason.
 
 ## Logging
 
+See also [Logging and metrics](logging-and-metrics.md).
+
 Logs go to stderr through `tracing`. `[logging] level` is `trace` to `error`; `format = "json"`
 writes one JSON object per line for log shippers. Tokens, `Authorization` headers, cookies,
 DoH path tokens, passwords and the DNSSEC key passphrase are never logged.
@@ -44,12 +46,16 @@ become `403`.
 
 ## Backups
 
+See [Backup and restore](backup-restore.md) for the procedure; in short:
+
 Stop writing, or use SQLite's online backup, and copy `<data_dir>/dnsy.db` (with its `-wal`
 file). It holds users, tokens, rules, upstream groups and DNSSEC private keys; protect the
 copy like the keys themselves. Without `DNSY_DNSSEC_PASSPHRASE` or `key_passphrase_file` the
 keys are stored unencrypted. Zone files are plain JSON in `[zones] dir`; back them up too.
 
 ## Upgrades and migrations
+
+See [Upgrade and migrations](upgrade.md). In short:
 
 `dnsy serve` and `dnsy migrate` apply pending migrations on start. `dnsy migrate --status`
 lists applied and pending migrations without touching the database. Migrations are never

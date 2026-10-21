@@ -9,3 +9,5 @@ graphify-out/
 web/.e2e-run/
 web/test-results/
 web/playwright-report/
+*.log
+/screenshots/

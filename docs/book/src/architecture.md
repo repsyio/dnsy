@@ -1,6 +1,46 @@
 # Architecture
 
-Stub: crate layout and the request pipeline. See the design spec in the repository for the current contract.
+DNSY is a Cargo workspace of small crates behind one binary. Dependencies point one way: the
+vocabulary crate `dnsy-core` is used by everything, `dnsy-proto` (the wire format, no runtime
+dependencies) feeds the DNS crates, and the binary `dnsy` wires them together.
+
+```text
+ clients                    dnsy (one process)                         upstreams
+                  +---------------------------------------+
+ UDP/TCP :53 ---> |  dnsy-server  listeners (UDP TCP DoT DoH)
+ DoT     :853 --> |        |                                |
+ DoH     :443 --> |        v                                |
+                  |  dnsy-engine  pipeline: sanity, ACL, rate limit, filter,
+                  |        |      local zones, cache, validation, shaping
+                  |        |---> dnsy-zone      JSON zones, signing, lookup
+                  |        |---> dnsy-filter    blocklists, ACL, rate limit
+                  |        '---> dnsy-resolver  cache, load balancing ----> 1.1.1.1 ...
+                  |                  '--- dnsy-dnssec  validation          9.9.9.9 ...
+                  |  dnsy-observe  query log + stats   dnsy-auth  users, tokens
+                  |  dnsy-store    SQLite              dnsy-config  TOML schema
+ browser, curl -> |  dnsy-api      REST + OpenAPI + embedded web UI :5380
+                  +---------------------------------------+
+```
+
+| Crate | Role |
+| --- | --- |
+| `dnsy-core` | shared vocabulary types (transport, principal, role, scope, DNSSEC status) |
+| `dnsy-proto` | wire format, names, records, EDNS, canonical form |
+| `dnsy-dnssec` | validation, signing, key handling over `ring` primitives |
+| `dnsy-config` | TOML schema, defaults, validation |
+| `dnsy-store` | SQLite handle and migrations |
+| `dnsy-auth` | users, roles, tokens, sessions |
+| `dnsy-observe` | query events, query log, statistics |
+| `dnsy-zone` | zone model, JSON files, hot reload, authoritative lookup, signing |
+| `dnsy-resolver` | upstream client, cache, load balancing, validating forwarder |
+| `dnsy-filter` | blocklists, allowlist, ACL, rate limit |
+| `dnsy-engine` | the `Handler` trait and the request pipeline |
+| `dnsy-server` | UDP, TCP, DoT and DoH listeners |
+| `dnsy-api` | REST API (axum, utoipa) and the embedded UI |
+| `dnsy` | the binary: CLI and wiring |
+
+`dnsy-api` talks to services only, never to the listeners; `dnsy-engine` is the only place a
+query is decided. The sections below describe the listeners and the pipeline.
 
 ## Handler and plain DNS listeners
 

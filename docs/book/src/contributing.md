@@ -46,7 +46,7 @@ root zone whose DS you pass as a trust anchor. `zones::example_zone()` is the zo
 
 ### Writing a test
 
-```rust
+```rust,ignore
 #[tokio::test]
 async fn my_case() {
     let h = Harness::start(Opts::default().zone("example.test.", example_zone())).await;
@@ -143,3 +143,18 @@ How it is organised:
 - No fixed sleeps: locators auto-wait and `expect.poll` / `toPass` wait for server-side effects.
 - Traces and screenshots are kept only for failing tests (`web/test-results`, not committed).
 
+
+## Documentation screenshots
+
+The screenshots in `docs/book/src/images/` come from a seeded demo, not from hand-made captures:
+
+```sh
+just build                                         # or cargo build -p dnsy --features embed-ui
+scripts/demo/run.sh /tmp/dnsy-demo target/release/dnsy &    # fake upstream, zones, rules, a signed zone, traffic
+node scripts/demo/capture.mjs /tmp/dnsy-shots      # Playwright at 1280 px (needs `pnpm exec playwright install chromium` in web/)
+python3 scripts/demo/optimize.py /tmp/dnsy-shots docs/book/src/images
+```
+
+Keep each image to a few hundred KB at most, write outputs outside the repository, and never commit
+logs. `just docs` checks the book (`mdbook test`), and the `config_reference_lists_all_keys` test in
+`dnsy-config` fails when the configuration reference and the schema disagree.
