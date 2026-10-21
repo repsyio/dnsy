@@ -7,14 +7,14 @@ use super::*;
 
 /// Upstream that can be switched off, slowed down and made to answer NXDOMAIN; it tracks the
 /// peak number of concurrent exchanges.
-struct Switch {
-    up: AtomicBool,
+pub(super) struct Switch {
+    pub(super) up: AtomicBool,
     nxdomain: AtomicBool,
-    delay_ms: AtomicU64,
-    calls: AtomicUsize,
+    pub(super) delay_ms: AtomicU64,
+    pub(super) calls: AtomicUsize,
     active: AtomicUsize,
     peak: AtomicUsize,
-    ip: Mutex<Ipv4Addr>,
+    pub(super) ip: Mutex<Ipv4Addr>,
 }
 
 impl Switch {
@@ -31,7 +31,7 @@ impl Switch {
     }
 }
 
-struct Sw(Arc<Switch>);
+pub(super) struct Sw(pub(super) Arc<Switch>);
 
 impl Exchange for Sw {
     async fn exchange(&self, _: &Upstream, query: &Message) -> Result<Message, UpstreamError> {
@@ -73,14 +73,14 @@ impl Exchange for Sw {
     }
 }
 
-struct Rig {
-    engine: Arc<Engine<Sw>>,
-    up: Arc<Switch>,
+pub(super) struct Rig {
+    pub(super) engine: Arc<Engine<Sw>>,
+    pub(super) up: Arc<Switch>,
     skew: Arc<AtomicUsize>,
 }
 
 impl Rig {
-    fn new(config: &Config, delay: Duration) -> Self {
+    pub(super) fn new(config: &Config, delay: Duration) -> Self {
         let up = Switch::new(delay);
         let base = Instant::now();
         let skew = Arc::new(AtomicUsize::new(0));
@@ -110,16 +110,16 @@ impl Rig {
         self.skew.fetch_add(secs, Ordering::SeqCst);
     }
 
-    async fn ask(&self, qname: &str) -> Message {
+    pub(super) async fn ask(&self, qname: &str) -> Message {
         self.engine.handle(ctx(), query(qname, RecordType::A)).await
     }
 
-    fn calls(&self) -> usize {
+    pub(super) fn calls(&self) -> usize {
         self.up.calls.load(Ordering::SeqCst)
     }
 }
 
-fn config() -> Config {
+pub(super) fn config() -> Config {
     let mut c = Config::default();
     c.cache.prefetch.enabled = false;
     c

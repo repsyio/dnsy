@@ -23,6 +23,7 @@ use tempfile::TempDir;
 use crate::{Engine, EngineBuilder, Handler, RESPONSE_IP_LIST, RequestContext, ResponseIpPolicy};
 
 mod dnssec;
+mod hardening;
 mod stale;
 
 const ZONE: &str = r#"{"schema":1,"origin":"home.test.","default_ttl":3600,

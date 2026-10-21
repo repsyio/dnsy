@@ -17,6 +17,23 @@ use crate::store::ZoneSet;
 /// Most CNAMEs followed for one query.
 const MAX_CNAME_CHAIN: usize = 8;
 
+/// TTL of the synthesised RFC 8482 HINFO (the value the RFC suggests).
+const RFC8482_TTL: u32 = 3789;
+/// TYPE HINFO (RFC 1035 3.3.2); it has no dedicated `RecordType` variant.
+const HINFO: u16 = 13;
+
+/// The minimal answer to ANY (RFC 8482 4.2): HINFO with CPU "RFC8482" and an empty OS.
+fn rfc8482_hinfo(owner: &Name) -> Record {
+    let mut data = vec![7];
+    data.extend_from_slice(b"RFC8482");
+    data.push(0);
+    record(
+        owner.clone(),
+        RFC8482_TTL,
+        RData::Opaque { rtype: HINFO, data },
+    )
+}
+
 /// The outcome of an authoritative lookup. Negative `authority` holds the zone SOA with
 /// TTL = min(SOA TTL, SOA minimum) (RFC 2308).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +210,7 @@ impl ZoneIndex {
         Vec::new()
     }
 
-    /// The `RRsets` of `qtype` (every type for ANY) at `node`, owned by `owner`, noting the
+    /// The `RRsets` of `qtype` (the RFC 8482 minimal answer for ANY) at `node`, owned by `owner`, noting the
     /// wildcard or NODATA proof the outcome needs.
     fn answers_at(
         node: &Node,
@@ -205,11 +222,19 @@ impl ZoneIndex {
     ) -> Vec<Record> {
         let mut answers = Vec::new();
         if qtype == RecordType::Any {
-            // NSEC is a DNSSEC record: only DO queries see it (RFC 4035 3.2.1).
-            for (rtype, rrset) in node {
-                if trace.enabled() || *rtype != RecordType::Nsec {
-                    answers.extend(rotated(rrset, owner, rotation));
+            // RFC 8482: never the full set. A DO query to a signed zone gets one real RRset,
+            // which carries its RRSIGs (4.1); everyone else one synthesised HINFO (4.2).
+            if trace.enabled() {
+                if let Some(rrset) = node
+                    .iter()
+                    .find(|(t, _)| **t != RecordType::Nsec)
+                    .or_else(|| node.iter().next())
+                    .map(|(_, rrset)| rrset)
+                {
+                    answers = rotated(rrset, owner, rotation);
                 }
+            } else if !node.is_empty() {
+                answers.push(rfc8482_hinfo(owner));
             }
         } else if let Some(rrset) = node.get(&qtype) {
             answers = rotated(rrset, owner, rotation);

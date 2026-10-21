@@ -964,7 +964,7 @@ fn stale_entries_stay_within_the_bound() {
 
 #[test]
 fn refreshes_coalesce_per_key() {
-    let r = Refreshes::new();
+    let r = Refreshes::<()>::new();
     let (a, b) = (
         key("a.example.com", RecordType::A),
         key("b.example.com", RecordType::A),
@@ -976,6 +976,61 @@ fn refreshes_coalesce_per_key() {
     drop(g);
     assert!(r.is_empty());
     assert!(r.begin(&a).is_some());
+}
+
+#[tokio::test]
+async fn joined_waiters_get_the_leaders_result() {
+    let r = Refreshes::<u32>::new();
+    let k = key("a.example.com", RecordType::A);
+    let Joined::Leader(lead) = r.join(&k, 2) else {
+        panic!("first caller leads")
+    };
+    let Joined::Waiter(w1) = r.join(&k, 2) else {
+        panic!("second caller waits")
+    };
+    assert!(r.begin(&k).is_none(), "begin sees the flight too");
+    let Joined::Waiter(w2) = r.join(&k, 2) else {
+        panic!("third caller waits")
+    };
+    assert!(matches!(r.join(&k, 2), Joined::Busy), "waiters are bounded");
+    lead.finish(|| 7);
+    assert!(r.is_empty(), "finishing frees the slot at once");
+    assert_eq!((w1.wait().await, w2.wait().await), (Some(7), Some(7)));
+    assert!(matches!(r.join(&k, 2), Joined::Leader(_)));
+}
+
+#[tokio::test]
+async fn waiters_of_a_dropped_leader_see_none() {
+    let r = Refreshes::<u32>::new();
+    let k = key("a.example.com", RecordType::A);
+    let lead = r.begin(&k).unwrap();
+    let Joined::Waiter(w) = r.join(&k, 1) else {
+        panic!("waits")
+    };
+    drop(lead);
+    assert_eq!(w.wait().await, None);
+    assert!(r.is_empty());
+}
+
+#[tokio::test]
+async fn waiter_slots_are_released_on_drop() {
+    let r = Refreshes::<u32>::new();
+    let k = key("a.example.com", RecordType::A);
+    let _lead = r.begin(&k).unwrap();
+    let w = r.join(&k, 1);
+    assert!(matches!(r.join(&k, 1), Joined::Busy));
+    drop(w);
+    assert!(matches!(r.join(&k, 1), Joined::Waiter(_)));
+}
+
+#[tokio::test]
+async fn finishing_without_waiters_skips_the_value() {
+    let r = Refreshes::<u32>::new();
+    let k = key("a.example.com", RecordType::A);
+    let first = r.begin(&k).unwrap();
+    first.finish(|| panic!("nobody waits, nothing to build"));
+    assert!(r.is_empty());
+    assert!(r.begin(&k).is_some());
 }
 
 fn prefetch_cfg() -> CacheConfig {

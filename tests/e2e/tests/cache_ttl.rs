@@ -160,13 +160,14 @@ async fn min_ttl_clamp_observed() {
         RecordType::A,
         Reply::Answer(vec![a("short.test.", 1, "203.0.113.6")]),
     );
-    // The miss is answered with the upstream's TTL; the clamp shows on what the cache serves.
-    ask(&h, "short.test.", RecordType::A).await;
+    // The clamp applies from the first answer, the cache miss itself.
     let first = ask(&h, "short.test.", RecordType::A).await;
+    assert_eq!(first.answers[0].ttl, 30, "the miss is raised to min_ttl");
+    let cached = ask(&h, "short.test.", RecordType::A).await;
     assert!(
-        first.answers[0].ttl >= 29,
+        cached.answers[0].ttl >= 29,
         "raised to min_ttl: {}",
-        first.answers[0].ttl
+        cached.answers[0].ttl
     );
     // Well past the upstream's 1 s TTL the entry is still served from the cache.
     eventually(WAIT, "time to pass", || async {
@@ -198,7 +199,8 @@ async fn max_ttl_clamp_observed() {
         RecordType::A,
         Reply::Answer(vec![a("long.test.", 86_400, "203.0.113.7")]),
     );
-    ask(&h, "long.test.", RecordType::A).await;
+    let first = ask(&h, "long.test.", RecordType::A).await;
+    assert_eq!(first.answers[0].ttl, 20, "the miss is capped at max_ttl");
     let r = ask(&h, "long.test.", RecordType::A).await;
     assert!(
         r.answers[0].ttl <= 20,

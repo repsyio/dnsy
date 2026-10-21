@@ -13,7 +13,17 @@ This page describes how it treats packets on the wire.
 - Memory use follows what actually parsed, never the counts claimed in the header.
 - A malformed query whose 12-byte header is readable gets a FORMERR reply that echoes its id and,
   when it parses, its first question. Packets shorter than a header, and malformed packets that are
-  themselves responses, are dropped silently.
+  themselves responses, are dropped silently. Before a UDP or TCP listener sends that FORMERR it
+  asks the handler (`Handler::admit`): a client the ACL drops, or one over its UDP rate limit, gets
+  no reply, and the FORMERR consumes a rate-limit token like any other reply.
+- Decoded queries pass the ACL and the rate limit before anything else, so FORMERR (no or several
+  questions), NOTIMP (an opcode other than QUERY, such as NOTIFY or UPDATE) and BADVERS (EDNS
+  version above 0) are only sent to admitted clients and count against their rate limit.
+- QTYPE ANY is answered minimally (RFC 8482): for a name in a local zone the answer is one
+  synthesised `HINFO "RFC8482" ""` record with TTL 3789 over UDP and TCP alike (a DO query to a
+  zone served signed gets one real RRset with its RRSIGs instead, so it still validates); ANY for
+  any other name is REFUSED without asking an upstream. AXFR (252) and IXFR (251) are REFUSED for
+  every name, local or not, and are never forwarded.
 
 ## Encoding
 

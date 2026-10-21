@@ -11,8 +11,8 @@ pub mod handler;
 mod response;
 
 pub use builder::{EngineBuilder, EngineError};
-pub use engine::Engine;
-pub use handler::{Handler, RefusedHandler, RequestContext};
+pub use engine::{Engine, MAX_MISS_WAITERS};
+pub use handler::{Admission, Handler, RefusedHandler, RequestContext};
 pub use response::{RESPONSE_IP_LIST, ResponseIpPolicy};
 
 #[cfg(test)]
