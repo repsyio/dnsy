@@ -16,17 +16,25 @@ const CSP_MARKERS = [/content security policy/i, /refused to (load|execute|apply
 interface Fixtures {
   /** Violations of the content security policy logged to the console (the test fails on any). */
   cspGuard: void;
-  /** The shared server. */
-  server: ServerInfo;
-  /** A REST client signed in as admin on the shared server. */
-  api: Api;
   /** Starts a private server (own database, upstream, users); stopped after the test. */
   freshServer: (opts?: { users?: boolean; extraConfig?: string }) => Promise<DnsyServer>;
 }
 
-export const test = base.extend<Fixtures>({
+interface WorkerFixtures {
+  /** The shared server. */
+  server: ServerInfo;
+  /**
+   * A REST client signed in as admin on the shared server. It logs in once per worker, not once
+   * per test: every login attempt counts against the server's login throttle (per username and
+   * per client address, in flight included), and the product limits must stay as they are, so the
+   * suite keeps its share of attempts on the shared server small instead of bursting 20+ at once.
+   */
+  api: Api;
+}
+
+export const test = base.extend<Fixtures, WorkerFixtures>({
   baseURL: async ({ server }, use) => use(server.baseURL),
-  server: async ({}, use) => use(sharedServer()),
+  server: [async ({}, use) => use(sharedServer()), { scope: 'worker' }],
   // The default session is the admin's; `test.use({ storageState: roleState('viewer') })` changes it.
   storageState: statePath('admin'),
   cspGuard: [
@@ -41,11 +49,14 @@ export const test = base.extend<Fixtures>({
     },
     { auto: true },
   ],
-  api: async ({ server }, use) => {
-    const api = await Api.login(server.baseURL, 'admin');
-    await use(api);
-    await api.dispose();
-  },
+  api: [
+    async ({ server }, use) => {
+      const api = await Api.login(server.baseURL, 'admin');
+      await use(api);
+      await api.dispose();
+    },
+    { scope: 'worker' },
+  ],
   freshServer: async ({}, use) => {
     const started: DnsyServer[] = [];
     await use(async (opts) => {

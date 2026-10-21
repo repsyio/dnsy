@@ -1,4 +1,4 @@
-import { expect, sessionFor, signIn, test, uid, PASSWORD, heading } from './fixtures';
+import { expect, sessionFor, test, uid, PASSWORD, heading } from './fixtures';
 
 test('a created token shows its secret once, works as a bearer token and can be revoked', async ({
   page,
@@ -64,9 +64,6 @@ test.describe('password change', () => {
   }) => {
     const s = await freshServer();
     s.createUser('pw', 'operator');
-    await signIn(page, 'pw');
-    // The sign-in above targets the shared server; sign in against the private one instead.
-    await page.context().clearCookies();
     await page.goto(`${s.baseURL}/login`);
     await page.getByLabel('Username').fill('pw');
     await page.getByLabel('Password').fill(PASSWORD);
