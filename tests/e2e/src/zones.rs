@@ -19,6 +19,9 @@ pub fn zone_json(origin: &str, records: &[(&str, &str, &str)], signed: bool) -> 
 
 /// The file stem the server expects for `origin` (`example.test.` becomes `example.test`).
 pub fn file_stem(origin: &str) -> String {
+    if origin == "." {
+        return "_root".to_owned();
+    }
     origin.trim_end_matches('.').to_ascii_lowercase()
 }
 

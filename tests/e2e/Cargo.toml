@@ -12,6 +12,7 @@ description = "End-to-end harness and suites that run the real dnsy binary"
 workspace = true
 
 [dependencies]
+dnsy-core = { version = "0.1.0", path = "../../crates/dnsy-core" }
 dnsy-dnssec = { version = "0.1.0", path = "../../crates/dnsy-dnssec" }
 dnsy-proto = { version = "0.1.0", path = "../../crates/dnsy-proto" }
 base64 = { workspace = true }

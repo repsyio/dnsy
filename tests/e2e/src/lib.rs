@@ -12,6 +12,7 @@
 
 pub mod api;
 pub mod clients;
+pub mod dnssec;
 pub mod harness;
 pub mod pki;
 pub mod upstream;
@@ -19,6 +20,7 @@ pub mod zones;
 
 pub use api::{Api, Auth, Resp, Session};
 pub use clients::{DohClient, Framed, Token, query, query_edns, udp_exchange, udp_raw, udp_silent};
+pub use dnssec::{Answer, DsMode, Tree, ZoneSpec};
 pub use harness::{Harness, MtlsPolicy, Opts};
 pub use pki::{ClientIdentity, Pki};
 pub use upstream::{FakeUpstream, Reply};

@@ -89,3 +89,15 @@ Suites: `protocol` (UDP, TCP, EDNS, malformed input, hot reload), `transports` (
 validation smoke test), `lifecycle` (SIGHUP, SIGTERM) and `interop`; the REST suites `rest_auth`,
 `rest_errors`, `rest_zones`, `rest_policy` and `rest_observe`, and the cache suites `cache_api`,
 `cache_ttl` and `cache_stale`.
+
+The DNSSEC suites are `dnssec_validation` (forwarding path: modes, AD/CD/DO, EDE codes, negative
+trust anchors, mode changes), `dnssec_signing` (signing through the REST API, answers over UDP,
+TCP, DoT and DoH, denial, wildcards, DS export, BIND export) and `dnssec_lifecycle` (a second
+instance validating the first, key rollovers, the clock-sanity guard, `delv`/`dig` interop and an
+ignored live test against the real root). They use `dnsy_e2e::dnssec`: `Tree::build` creates a
+signed root with signed or unsigned zones below it (NSEC, NSEC3, opt-out, expired or future
+signatures, missing, unsupported or mismatching DS, colliding keys) and `tree.serve(&upstream)`
+makes the fake upstream answer from it; `Tree::answer` returns a response you can forge and script
+with `upstream.on`. `validate_answer` runs the `dnsy-dnssec` validator on a server's own answer.
+The clock guard test patches the build timestamp in a copy of the binary (`Opts::binary`), since a
+child process cannot be given another clock.

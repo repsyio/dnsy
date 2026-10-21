@@ -42,6 +42,11 @@ use crate::response::{
     error_response, finish, scrub,
 };
 
+/// Logged when the system clock is earlier than the build time.
+pub(crate) const CLOCK_UNTRUSTED_WARNING: &str = "system clock is earlier than the build time: \
+    DNSSEC validation is suspended and answers are served as indeterminate, without AD, until \
+    the clock is set";
+
 /// Clients tracked by the rate limiter.
 pub(crate) const RATE_LIMIT_KEYS: usize = 100_000;
 /// Prefetches waiting for a worker; further ones are dropped, the entry then just expires.
@@ -681,10 +686,7 @@ impl<E: Exchange> Engine<E> {
     fn note_clock(&self, trusted: bool) {
         let was_untrusted = self.clock_untrusted.swap(!trusted, Ordering::Relaxed);
         if !trusted && !was_untrusted {
-            tracing::warn!(
-                "system clock is earlier than the build time: DNSSEC validation is suspended and \
-                 answers are served as indeterminate, without AD, until the clock is set"
-            );
+            tracing::warn!("{CLOCK_UNTRUSTED_WARNING}");
         } else if trusted && was_untrusted {
             tracing::info!("system clock is plausible again: DNSSEC validation resumed");
             self.cache.flush_all();

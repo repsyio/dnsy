@@ -33,12 +33,23 @@ pub enum Reply {
     Garbage(Vec<u8>),
     /// Wait, then reply with the inner reply.
     Delay(Duration, Box<Reply>),
+    /// A full response: this rcode with these answer and authority records (signed fixtures).
+    Message {
+        rcode: Rcode,
+        answers: Vec<Record>,
+        authority: Vec<Record>,
+    },
 }
+
+/// Computes a reply from the question and the query's DO bit; `None` falls through to the
+/// default reply.
+pub type Responder = Arc<dyn Fn(&Name, RecordType, bool) -> Option<Reply> + Send + Sync>;
 
 #[derive(Default)]
 struct State {
     rules: HashMap<(Name, RecordType), Reply>,
     default: Option<Reply>,
+    responder: Option<Responder>,
     log: Vec<(Name, RecordType)>,
 }
 
@@ -130,6 +141,11 @@ impl FakeUpstream {
             .expect("state")
             .rules
             .insert((name, rtype), reply);
+    }
+
+    /// Computes the reply for everything without a script of its own (scripts win).
+    pub fn set_responder(&self, responder: Responder) {
+        self.state.lock().expect("state").responder = Some(responder);
     }
 
     /// Reply for everything without a script of its own.
@@ -248,10 +264,16 @@ async fn serve(socket: Arc<UdpSocket>, state: Arc<Mutex<State>>) {
         let reply = {
             let mut s = state.lock().expect("state");
             s.log.push((q.name.clone(), q.qtype));
+            let do_bit = query.edns.as_ref().is_some_and(|e| e.dnssec_ok);
             s.rules
                 .get(&(q.name.clone(), q.qtype))
-                .or(s.default.as_ref())
                 .cloned()
+                .or_else(|| {
+                    s.responder
+                        .as_ref()
+                        .and_then(|r| r(&q.name, q.qtype, do_bit))
+                })
+                .or_else(|| s.default.clone())
                 .unwrap_or(Reply::Rcode(Rcode::ServFail))
         };
         let socket = Arc::clone(&socket);
@@ -297,6 +319,15 @@ async fn render(query: &Message, reply: Reply) -> Option<Vec<u8>> {
         Reply::Rcode(rc) => m.header.rcode = rc,
         Reply::Garbage(bytes) => return Some(bytes),
         Reply::Drop => return None,
+        Reply::Message {
+            rcode,
+            answers,
+            authority,
+        } => {
+            m.header.rcode = rcode;
+            m.answers = answers;
+            m.authority = authority;
+        }
         Reply::Delay(..) | Reply::WrongId(_) => unreachable!("unwrapped above"),
     }
     if query.edns.is_some() {

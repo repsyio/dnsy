@@ -291,6 +291,12 @@ impl<E: Exchange> EngineBuilder<E> {
     #[must_use]
     pub fn build(self) -> Engine<E> {
         let (prefetch_tx, prefetch_rx) = tokio::sync::mpsc::channel(PREFETCH_QUEUE);
+        let clock_untrusted = self.dnssec.mode != dnsy_config::Validation::Off
+            && !self.dnssec.clock_trusted(unix_now());
+        if clock_untrusted {
+            // The first validation would find the flag already set and stay silent.
+            tracing::warn!("{}", crate::engine::CLOCK_UNTRUSTED_WARNING);
+        }
         Engine {
             now: self.now,
             stale_wait: self.stale_wait,
@@ -312,10 +318,7 @@ impl<E: Exchange> EngineBuilder<E> {
             attempts: self.attempts,
             deadline: self.deadline,
             fetch_permits: Semaphore::new(MAX_CONCURRENT_FETCHES),
-            clock_untrusted: Arc::new(AtomicBool::new(
-                self.dnssec.mode != dnsy_config::Validation::Off
-                    && !self.dnssec.clock_trusted(unix_now()),
-            )),
+            clock_untrusted: Arc::new(AtomicBool::new(clock_untrusted)),
             dnssec: ArcSwap::from_pointee(self.dnssec),
         }
     }
