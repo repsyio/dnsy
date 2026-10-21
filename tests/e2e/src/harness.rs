@@ -48,6 +48,11 @@ pub struct Opts {
     /// Queries per second per client (0 disables the limit).
     pub per_client_qps: u32,
     pub tcp_idle_ms: u64,
+    /// Concurrent TCP, `DoT` and `DoH` connections allowed per client address (the server default
+    /// is 16; load tests that open many connections from one address raise it).
+    pub max_conns_per_client: u32,
+    /// UDP requests in flight allowed per client address (server default 64).
+    pub udp_in_flight_per_client: u32,
     /// Domains written to a blocklist file that seeds the filter.
     pub blocked: Vec<String>,
     pub block_mode: &'static str,
@@ -87,6 +92,8 @@ impl Default for Opts {
             resolver_attempts: 1,
             per_client_qps: 0,
             tcp_idle_ms: 10_000,
+            max_conns_per_client: 16,
+            udp_in_flight_per_client: 64,
             blocked: Vec::new(),
             block_mode: "null_ip",
             cache_min_ttl: 0,
@@ -197,6 +204,8 @@ fn config(dir: &Path, o: &Opts, upstream: Option<SocketAddr>) -> String {
          [cache.prefetch]\n{prefetch}\
          [filter]\nblock_mode = \"{bm}\"\nblocklists = [{lists}]\n\
          [limits]\nopen_resolver = true\nper_client_qps = {qps}\ntcp_idle_ms = {idle}\n\
+         max_conns_per_client = {mcpc}\n\
+         udp_in_flight_per_client = {uifpc}\n\
          [logging]\nlevel = \"{lvl}\"\n",
         data = qp(&dir.join("data")),
         zones = qp(&dir.join("zones")),
@@ -213,6 +222,8 @@ fn config(dir: &Path, o: &Opts, upstream: Option<SocketAddr>) -> String {
         },
         qps = o.per_client_qps,
         idle = o.tcp_idle_ms,
+        mcpc = o.max_conns_per_client,
+        uifpc = o.udp_in_flight_per_client,
         lvl = o.log_level,
         validation = o.validation,
         prefetch = match o.prefetch {

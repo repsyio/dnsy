@@ -79,7 +79,10 @@ edited after release; a database newer than the binary is refused. Back up befor
 `just bench` builds the release `dnsy`, starts it against a fake upstream and prints a table of
 throughput and latency: UDP cache hit, UDP cache miss (every name unique), TCP (one persistent
 connection, 64 clients, 64 clients with 16 queries pipelined) and DoH (HTTP/1.1 and h2, POST).
-Pin CPUs for stable numbers, for example `taskset -c 0-5 just bench`; the server and the load
+All 64 load clients connect from 127.0.0.1, so the runner raises the per-client listener limits
+(`max_conns_per_client` and `udp_in_flight_per_client`, see below) in its own config; against the
+defaults the TCP and DoH rows would be reset and UDP datagrams dropped. Every row must show
+0 errors. Pin CPUs for stable numbers, for example `taskset -c 0-5 just bench`; the server and the load
 generator share the machine, so compare runs on the same host only. Reference numbers on a
 24-thread workstation, unpinned: UDP hit about 310k QPS, TCP persistent connection p50 18 us,
 TCP pipeline 16 at 64 clients about 426k QPS.
