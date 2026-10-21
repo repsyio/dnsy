@@ -57,6 +57,10 @@ struct ClientCounts {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags changed together under one lock; a state enum would need every combination"
+)]
 struct State {
     last: Instant,
     busy: usize,
