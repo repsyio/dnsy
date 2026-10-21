@@ -4,32 +4,58 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DNSY</title>
-<meta name="description" content="DNSY: a single-binary Rust DNS server with DoT, DoH, DNSSEC and a Tron-styled web UI.">
+<meta name="description" content="DNSY: a single-binary Rust DNS server with DoT, DoH, DNSSEC and a web UI.">
+<meta name="color-scheme" content="dark">
 <link rel="icon" href="branding/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="branding/tokens.css">
 <style>
   * { box-sizing: border-box; }
+  html { color-scheme: dark; }
   body {
     margin: 0; min-height: 100vh; display: grid; place-items: center; text-align: center; padding: 2rem 1rem;
-    background: var(--dnsy-bg) linear-gradient(var(--dnsy-grid) 1px, transparent 1px) 0 0 / 48px 48px;
-    color: var(--dnsy-text); font-family: var(--dnsy-font-body);
+    background: var(--dnsy-bg); color: var(--dnsy-text); font-family: var(--dnsy-font-body);
   }
   main { max-width: 40rem; }
-  svg { width: 9rem; height: 9rem; animation: float 5s ease-in-out infinite; }
-  .pupil { animation: look 6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-  h1 { font-family: var(--dnsy-font-display); font-size: 3rem; letter-spacing: 0.2em; color: var(--dnsy-cyan); text-shadow: var(--dnsy-glow-md); margin: 1rem 0 0.25rem; }
-  p { color: var(--dnsy-muted); line-height: 1.6; }
-  nav { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
-  a { color: var(--dnsy-cyan); border: 1px solid var(--dnsy-cyan); padding: 0.6rem 1.2rem; text-decoration: none; box-shadow: var(--dnsy-glow-sm); font-family: var(--dnsy-font-display); }
-  a:hover, a:focus-visible { box-shadow: var(--dnsy-glow-lg); color: var(--dnsy-text); }
+  .nox { width: 10rem; height: 10rem; overflow: visible; animation: float 6s ease-in-out infinite; }
+  .ln { fill: none; stroke: var(--dnsy-text); stroke-width: 0.5px; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .dash { stroke-dasharray: 2 4; opacity: 0.45; }
+  .eye { fill: none; stroke: var(--dnsy-red); stroke-width: 1px; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .beak { fill: none; stroke: var(--dnsy-red); stroke-width: 0.5px; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .eyes { animation: look 8s ease-in-out infinite; }
+  h1 {
+    font-family: var(--dnsy-font-display); font-weight: 400; font-size: 2.25rem; letter-spacing: 0.22em;
+    margin: 1.5rem 0 0.75rem; padding-left: 0.22em; text-transform: uppercase;
+  }
+  p { color: var(--dnsy-muted); line-height: 1.6; margin: 0; }
+  nav { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; margin-top: 2.25rem; }
+  a {
+    color: var(--dnsy-red); border: 0.5px solid var(--dnsy-red); border-radius: 2px; padding: 0.7rem 1.2rem;
+    text-decoration: none; font-family: var(--dnsy-font-display); font-size: 0.7rem; letter-spacing: 0.12em;
+    text-transform: uppercase; transition: background-color 0.15s, color 0.15s;
+  }
+  a:hover { background: var(--dnsy-red); color: var(--dnsy-bg); }
+  a:focus-visible { outline: 2px solid var(--dnsy-red); outline-offset: 3px; }
   @keyframes float { 50% { transform: translateY(-8px); } }
-  @keyframes look { 0%, 100% { transform: translateX(0); } 40% { transform: translateX(-1.5px); } 70% { transform: translateX(1.5px); } }
-  @media (prefers-reduced-motion: reduce) { svg, .pupil { animation: none; } }
+  @keyframes look {
+    0%, 30%, 100% { transform: translateX(0); }
+    40%, 55% { transform: translateX(-5px); }
+    65%, 80% { transform: translateX(5px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .nox, .eyes { animation: none; }
+    a { transition: none; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <svg viewBox="0 0 64 64" role="img" aria-label="Nox, the DNSY owl mascot"><defs><filter id="g" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g filter="url(#g)"><path d="M12 8 L24 16 H40 L52 8 V34 L44 52 L32 58 L20 52 L12 34 Z" fill="#05080d" stroke="#19e6ff" stroke-width="2.5" stroke-linejoin="round"/><circle cx="23" cy="28" r="6" fill="none" stroke="#19e6ff" stroke-width="2"/><circle cx="41" cy="28" r="6" fill="#19e6ff" fill-opacity=".25" stroke="#19e6ff" stroke-width="2"/><circle class="pupil" cx="23" cy="28" r="2.4" fill="#19e6ff"/><circle class="pupil" cx="41" cy="28" r="2.4" fill="#19e6ff"/><path d="M28 38 H36 L32 46 Z" fill="#ff8a1f"/></g></svg>
+  <svg class="nox" viewBox="0 0 200 200" role="img" aria-label="Nox, the DNSY owl mascot">
+    <path class="ln" d="M100 34 L146 20 L162 70 L152 140 L100 178 L48 140 L38 70 L54 20 Z"/>
+    <path class="ln dash" d="M100 46 L138 34 L150 72 L141 133 L100 163 L59 133 L50 72 L62 34 Z"/>
+    <path class="ln" d="M44 80 L100 98 L156 80"/>
+    <g class="eyes"><path class="eye" d="M62 101.5 H88 M112 101.5 H138"/></g>
+    <path class="beak" d="M93 108 L100 116 L107 108"/>
+  </svg>
   <h1>DNSY</h1>
   <p>A single-binary DNS server in Rust. UDP, TCP, DoT with mTLS, DoH with tokens, a validating forwarder, DNSSEC signing, filtering and a web UI.</p>
   <nav>

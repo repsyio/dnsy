@@ -10,6 +10,6 @@ build-dir = "../../target/book"
 [output.html]
 default-theme = "navy"
 preferred-dark-theme = "navy"
-additional-css = ["theme/tron.css"]
+additional-css = ["theme/dnsy.css"]
 git-repository-url = "https://github.com/repsyio/dnsy"
 site-url = "/docs/"

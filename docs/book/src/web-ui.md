@@ -12,7 +12,7 @@ profile pages.
 
 Taken at 1280 px from a seeded demo with Playwright (`scripts/demo/run.sh`, `scripts/demo/capture.mjs`).
 
-![The login page: a 3D light-grid scene with the Nox hologram](images/login.png)
+![The login page: the sign-in form beside a wireframe blob crossed by red pulses](images/login.png)
 
 ![The dashboard with tiles and the queries chart](images/dashboard.png)
 
@@ -41,13 +41,27 @@ Nox in an empty list and while loading:
   (`web/playwright.config.ts`, tests in `web/e2e/`) for browser tests.
 - pnpm, with the lockfile checked in.
 
-## Tron Legacy theme
+## Ares theme
 
-Near-black background with a cyan grid, cyan glow as the primary accent, orange for danger,
-glowing panels, Orbitron headings and JetBrains Mono body text. Colours, fonts and glows come from
-`branding/tokens.css`; the build bundles the self-hosted woff2 fonts (no CDN). The mark and Nox
-mascot SVGs are copied from `branding/` into `web/public/` by `pnpm sync:branding` (run by
-`pnpm build` and `pnpm start`; `public/` is generated and not committed).
+Black ground, white 0.5px hairlines and one strong red, with no glow, grid or drop shadow: depth
+comes from hairlines and spacing. Red (`--dnsy-red`) is only the brand: primary buttons, links,
+the focus ring, the active navigation item and Nox's eyes. Danger, destructive actions, field
+errors, warnings and DNSSEC bogus or blocked answers are amber (`--dnsy-amber`), always with a
+word, never colour alone; DNSSEC secure and success are green (`--dnsy-secure`). Corners stay
+near-square (2px). Page and section titles, buttons, badges and the wordmark use Michroma in
+uppercase with open tracking; body text, tables, forms and navigation use Geist; record data, IPs,
+config and tokens use Geist Mono. The palette and the measured contrast ratios are in
+[Branding](branding.md).
+
+Colours and fonts come from `branding/tokens.css`; `styles.css` maps them to Tailwind colours in
+`@theme inline` (`bg`, `surface`, `text`, `muted`, `line`, `red`, `amber`, `secure`) and defines
+the shared component classes (`page-title`, `section-title`, `wordmark`, `panel`, `btn`,
+`btn-danger`, `field-input`, `field-label`, `field-error`, `badge`, `nav-link`) and a `hairline`
+utility for 0.5px borders. Field borders use `muted` so they keep 3:1 against the surface;
+dividers and table rules use `line`. No hex literal appears outside `branding/tokens.css` except
+in the SVGs. The build bundles the self-hosted woff2 fonts (no CDN). The mark and Nox mascot SVGs
+are copied from `branding/` into `web/public/` by `pnpm sync:branding` (run by `pnpm build` and
+`pnpm start`; `public/` is generated and not committed).
 
 ## Strict CSP
 
@@ -92,8 +106,9 @@ checked in. Regenerate after an API change with `just openapi` followed by `just
 The production build enforces an initial bundle budget of 320 kB (warning) and 400 kB (error), raw,
 and an `anyComponentStyle` budget of 4 kB (warning) and 8 kB (error); `ng build` emits no budget
 warning. Measured initial total: 304.00 kB raw, 83.14 kB transferred, made of the framework chunk
-(151.64 kB), `main` (101.92 kB), `styles` (28.46 kB) and one shared chunk (21.36 kB). The three.js
-login scene (DNSY-46) must stay in a lazy chunk (546.80 kB, loaded only by `/login`).
+(151.64 kB), `main` (101.92 kB), `styles` (28.46 kB) and one shared chunk (21.36 kB). The login
+page draws its backdrop with a plain 2D canvas and no library; `three` was removed in DNSY-108
+(resolving DNSY-91).
 
 ### Code layout
 
@@ -137,8 +152,12 @@ default) and `action` (label of an optional button; the `actionClick` output fir
 
 The art is drawn inline from `branding/mascot/nox-*.svg` so the global keyframes in
 `shared/mascot/mascot.css` (imported by `styles.css`) can animate its parts under the strict CSP:
-bobbing, scanning pupils, a spinner, marching dashes, an error flash, a drawn check mark. All glow
-uses `drop-shadow` with the DNSY tokens. There are no JavaScript animation libraries.
+the head stays the same and the eyes act: a red point of light sweeping across dimmed eyes
+(loading), slanted amber eyes that flicker (error), green chevron eyes with a short hop (success),
+grey dashed eyes on a half-faded head (offline), and a tilted head with one wide eye (404). Lines
+are 0.5px `--dnsy-text` hairlines (`vector-effect: non-scaling-stroke`, so they stay hairlines at
+every size), eyes and beak take the state colour from `--nox-eye`. There is no glow and there are
+no JavaScript animation libraries.
 
 Accessibility: the SVG has `role="img"` and a distinct `aria-label` per state; the caption is a
 live region (`status` or `alert`) for loading, success, offline and error. With
@@ -151,23 +170,33 @@ registered when Angular runs in dev mode, so production builds answer with the 4
 
 ## Login page
 
-`/login` (`web/src/app/features/login/`) is a three.js scene with the sign-in form overlaid.
+`/login` (`web/src/app/features/login/`) is the one page with its own layout.
 
-- **Scene:** a cyan light-grid floor receding to an orange horizon glow, light-cycle trails, the
-  Nox mascot as an additive hologram (`mascot/nox-idle.svg` as a sprite texture) over a ring,
-  slow camera drift and pointer parallax. Pixel ratio is capped at 2.
-- **Loading:** `three` (pinned, named imports only) lives in `login-scene.ts`, which the page
-  imports dynamically after first render, so it is its own lazy chunk and not part of the initial
-  bundle. The render loop runs in `requestAnimationFrame` through `setAnimationLoop`, outside
-  change detection.
-- **Fallback:** with `prefers-reduced-motion: reduce` or when WebGL cannot create a context (or the
-  chunk fails to load) the page shows a static SVG perspective grid and never loads three.js. The
-  decision is `decideScene` in `scene-support.ts`; the form behaves the same either way.
-- **Lifecycle:** rendering pauses while the tab is hidden; on destroy (or when reduced motion is
-  switched on) geometries, materials, textures and the renderer are disposed and the GL context
-  is released.
-- **CSP:** works under `default-src 'self'`: no workers, blobs, `data:` URIs, eval or inline
-  styles; the mascot texture is a same-origin file.
+- **Layout:** from `md` up, two columns: the sign-in block in a 380px column on the left (Nox mark
+  and DNSY wordmark, one intro line in muted text, the fields, a red hairline Sign in button and
+  the first-run link), a 0.5px `--dnsy-line` divider, and the blob canvas filling the right side.
+  Below `md` there is one column: the canvas fills the background at half opacity and the form
+  sits on a solid `--dnsy-surface` panel so the fields stay readable.
+- **Blob:** a wireframe icosphere (2 subdivisions, unique edges) drawn on a plain 2D canvas in
+  0.5px white hairlines, radius 0.9 x the canvas height, centred at 95% of the width and 55% of
+  the height so only its left part shows, simple perspective (camera at 3.2 radii). Five lobes
+  morph it (`1 + 0.34 x sum(sin(dot(v, d) x f + phase)) / 2.2`) with drifting directions and
+  phases, so the shape never repeats; it spins at 0.12 rad/s around y with a slow x tilt. Edges
+  are bucketed by depth into five opacity steps from 0.12 to 0.80. Red pulses start at random,
+  1.2 per second on average, each sweeping a band of edges along its own random axis at 0.45 to
+  0.8 units/s, so two or three usually run at once. Geometry is in `blob.ts` (pure functions,
+  injected randomness); the loop is in `login-scene.ts`.
+- **When it runs:** the loop uses `requestAnimationFrame` outside change detection and stops
+  while the tab is hidden, after 30 s without pointer or keyboard activity (it resumes on the next
+  pointer move or key) and while the password field has focus (the DNSY-105 idle pause). The
+  pixel ratio is capped at 2 (`cappedPixelRatio`) so 0.5px hairlines stay crisp. With
+  `prefers-reduced-motion: reduce` the scene draws one still frame without pulses and redraws only
+  on resize; a live change of the preference restarts it in the matching mode. Without a 2D
+  context it draws nothing and the form works the same. On leave every listener is removed and
+  the loop is cancelled.
+- **Accessibility and CSP:** the canvas is decorative (`aria-hidden="true"`); colours are read
+  from the `--dnsy-*` custom properties, so there are no inline styles, workers, blobs or `data:`
+  URIs.
 - **Form:** labelled username and password fields, errors in a `role=alert` region, the Nox
   loading mascot while the request runs. A 401 reads "Invalid username or password" (the same text for
   unknown users), a 503 (password checks saturated) reads "The server is busy", and a 429 locks the
@@ -280,8 +309,9 @@ Code lives in `web/src/app/features/query-log/`; route `/query-log`.
   (keyset pagination, so rows arriving meanwhile do not shift pages). Rows are deduplicated by id.
   Client, response code and latency columns hide on narrow screens; the page works at 360 px.
 - **Badges**: DNSSEC status has a lock in `--dnsy-secure` for secure, a warning mark in
-  `--dnsy-bogus` for bogus and muted text for insecure, unchecked and indeterminate. Stale answers
-  carry an orange `Stale` tag, blocked, refused and error answers use the bogus colour.
+  `--dnsy-amber` for bogus, amber for indeterminate and muted text for insecure and unchecked.
+  Stale answers carry an amber `Stale` tag; blocked, refused and error answers are amber too,
+  always with their word.
 - **Detail drawer**: the domain in each row is a button that opens a side drawer with every field
   the API returns: time, client, principal, transport, type, response code, source and upstream
   or blocklist name, latency and DNSSEC status. Escape closes it, focus stays inside and returns
