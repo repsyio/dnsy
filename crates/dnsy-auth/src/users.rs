@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use dnsy_core::{Role, UserId};
 use dnsy_store::{Store, StoreError};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -6,6 +8,12 @@ use crate::UserError;
 use crate::bootstrap::{self, BootstrapCode};
 use crate::password::{self, HashGate, HashSlot, MAX_PASSWORD_BYTES};
 use dnsy_core::net::ClientKey;
+
+/// How long a login waits for a free hashing slot before it is refused with 503.
+#[cfg(not(test))]
+const SLOT_WAIT: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const SLOT_WAIT: Duration = Duration::from_millis(50);
 
 /// A stored user (never carries the password hash).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,8 +317,25 @@ impl UserService {
     }
 
     /// Admission for one hash on behalf of `client`, taken before a login attempt is recorded so a
-    /// busy refusal never counts as a failed password.
-    pub(crate) fn hash_slot(&self, client: ClientKey) -> Result<HashSlot, UserError> {
+    /// busy refusal never counts as a failed password. Waits up to [`SLOT_WAIT`] for capacity, so
+    /// a burst of logins from one address queues instead of failing.
+    ///
+    /// # Errors
+    /// [`UserError::Busy`] when no slot became free in time.
+    pub(crate) async fn hash_slot(&self, client: ClientKey) -> Result<HashSlot, UserError> {
+        let deadline = tokio::time::Instant::now() + SLOT_WAIT;
+        loop {
+            match self.gate.try_slot(Some(client)) {
+                Err(UserError::Busy) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_slot_now(&self, client: ClientKey) -> Result<HashSlot, UserError> {
         self.gate.try_slot(Some(client))
     }
 
@@ -474,17 +499,17 @@ mod tests {
             dnsy_core::net::client_key("192.0.2.2".parse().unwrap()),
         );
         let held: Vec<_> = (0..crate::password::PER_CLIENT_HASHES)
-            .map(|_| s.hash_slot(a).unwrap())
+            .map(|_| s.gate.try_slot(Some(a)).unwrap())
             .collect();
-        assert!(matches!(s.hash_slot(a), Err(UserError::Busy)));
+        assert!(matches!(s.gate.try_slot(Some(a)), Err(UserError::Busy)));
         // Another client still gets capacity (the host has more than the per-client share).
         if std::thread::available_parallelism().map_or(1, usize::from)
             > crate::password::PER_CLIENT_HASHES
         {
-            drop(s.hash_slot(b).unwrap());
+            drop(s.gate.try_slot(Some(b)).unwrap());
         }
         drop(held);
-        drop(s.hash_slot(a).unwrap());
+        drop(s.gate.try_slot(Some(a)).unwrap());
     }
 
     #[tokio::test]

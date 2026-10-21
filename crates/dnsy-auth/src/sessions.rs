@@ -100,7 +100,7 @@ impl SessionService {
         // Refuse oversized passwords and a busy hasher before anything is recorded: neither is a
         // failed password, and a request that has passed the throttle already owns its slot.
         check_password_len(password)?;
-        let slot = users.hash_slot(key)?;
+        let slot = users.hash_slot(key).await?;
         self.reserve_attempt(&name, key, now).await?;
         let user = users.verify_in(slot, &name, password).await?;
         // Correct credentials prove the owner is present: forget the account's failures and
@@ -563,7 +563,7 @@ mod tests {
         let (s, users, _user, _d) = setup().await;
         let key = client_key(IP);
         let held: Vec<_> = (0..crate::password::PER_CLIENT_HASHES)
-            .map(|_| users.hash_slot(key).unwrap())
+            .map(|_| users.try_slot_now(key).unwrap())
             .collect();
         for _ in 0..10 {
             let r = s.login_at(&users, "alice", "pw", IP, None, 100).await;
