@@ -220,7 +220,7 @@ async fn nsec_denial_validates() {
     let q = dnssec_query("www.example.test.", RecordType::Aaaa);
     let r = ask(&h, &q).await;
     assert_eq!(r.header.rcode, Rcode::NoError);
-    assert!(r.answers.is_empty());
+    assert_eq!(r.answers.len(), 0);
     assert!(types(&r).contains(&RecordType::Nsec));
     assert_eq!(validate(&h, &q, &r).await.status, DnssecStatus::Secure);
 }
@@ -304,7 +304,7 @@ async fn ds_at_delegation_is_signed_and_absence_is_proven() {
     let q = dnssec_query("plain.example.test.", RecordType::Ds);
     let r = ask(&h, &q).await;
     assert_eq!(r.header.rcode, Rcode::NoError);
-    assert!(r.answers.is_empty());
+    assert_eq!(r.answers.len(), 0);
     let nsec = r
         .authority
         .iter()

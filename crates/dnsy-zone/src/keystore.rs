@@ -1228,17 +1228,17 @@ mod tests {
     #[tokio::test]
     async fn concurrent_bootstrap_creates_one_key_set() {
         let f = fixture(None);
-        let p = policy("{}");
-        let z = zone();
-        let (a, b, c) = tokio::join!(
-            f.ks.bootstrap(&z, &p),
-            f.ks.bootstrap(&z, &p),
-            f.ks.bootstrap(&z, &p)
+        let pol = policy("{}");
+        let zn = zone();
+        let (first, second, third) = tokio::join!(
+            f.ks.bootstrap(&zn, &pol),
+            f.ks.bootstrap(&zn, &pol),
+            f.ks.bootstrap(&zn, &pol)
         );
-        for r in [a, b, c] {
-            r.unwrap();
+        for result in [first, second, third] {
+            result.unwrap();
         }
-        let live = f.ks.keys(&z).await.unwrap();
+        let live = f.ks.keys(&zn).await.unwrap();
         assert_eq!(live.len(), 1, "racing bootstraps must not each add a CSK");
     }
 

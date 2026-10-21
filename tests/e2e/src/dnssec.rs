@@ -5,7 +5,7 @@
 //! root: `. -> test. -> example.test.`, each delegation carrying the DS of the child's key. A
 //! zone can be unsigned, signed with NSEC or NSEC3 (opt-out too), signed in the past or the
 //! future, published with a missing, unsupported or mismatching DS, or flooded with DNSKEYs that
-//! share the signing key's tag (KeyTrap).
+//! share the signing key's tag (`KeyTrap`).
 //!
 //! The responder answers like an authoritative server for the deepest zone that owns the name:
 //! positive answers with their RRSIGs, wildcard expansions, NODATA and NXDOMAIN with the SOA and
@@ -135,7 +135,7 @@ impl ZoneSpec {
     }
 
     /// Adds `n` DNSKEYs with the signing ZSK's tag and algorithm (and no private key): every
-    /// signature check has to try them all (KeyTrap, CVE-2023-50387).
+    /// signature check has to try them all (`KeyTrap`, CVE-2023-50387).
     #[must_use]
     pub fn colliding_keys(mut self, n: usize) -> Self {
         self.junk_keys = n;
@@ -354,6 +354,10 @@ struct Built {
     served: Served,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear fixture builder: records, keys, signing, DS"
+)]
 fn build_zone(spec: &ZoneSpec, children: &[(&ZoneSpec, &Served)]) -> Built {
     let mut records = spec.records.clone();
     records.push(soa_record(&spec.origin));
@@ -741,4 +745,55 @@ pub async fn validate_answer(
     Validator::new(anchors)
         .validate(&WireFetcher(addr), &q.questions[0], resp, now)
         .await
+}
+
+// ---------------------------------------------------------------------------------------
+// clock sanity
+
+/// The build timestamp the server logged at start (`build_time=<unix>`).
+pub fn logged_build_time(h: &Harness) -> String {
+    let logs = h.logs();
+    let after = logs
+        .split("build_time")
+        .nth(1)
+        .expect("the start-up log names the build time");
+    let bytes = after.as_bytes();
+    (0..bytes.len().saturating_sub(10))
+        .map(|i| &bytes[i..i + 10])
+        .find(|w| w.iter().all(u8::is_ascii_digit))
+        .map(|w| String::from_utf8_lossy(w).into_owned())
+        .expect("a ten digit build time in the log")
+}
+
+/// Copies the `dnsy` binary into `dir` with its embedded build timestamp `stamp` replaced by
+/// `9999999999` (year 2286), so the system clock looks earlier than the build: there is no way
+/// to move the clock of a child process, and this is the only input of the clock-sanity check.
+pub fn binary_from_the_future(dir: &std::path::Path, stamp: &str) -> std::path::PathBuf {
+    assert_eq!(stamp.len(), 10, "a ten digit unix time");
+    let mut bytes = std::fs::read(crate::harness::binary()).expect("read the dnsy binary");
+    let needle = stamp.as_bytes();
+    let mut replaced = 0;
+    let mut i = 0;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            bytes[i..i + needle.len()].copy_from_slice(b"9999999999");
+            replaced += 1;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    assert!(
+        replaced > 0,
+        "the build timestamp is embedded in the binary"
+    );
+    let path = dir.join("dnsy-future");
+    std::fs::write(&path, bytes).expect("write the patched binary");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+    }
+    path
 }

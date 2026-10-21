@@ -90,7 +90,7 @@ async fn nsec_nxdomain_and_nodata_validate() {
     assert!(nx.header.ad, "a proven NXDOMAIN is secure");
     let nodata = ask(&h, &dnssec_query(WWW, RecordType::Aaaa)).await;
     assert_eq!(nodata.header.rcode, Rcode::NoError);
-    assert!(nodata.answers.is_empty());
+    assert_eq!(nodata.answers.len(), 0);
     assert!(nodata.header.ad, "a proven NODATA is secure");
 }
 
@@ -184,7 +184,7 @@ async fn bogus_signature_servfail_strict() {
     );
     let r = ask(&h, &dnssec_query("fake.example.test.", RecordType::A)).await;
     assert_eq!(r.header.rcode, Rcode::ServFail);
-    assert!(r.answers.is_empty());
+    assert_eq!(r.answers.len(), 0);
     assert!(!r.header.ad);
     assert_eq!(ede_codes(&r), [6], "DNSSEC Bogus");
     // The same without DO: still SERVFAIL, the server validates for every client.
@@ -225,7 +225,7 @@ async fn bogus_signature_passes_with_validation_off() {
     assert_eq!(r.header.rcode, Rcode::NoError);
     assert_eq!(first_a(&r), "203.0.113.66");
     assert!(!r.header.ad);
-    assert!(ede_codes(&r).is_empty());
+    assert_eq!(ede_codes(&r), Vec::<u16>::new());
     // Even the good data gets no AD: the server did not check it.
     assert!(!ask(&h, &dnssec_query(WWW, RecordType::A)).await.header.ad);
 }
@@ -400,7 +400,7 @@ async fn cache_never_serves_bogus_to_a_validating_client() {
     for _ in 0..3 {
         let r = ask(&h, &q).await;
         assert_eq!(r.header.rcode, Rcode::ServFail);
-        assert!(r.answers.is_empty());
+        assert_eq!(r.answers.len(), 0);
         assert_eq!(ede_codes(&r), [6], "a cached bogus verdict keeps its EDE");
     }
     // Whatever the cache holds, the upstream saw the name once.
@@ -446,7 +446,7 @@ async fn changing_the_mode_through_the_api_flushes_the_cache() {
     assert_eq!(status, 200);
     let r = ask(&h, &q).await;
     assert_eq!(first_a(&r), "203.0.113.66");
-    assert!(ede_codes(&r).is_empty());
+    assert_eq!(ede_codes(&r), Vec::<u16>::new());
 }
 
 #[tokio::test]
