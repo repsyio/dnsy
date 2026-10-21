@@ -62,6 +62,10 @@ A source is a local file path or an `http(s)` URL, with a name, a format (`auto`
 
 ### Refresh and atomic swap
 
+Creating an enabled source through `POST /blocklists` fetches it immediately (as re-enabling does)
+and the response shows the result; a failed first fetch is recorded in `last_status` and the
+scheduler retries.
+
 Each refresh fetches one source, then builds a complete new filter from every loaded list plus the custom rules on a blocking thread, and swaps it in with a single pointer store. Queries read the active filter without locking. If the fetch fails, the list holds no usable entry (for example an HTML error page), or the build exceeds a limit, nothing changes: the previous filter and the previous copy of that list stay active, and the failure is recorded in the source's `last_status` (`ok`, `not modified` or `error: ...`).
 
 URL sources use `ETag` / `Last-Modified` for conditional requests (`If-None-Match`, `If-Modified-Since`); a `304` keeps the held list. Validators are only sent while the process holds the matching copy in memory, so after a restart the first fetch is unconditional. Persisted `etag`, `last_modified`, `last_fetched` and `entries` are informational.

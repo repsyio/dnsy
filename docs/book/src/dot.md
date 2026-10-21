@@ -73,7 +73,9 @@ an entry takes effect for new handshakes at the next refresh.
 TLS session resumption is disabled whenever mTLS is on (no session cache, no tickets), because a
 resumed session would skip certificate verification. Every handshake re-verifies the chain, the
 CRL and the allowlist. A connection that stays open is re-checked on its next query after the CA,
-CRL or allowlist changed; if the certificate is no longer permitted the connection is closed.
+CRL or allowlist changed, and at least every 30 seconds regardless, so a certificate that
+simply expires (leaf `notAfter`, or the allowlist entry's `expires_at`) stops working on a
+long-lived connection; if the certificate is no longer permitted the connection is closed.
 Enable it with `DotConfig::with_mtls`.
 
 ### Client identity

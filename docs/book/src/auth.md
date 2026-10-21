@@ -7,6 +7,16 @@ Roles are `admin`, `operator` and `viewer`. Tokens carry scopes (`dns:query`, `a
 (viewer: `api:read`; operator: everything except `admin`; admin: all). The role is checked
 again on every use, so demoting a user narrows their existing tokens.
 
+Scopes are flat: `admin` is not a superset of `api:read` or `api:write`. Each route requires one
+scope (viewer-level reads `api:read`, changes `api:write`, administration `admin`), so an
+admin-only token that should also read must be minted with all three. `GET /api/v1/version`,
+`/healthz`, `/readyz` and `/api/openapi.json` need no credential by design. The
+route-by-role expectations are a committed table in `crates/dnsy-api/src/tests_matrix.rs`; a new
+route without a row fails the test suite.
+
+Limits: a token name is at most 128 characters, a username at most 64 and a user holds at most
+100 tokens; the API answers 422 with a problem detail beyond that.
+
 ## API tokens
 
 Format: `dnsy_<base32 id>_<base64url secret>` (8-byte id, 32-byte secret). The secret is shown
