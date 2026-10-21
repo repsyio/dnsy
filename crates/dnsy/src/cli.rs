@@ -34,6 +34,9 @@ pub enum Command {
         #[arg(long)]
         status: bool,
     },
+    /// Check, vacuum or back up the database.
+    #[command(subcommand)]
+    Db(DbCommand),
     /// Manage users.
     #[command(subcommand)]
     User(UserCommand),
@@ -53,6 +56,26 @@ pub enum Command {
     Openapi,
     /// Print the version and build time.
     Version,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DbCommand {
+    /// Verify the database (`quick_check`; `--full` runs `integrity_check`). Read-only, safe
+    /// while the server runs. Exits non-zero when a problem is found.
+    Check {
+        /// Run the slower, complete `integrity_check`.
+        #[arg(long)]
+        full: bool,
+    },
+    /// Rebuild the database file to give free space back. Refuses while the server (or any
+    /// other process) has the database open; needs up to twice its size in free disk space.
+    Vacuum,
+    /// Write a consistent copy of the database to a new file (mode 0600). Safe while the
+    /// server runs; the copy includes everything in the WAL.
+    Backup {
+        /// File to create; it must not exist.
+        file: PathBuf,
+    },
 }
 
 #[derive(Debug, Args)]

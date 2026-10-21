@@ -80,6 +80,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             logging::init(config.logging.level, config.logging.format);
             serve::serve(config, &cli.config, args).await
         }
+        Command::Db(cmd) => admin::db(&load_quiet(&cli.config)?, cmd, &mut out),
         Command::User(cmd) => admin::user(&load_quiet(&cli.config)?, cmd, &mut out).await,
         Command::Token(cmd) => admin::token(&load_quiet(&cli.config)?, cmd, &mut out).await,
         Command::Zone(cmd) => admin::zone(&load_quiet(&cli.config)?, cmd, &mut out).await,

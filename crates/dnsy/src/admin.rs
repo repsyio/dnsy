@@ -16,8 +16,8 @@ use dnsy_zone::{
 };
 
 use crate::cli::{
-    DnssecCommand, KeysCommand, PassphraseCommand, RolloverCommand, TokenCommand, UserCommand,
-    ZoneCommand,
+    DbCommand, DnssecCommand, KeysCommand, PassphraseCommand, RolloverCommand, TokenCommand,
+    UserCommand, ZoneCommand,
 };
 use crate::{Error, Result, db_path, open_store};
 
@@ -103,6 +103,43 @@ pub(crate) fn migrate(config: &Config, status: bool, out: &mut impl Write) -> Re
         writeln!(out, "{:04} {:<24} {state}", m.version, m.name)?;
     }
     Ok(())
+}
+
+/// `dnsy db ...`: works on the existing database file without creating or migrating it.
+pub(crate) fn db(config: &Config, cmd: DbCommand, out: &mut impl Write) -> Result<()> {
+    let path = db_path(config);
+    match cmd {
+        DbCommand::Check { full } => {
+            let problems = dnsy_store::check(&path, full)?;
+            if problems.is_empty() {
+                writeln!(out, "ok")?;
+                return Ok(());
+            }
+            for line in &problems {
+                writeln!(out, "{line}")?;
+            }
+            Err(Error::msg(format!(
+                "database check found {} problem(s); restore from a backup",
+                problems.len()
+            )))
+        }
+        DbCommand::Vacuum => {
+            let done = dnsy_store::vacuum(&path).map_err(|e| match e {
+                dnsy_store::StoreError::Busy => Error::msg(
+                    "the database is open in another process (is the server running?); \
+                     stop it and run the vacuum again",
+                ),
+                other => Error::from(other),
+            })?;
+            writeln!(out, "vacuumed: {} -> {} bytes", done.before, done.after)?;
+            Ok(())
+        }
+        DbCommand::Backup { file } => {
+            dnsy_store::backup(&path, &file)?;
+            writeln!(out, "backup written to {}", file.display())?;
+            Ok(())
+        }
+    }
 }
 
 fn parse_role(s: &str) -> Result<Role> {

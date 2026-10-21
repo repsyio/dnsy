@@ -33,6 +33,8 @@ pub enum StoreError {
     UnknownMigration { version: u32, name: String },
     #[error("database file error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("the database is in use by another process (stop the server first)")]
+    Busy,
     #[error("database task failed: {0}")]
     Task(String),
 }
@@ -235,7 +237,7 @@ impl Store {
 pub fn migration_status_at(path: &Path) -> Result<Vec<MigrationStatus>, StoreError> {
     let mut done = std::collections::BTreeMap::new();
     if path.exists() {
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let conn = open_immutable(path)?;
         let table: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
             [],
@@ -259,6 +261,23 @@ pub fn migration_status_at(path: &Path) -> Result<Vec<MigrationStatus>, StoreErr
         .collect();
     out.sort_by_key(|s| s.version);
     Ok(out)
+}
+
+/// Opens `path` read-only with `immutable=1`: SQLite takes no locks and creates no `-shm`, so
+/// this works on a read-only directory. It ignores the WAL, so a database a server is writing
+/// shows its last checkpointed state.
+fn open_immutable(path: &Path) -> Result<Connection, StoreError> {
+    let uri = format!(
+        "file:{}?immutable=1",
+        path.to_string_lossy()
+            .replace('%', "%25")
+            .replace('?', "%3F")
+            .replace('#', "%23")
+    );
+    Ok(Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )?)
 }
 
 async fn join<T>(h: tokio::task::JoinHandle<Result<T, StoreError>>) -> Result<T, StoreError> {
@@ -335,6 +354,20 @@ mod tests {
         Store::open(&p).unwrap();
         let after = migration_status_at(&p).unwrap();
         assert!(after.iter().all(|m| m.applied_at.is_some()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_at_works_on_a_read_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, p) = db();
+        Store::open(&p).unwrap();
+        let dir = d.path();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let status = migration_status_at(&p);
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let status = status.expect("read-only directory");
+        assert!(status.iter().all(|m| m.applied_at.is_some()));
     }
 
     #[tokio::test]

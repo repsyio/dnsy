@@ -61,17 +61,33 @@ ones are never changed. At start the server logs a warning for every TLS private
 
 See [Backup and restore](backup-restore.md) for the procedure; in short:
 
-Stop writing, or use SQLite's online backup, and copy `<data_dir>/dnsy.db` (with its `-wal`
-file). It holds users, tokens, rules, upstream groups and DNSSEC private keys; protect the
+Run `dnsy db backup <file>` (SQLite's online backup; consistent and safe while the server runs),
+or stop the server and copy `<data_dir>/dnsy.db` with its `-wal` file. It holds users, tokens, rules, upstream groups and DNSSEC private keys; protect the
 copy like the keys themselves. Without `DNSY_DNSSEC_PASSPHRASE` or `key_passphrase_file` the
 keys are stored unencrypted. Zone files are plain JSON in `[zones] dir`; back them up too.
+
+## Database maintenance
+
+`dnsy db` works on `<data_dir>/dnsy.db` without creating or migrating it:
+
+| Command | What it does | While the server runs |
+| --- | --- | --- |
+| `dnsy db check [--full]` | `PRAGMA quick_check` (`--full`: `integrity_check`); prints `ok` or the problems and exits non-zero | safe, read-only (a few seconds per 10 million query-log rows) |
+| `dnsy db backup <file>` | consistent copy via the online backup API, mode 0600, never overwrites | safe |
+| `dnsy db vacuum` | rebuilds the file and returns free pages to the disk | refused: it blocks every writer and needs up to twice the database size in free disk, so stop the server first |
+
+`vacuum` detects a server (or any other process) holding the database and exits with an error
+instead of waiting. Retention purges free pages for reuse but do not shrink the file; vacuum only
+when disk space matters.
 
 ## Upgrades and migrations
 
 See [Upgrade and migrations](upgrade.md). In short:
 
 `dnsy serve` and `dnsy migrate` apply pending migrations on start. `dnsy migrate --status`
-lists applied and pending migrations without touching the database. Migrations are never
+lists applied and pending migrations without touching the database; it opens the file with
+`immutable=1`, so it works on a read-only directory, but it ignores the `-wal` file and therefore
+shows the last checkpointed state of a database a server is writing. Migrations are never
 edited after release; a database newer than the binary is refused. Back up before upgrading.
 
 ## Benchmarks
