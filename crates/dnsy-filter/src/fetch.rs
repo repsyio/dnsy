@@ -251,7 +251,7 @@ impl Fetcher {
     }
 }
 
-pub(crate) fn header_value(resp: &Response<Incoming>, name: &HeaderName) -> Option<String> {
+fn header_value(resp: &Response<Incoming>, name: &HeaderName) -> Option<String> {
     resp.headers()
         .get(name)
         .and_then(|v| v.to_str().ok())

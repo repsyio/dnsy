@@ -2,9 +2,10 @@
 //! the caller supplies, with TLS verified against the webpki roots.
 //!
 //! URLs are split by hand ([`Target`]): ASCII only (internationalised host names are not
-//! supported; use the punycode `xn--` form), no user info, IPv6 literals in brackets. Hosts
-//! ending in a numeric label must be a plain dotted-quad IPv4 address, so shorthand forms such
-//! as `0x7f.1` or `2130706433` are refused instead of being interpreted.
+//! supported; use the punycode `xn--` form), no user info, IPv6 literals in brackets. A host
+//! ending in a numeric label is an IPv4 address read as browsers and the WHATWG URL standard
+//! read it (`127.1`, `0x7f.0.0.1` and `2130706433` are all `127.0.0.1`), so the address policy
+//! sees the address that is actually dialled; a malformed one is refused.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -193,7 +194,7 @@ fn split_authority(authority: &str) -> Result<(String, Option<IpAddr>, Option<u1
 }
 
 /// A host name of letters, digits, `-`, `_` and `.`; a numeric last label makes it an IPv4
-/// literal, which must then be a plain dotted quad.
+/// literal in the WHATWG forms.
 fn check_host(host: String) -> Result<(String, Option<IpAddr>), FetchError> {
     let valid = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
     let bare = host.strip_suffix('.').unwrap_or(&host);
@@ -208,8 +209,49 @@ fn check_host(host: String) -> Result<(String, Option<IpAddr>), FetchError> {
     if !numeric {
         return Ok((host, None));
     }
-    let ip: Ipv4Addr = bare.parse().map_err(|_| FetchError::InvalidLocation)?;
+    let ip = whatwg_ipv4(bare).ok_or(FetchError::InvalidLocation)?;
     Ok((ip.to_string(), Some(IpAddr::V4(ip))))
+}
+
+/// The WHATWG IPv4 parser: one to four parts, each decimal, octal (leading `0`) or hex (`0x`);
+/// all but the last part are one byte, the last fills the remaining bytes.
+fn whatwg_ipv4(host: &str) -> Option<Ipv4Addr> {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() > 4 {
+        return None;
+    }
+    let mut numbers = Vec::with_capacity(parts.len());
+    for part in &parts {
+        if part.is_empty() {
+            return None;
+        }
+        let (digits, radix) = if let Some(hex) = part.strip_prefix("0x") {
+            (hex, 16)
+        } else if part.len() > 1 && part.starts_with('0') {
+            (&part[1..], 8)
+        } else {
+            (*part, 10)
+        };
+        let n = if digits.is_empty() {
+            0
+        } else {
+            u64::from_str_radix(digits, radix).ok()?
+        };
+        numbers.push(n);
+    }
+    let (last, init) = numbers.split_last()?;
+    if init.iter().any(|&n| n > 255) {
+        return None;
+    }
+    let free_bits = 8 * (5 - numbers.len());
+    if *last >= 1 << free_bits {
+        return None;
+    }
+    let mut value = *last;
+    for (i, &n) in init.iter().enumerate() {
+        value += n << (8 * (3 - i));
+    }
+    u32::try_from(value).ok().map(Ipv4Addr::from)
 }
 
 /// The client configuration used by every caller: webpki roots, ring provider.

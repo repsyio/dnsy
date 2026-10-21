@@ -77,7 +77,7 @@ A source is refreshed when it has never been fetched or its due time has passed.
 ### URL safety (SSRF)
 
 - Only `http` and `https`. TLS certificates are verified against the built-in web PKI roots; no proxy from the environment is used.
-- URLs must be ASCII: internationalised host names are not supported (write the punycode `xn--` form) and user info is refused. A host ending in a numeric label must be a plain dotted-quad IPv4 address; shorthand forms such as `0x7f.1`, `127.1` or `2130706433` are refused rather than interpreted.
+- URLs must be ASCII: internationalised host names are not supported (write the punycode `xn--` form) and user info is refused. A host ending in a numeric label is an IPv4 address read the way browsers read it (`127.1`, `0x7f.0.0.1` and `2130706433` are all `127.0.0.1`), so the address checks below see the address actually dialled; a malformed one is refused.
 - Requests are plain HTTP/1.1, one request per connection, dialled only to the checked addresses.
 - The host is resolved once and every address must be public. Loopback, private, link-local (including cloud metadata `169.254.169.254`), unique-local, carrier-grade NAT, multicast, reserved and documentation ranges are refused, as are IPv6 forms that embed them (IPv4-mapped, NAT64, 6to4). The connection is pinned to the checked addresses, so a second lookup cannot return a different answer.
 - Redirects are followed by hand, at most 5, each hop re-checked; a redirect to another scheme or from `https` to `http` is refused. The `Location` must be an absolute `http(s)` URL or an absolute path (`/list.txt`); relative and scheme-relative (`//host/x`) locations are refused.

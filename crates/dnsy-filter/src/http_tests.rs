@@ -93,6 +93,23 @@ fn target_parse_table() {
     );
     let t = Target::parse("http://127.0.0.1:81/").unwrap();
     assert_eq!(t.ip(), Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    // IPv4 shorthand is read as the WHATWG URL standard reads it, so the policy sees the
+    // address that is dialled.
+    for (short, ip) in [
+        ("127.1", "127.0.0.1"),
+        ("0x7f.1", "127.0.0.1"),
+        ("0X7F.0.0.1", "127.0.0.1"),
+        ("2130706433", "127.0.0.1"),
+        ("010.0.0.1", "8.0.0.1"),
+        ("10.0.258", "10.0.1.2"),
+        ("1.2.3.4.", "1.2.3.4"),
+        ("0x.0", "0.0.0.0"),
+        ("4294967295", "255.255.255.255"),
+    ] {
+        let t = Target::parse(&format!("http://{short}/")).unwrap();
+        assert_eq!(t.host_str(), ip, "{short}");
+        assert_eq!(t.ip(), Some(ip.parse().unwrap()), "{short}");
+    }
 
     for bad in [
         "https://u:p@example.com/",
@@ -110,11 +127,14 @@ fn target_parse_table() {
         "http://[::1/",
         "http://[::1]x/",
         "http://[nope]/",
-        "http://0x7f.1/",
-        "http://2130706433/",
-        "http://127.1/",
-        "http://010.0.0.1/",
         "http://1.2.3.256/",
+        "http://1.2.3.4.5/",
+        "http://0x100.1/",
+        "http://08.1.1.1/",
+        "http://1.16777216/",
+        "http://4294967296/",
+        "http://..1/",
+        "http://1..1/",
         "example.com/x",
     ] {
         assert!(
