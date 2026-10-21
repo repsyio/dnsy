@@ -29,7 +29,7 @@ Over the limit, UDP queries are dropped silently (a reply to a spoofed source ad
 
 An upstream answer whose A or AAAA record lies inside a listed network is blocked: the client gets the configured block response with EDE 15 (Blocked), and the query log records the source `blocked` with list `response-ip`. This stops DNS rebinding to internal ranges and known-bad addresses. IPv4-mapped IPv6 addresses are matched as IPv4. The check also applies to cached answers, so a change takes effect at once.
 
-The list starts from `[filter] response_ip_blocklist` (CIDRs or single addresses; an invalid entry fails config validation). `PUT /api/v1/response-ip` replaces the whole list live and stores it in the `response_ip_policy` table (migration `0015`); once stored, the list wins over the file after a restart, like the rate limit. An empty list disables the policy. Reading needs `api:read`; changing needs `api:write` (operator or admin).
+The list starts from `[filter] response_ip_blocklist` (CIDRs or single addresses; an invalid entry fails config validation). `PUT /api/v1/response-ip` replaces the whole list live and stores it in the `response_ip_policy` table (migration `0016`); once stored, the list wins over the file after a restart, like the rate limit. An empty list disables the policy. Reading needs `api:read`; changing needs `api:write` (operator or admin).
 
 ```toml
 [filter]
