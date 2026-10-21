@@ -104,8 +104,9 @@ docs:
 # `web` already runs the web coverage gate, so only the Rust half of `cov` is listed.
 ci: check test cov-rust web e2e e2e-ui
 
-# Validate branding SVGs (wellformedness, viewBox, no external refs, size budget).
+# Validate branding SVGs (XML-parsed: no active content or external refs, viewBox, size budget).
 check-svg:
+    ./scripts/check-svg.sh --self-test
     ./scripts/check-svg.sh branding
 
 # Fuzz one target with libFuzzer (needs a nightly toolchain and cargo-fuzz; not part of `ci`).
