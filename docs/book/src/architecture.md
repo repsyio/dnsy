@@ -28,6 +28,7 @@ dependencies) feeds the DNS crates, and the binary `dnsy` wires them together.
 | `dnsy-proto` | wire format, names, records, EDNS, canonical form |
 | `dnsy-dnssec` | validation, signing, key handling over `ring` primitives |
 | `dnsy-config` | TOML schema, defaults, validation |
+| (config consumers) | Only `dnsy-engine` (its builder), `dnsy-api` and `dnsy` depend on `dnsy-config`. The shared enums `Validation` and `BlockMode` live in `dnsy-core` (config re-exports them, serde strings unchanged); the resolver owns `CacheOptions` and `DnssecOptions`, which the engine builder fills from `[cache]` and `[dnssec]`; `dnsy_dnssec::TrustAnchor::parse` parses trust anchors (config only checks the shape, `EngineBuilder::from_config` and `dnsy config check` parse fully); the key store takes the passphrase environment variable name as a parameter |
 | `dnsy-store` | SQLite handle and migrations |
 | `dnsy-auth` | users, roles, tokens, sessions |
 | `dnsy-observe` | query events, query log, statistics |

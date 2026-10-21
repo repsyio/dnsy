@@ -20,19 +20,19 @@ fn key(n: &str, t: RecordType) -> CacheKey {
     }
 }
 
-fn cfg() -> CacheConfig {
-    CacheConfig {
+fn cfg() -> CacheOptions {
+    CacheOptions {
         min_ttl: 0,
         max_ttl: 86_400,
-        serve_stale: dnsy_config::ServeStale {
+        serve_stale: ServeStaleOptions {
             enabled: false,
-            ..dnsy_config::ServeStale::default()
+            ..ServeStaleOptions::default()
         },
-        prefetch: dnsy_config::Prefetch {
+        prefetch: PrefetchOptions {
             enabled: false,
-            ..dnsy_config::Prefetch::default()
+            ..PrefetchOptions::default()
         },
-        ..CacheConfig::default()
+        ..CacheOptions::default()
     }
 }
 
@@ -119,7 +119,7 @@ fn secs_later(t: Instant, s: u64) -> Instant {
 
 #[test]
 fn ttl_decrements_on_serve() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -135,7 +135,7 @@ fn ttl_decrements_on_serve() {
 
 #[test]
 fn ttl_clamped_to_min_and_max() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         min_ttl: 60,
         max_ttl: 600,
         ..cfg()
@@ -164,7 +164,7 @@ fn ttl_clamped_to_min_and_max() {
 
 #[test]
 fn lifetime_is_minimum_across_rrsets() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     let mut m = positive("www.example.com", 300);
@@ -179,7 +179,7 @@ fn lifetime_is_minimum_across_rrsets() {
 
 #[test]
 fn expired_entry_misses() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -195,7 +195,7 @@ fn expired_entry_misses() {
 
 #[test]
 fn zero_ttl_not_cached() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     c.insert(
         key("z.example.com", RecordType::A),
@@ -208,7 +208,7 @@ fn zero_ttl_not_cached() {
 
 #[test]
 fn name_is_case_insensitive() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     c.insert(
         key("WWW.Example.COM", RecordType::A),
@@ -224,7 +224,7 @@ fn name_is_case_insensitive() {
 
 #[test]
 fn negative_cache_uses_soa_minimum() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("nodata.example.com", RecordType::Aaaa);
     c.insert(
@@ -256,7 +256,7 @@ fn negative_cache_uses_soa_minimum() {
         CacheLookup::Fresh { .. }
     ));
     assert!(matches!(c.get(&k2, secs_later(t0, 30)), CacheLookup::Miss));
-    let capped = Cache::new(&CacheConfig {
+    let capped = Cache::new(CacheOptions {
         negative_max_ttl: 10,
         ..cfg()
     });
@@ -280,7 +280,7 @@ fn negative_cache_uses_soa_minimum() {
 
 #[test]
 fn negative_without_soa_not_cached() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("x.example.com", RecordType::A);
     c.insert(
@@ -300,7 +300,7 @@ fn negative_without_soa_not_cached() {
 
 #[test]
 fn nxdomain_answers_other_types() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let m = negative("gone.example.com", RecordType::A, Rcode::NxDomain, 300, 300);
     c.insert(
@@ -320,7 +320,7 @@ fn nxdomain_answers_other_types() {
 
 #[test]
 fn nxdomain_behind_cname_stays_per_type() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let mut m = negative(
         "alias.example.com",
@@ -354,7 +354,7 @@ fn nxdomain_behind_cname_stays_per_type() {
 
 #[test]
 fn servfail_short_ttl() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         servfail_ttl: 5,
         ..cfg()
     });
@@ -375,7 +375,7 @@ fn servfail_short_ttl() {
 
 #[test]
 fn other_rcodes_not_cached() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     c.insert(
         key("r.example.com", RecordType::A),
@@ -388,7 +388,7 @@ fn other_rcodes_not_cached() {
 
 #[test]
 fn bounded_eviction_counts() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         max_entries: 4,
         ..cfg()
     });
@@ -411,7 +411,7 @@ fn bounded_eviction_counts() {
 
 #[test]
 fn single_slot_cache_replaces_its_entry() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         max_entries: 1,
         ..cfg()
     });
@@ -438,7 +438,7 @@ fn single_slot_cache_replaces_its_entry() {
 
 #[test]
 fn eviction_keeps_recently_used() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         max_entries: 32,
         ..cfg()
     });
@@ -468,7 +468,7 @@ fn eviction_keeps_recently_used() {
 
 #[test]
 fn do_bit_separates_entries() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let plain = key("www.example.com", RecordType::A);
     let mut dok = plain.clone();
@@ -491,7 +491,7 @@ fn do_bit_separates_entries() {
 
 #[test]
 fn cd_entries_isolated() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let normal = key("www.example.com", RecordType::A);
     let mut cd = normal.clone();
@@ -519,7 +519,7 @@ fn cd_entries_isolated() {
 
 #[test]
 fn bogus_never_served_as_secure() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         bogus_ttl: 60,
         ..cfg()
     });
@@ -540,7 +540,7 @@ fn bogus_never_served_as_secure() {
 
 #[test]
 fn bogus_keeps_its_ede_and_is_data_only_when_asked() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("bad.example.com", RecordType::A);
     let mut m = positive("bad.example.com", 300);
@@ -565,7 +565,7 @@ fn bogus_keeps_its_ede_and_is_data_only_when_asked() {
 
 #[test]
 fn secure_not_overwritten_by_bogus() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -603,7 +603,7 @@ fn secure_not_overwritten_by_bogus() {
 
 #[test]
 fn tc_and_aa_not_cached() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     let mut tc = positive("www.example.com", 60);
@@ -618,7 +618,7 @@ fn tc_and_aa_not_cached() {
 
 #[test]
 fn disabled_cache_stores_nothing() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         enabled: false,
         ..cfg()
     });
@@ -635,7 +635,7 @@ fn disabled_cache_stores_nothing() {
 
 #[test]
 fn flush_name_subtree() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     for n in [
         "example.com",
@@ -663,7 +663,7 @@ fn flush_name_subtree() {
 
 #[test]
 fn stats_counters_accurate() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         max_entries: 100,
         ..cfg()
     });
@@ -696,7 +696,7 @@ fn stats_counters_accurate() {
 
 #[test]
 fn concurrent_get_insert() {
-    let c = Arc::new(Cache::new(&CacheConfig {
+    let c = Arc::new(Cache::new(CacheOptions {
         max_entries: 64,
         ..cfg()
     }));
@@ -727,7 +727,7 @@ fn concurrent_get_insert() {
 
 #[test]
 fn qtype_zero_neither_hits_nor_overwrites_name_level_nxdomain() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let zero = RecordType::Unknown(0);
     let m = negative("gone.example.com", RecordType::A, Rcode::NxDomain, 300, 300);
@@ -760,7 +760,7 @@ fn bound_is_global_whatever_the_hash_distribution() {
     // Each new cache hashes differently. With a per-shard bound, a shard that received no keys
     // left the cache under-filled (entries < max_entries); the bound must be global.
     for _ in 0..300 {
-        let c = Cache::new(&CacheConfig {
+        let c = Cache::new(CacheOptions {
             max_entries: 4,
             ..cfg()
         });
@@ -781,7 +781,7 @@ fn bound_is_global_whatever_the_hash_distribution() {
 
 #[test]
 fn reconfigure_changes_ttl_bounds_for_later_inserts() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -801,9 +801,9 @@ fn reconfigure_changes_ttl_bounds_for_later_inserts() {
     assert_eq!(fresh(c.get(&k, t0)).answers[0].ttl, 60);
 }
 
-fn stale_cfg() -> CacheConfig {
-    CacheConfig {
-        serve_stale: dnsy_config::ServeStale {
+fn stale_cfg() -> CacheOptions {
+    CacheOptions {
+        serve_stale: ServeStaleOptions {
             enabled: true,
             max_stale: 1000,
             answer_ttl: 30,
@@ -826,7 +826,7 @@ fn stale(l: CacheLookup) -> (Message, DnssecStatus, Duration) {
 
 #[test]
 fn stale_window_follows_expiry() {
-    let c = Cache::new(&stale_cfg());
+    let c = Cache::new(stale_cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -848,7 +848,7 @@ fn stale_window_follows_expiry() {
 
 #[test]
 fn stale_disabled_expires_normally() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -862,7 +862,7 @@ fn stale_disabled_expires_normally() {
 
 #[test]
 fn stale_nxdomain_answers_other_types_by_name() {
-    let c = Cache::new(&stale_cfg());
+    let c = Cache::new(stale_cfg());
     let t0 = Instant::now();
     c.insert(
         key("gone.example.com", RecordType::A),
@@ -881,7 +881,7 @@ fn stale_nxdomain_answers_other_types_by_name() {
 
 #[test]
 fn stale_bogus_and_servfail_never_served() {
-    let c = Cache::new(&stale_cfg());
+    let c = Cache::new(stale_cfg());
     let t0 = Instant::now();
     let (bogus, sf) = (
         key("bad.example.com", RecordType::A),
@@ -906,7 +906,7 @@ fn stale_bogus_and_servfail_never_served() {
 
 #[test]
 fn stale_secure_is_not_reported_validated() {
-    let c = Cache::new(&stale_cfg());
+    let c = Cache::new(stale_cfg());
     let t0 = Instant::now();
     let k = key("s.example.com", RecordType::A);
     c.insert(
@@ -922,7 +922,7 @@ fn stale_secure_is_not_reported_validated() {
 
 #[test]
 fn refresh_replaces_stale() {
-    let c = Cache::new(&stale_cfg());
+    let c = Cache::new(stale_cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -945,7 +945,7 @@ fn refresh_replaces_stale() {
 
 #[test]
 fn stale_entries_stay_within_the_bound() {
-    let c = Cache::new(&CacheConfig {
+    let c = Cache::new(CacheOptions {
         max_entries: 4,
         ..stale_cfg()
     });
@@ -1033,9 +1033,9 @@ async fn finishing_without_waiters_skips_the_value() {
     assert!(r.begin(&k).is_some());
 }
 
-fn prefetch_cfg() -> CacheConfig {
-    CacheConfig {
-        prefetch: dnsy_config::Prefetch {
+fn prefetch_cfg() -> CacheOptions {
+    CacheOptions {
+        prefetch: PrefetchOptions {
             enabled: true,
             min_hits: 3,
             remaining_ttl_pct: 10,
@@ -1046,7 +1046,7 @@ fn prefetch_cfg() -> CacheConfig {
 
 #[test]
 fn prefetch_triggers_for_popular_entry_once() {
-    let c = Cache::new(&prefetch_cfg());
+    let c = Cache::new(prefetch_cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -1078,7 +1078,7 @@ fn prefetch_triggers_for_popular_entry_once() {
 
 #[test]
 fn prefetch_not_triggered_below_min_hits() {
-    let c = Cache::new(&prefetch_cfg());
+    let c = Cache::new(prefetch_cfg());
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
     c.insert(
@@ -1096,7 +1096,7 @@ fn prefetch_not_triggered_below_min_hits() {
 fn prefetch_disabled_and_bogus_and_expired_never_due() {
     let t0 = Instant::now();
     let k = key("www.example.com", RecordType::A);
-    let off = Cache::new(&cfg());
+    let off = Cache::new(cfg());
     off.insert(
         k.clone(),
         &positive("www.example.com", 100),
@@ -1108,7 +1108,7 @@ fn prefetch_disabled_and_bogus_and_expired_never_due() {
     }
     assert!(!off.prefetch_due(&k, secs_later(t0, 95)));
 
-    let c = Cache::new(&prefetch_cfg());
+    let c = Cache::new(prefetch_cfg());
     c.insert(
         k.clone(),
         &positive("www.example.com", 100),
@@ -1132,7 +1132,7 @@ fn prefetch_disabled_and_bogus_and_expired_never_due() {
 
 #[test]
 fn stale_and_prefetch_counters() {
-    let c = Cache::new(&cfg());
+    let c = Cache::new(cfg());
     c.note_stale_served();
     c.note_prefetch();
     c.note_prefetch();

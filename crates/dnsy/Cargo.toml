@@ -26,6 +26,7 @@ dnsy-engine = { version = "0.1.0", path = "../dnsy-engine" }
 dnsy-filter = { version = "0.1.0", path = "../dnsy-filter" }
 dnsy-observe = { version = "0.1.0", path = "../dnsy-observe" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
+dnsy-resolver = { version = "0.1.0", path = "../dnsy-resolver" }
 dnsy-server = { version = "0.1.0", path = "../dnsy-server" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
 dnsy-zone = { version = "0.1.0", path = "../dnsy-zone" }
@@ -48,7 +49,6 @@ webpki-roots = { workspace = true }
 
 [dev-dependencies]
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
-dnsy-resolver = { version = "0.1.0", path = "../dnsy-resolver" }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }

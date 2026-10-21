@@ -235,6 +235,26 @@ fn config_check_reports_errors() {
 }
 
 #[test]
+fn config_check_reports_bad_trust_anchor() {
+    let env = Env::new(false);
+    let bad = "dnssec_anchor_flip_and_fail";
+    std::fs::write(
+        env.config(),
+        format!("[dnssec]\ntrust_anchors = [\"1 8 2 {bad}\"]\n"),
+    )
+    .unwrap();
+    let out = env.run(&["config", "check"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("trust anchor"), "{stderr}");
+
+    std::fs::write(env.config(), "[dnssec]\ntrust_anchors = [\"1 8 2 abcd\"]\n").unwrap();
+    let out = env.run(&["config", "check"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("digest length"));
+}
+
+#[test]
 fn example_config_is_valid() {
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/dnsy.toml");
     let text = std::fs::read_to_string(example).unwrap();

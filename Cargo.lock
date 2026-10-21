@@ -593,7 +593,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "criterion",
- "dnsy-config",
  "dnsy-core",
  "dnsy-e2e",
  "dnsy-proto",
@@ -605,6 +604,7 @@ dependencies = [
 name = "dnsy-config"
 version = "0.1.0"
 dependencies = [
+ "dnsy-core",
  "serde",
  "thiserror",
  "toml",
@@ -716,7 +716,6 @@ name = "dnsy-resolver"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
- "dnsy-config",
  "dnsy-core",
  "dnsy-dnssec",
  "dnsy-proto",
@@ -778,7 +777,6 @@ dependencies = [
  "arc-swap",
  "argon2",
  "base64",
- "dnsy-config",
  "dnsy-core",
  "dnsy-dnssec",
  "dnsy-proto",

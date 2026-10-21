@@ -5,12 +5,11 @@ mod validate;
 
 use std::path::{Path, PathBuf};
 
+pub use dnsy_core::{BlockMode, Validation};
 pub use model::{
-    Api, BlockMode, Cache, Config, Dns, Dnssec, Doh, Dot, Filter, Limits, LogFormat, LogLevel,
-    Logging, Mtls, Prefetch, QueryLog, ROOT_KSK_2017_DS, ROOT_KSK_2024_DS, Resolver, ServeStale,
-    Server, Validation, Zones,
+    Api, Cache, Config, Dns, Dnssec, Doh, Dot, Filter, Limits, LogFormat, LogLevel, Logging, Mtls,
+    Prefetch, QueryLog, ROOT_KSK_2017_DS, ROOT_KSK_2024_DS, Resolver, ServeStale, Server, Zones,
 };
-pub use validate::TrustAnchor;
 
 /// Environment variable carrying the DNSSEC key passphrase (read by the key store, never logged).
 pub const PASSPHRASE_ENV: &str = "DNSY_DNSSEC_PASSPHRASE";
@@ -305,36 +304,14 @@ mod tests {
     }
 
     #[test]
-    fn trust_anchor_ds_parses() {
-        let c = Config::default();
-        let tags: Vec<u16> = c
-            .dnssec
-            .trust_anchors
-            .iter()
-            .map(|s| TrustAnchor::parse(s).unwrap().key_tag)
-            .collect();
-        assert_eq!(tags, [20326, 38696]);
-        let ta = TrustAnchor::parse(ROOT_KSK_2024_DS).unwrap();
-        assert_eq!((ta.algorithm, ta.digest_type, ta.digest.len()), (8, 2, 32));
-        for bad in [
-            "",
-            "1",
-            "x 8 2 aa",
-            "1 x 2 aa",
-            "1 8 x aa",
-            "1 8 2",
-            "1 8 2 zz",
-            "1 8 2 abc",
-            "1 8 9 aa",
-            "1 8 1 aabb",
-            &format!("{ROOT_KSK_2017_DS} extra"),
-            "1 8 2 éé",
-        ] {
-            assert!(TrustAnchor::parse(bad).is_err(), "{bad}");
-        }
-        assert!(TrustAnchor::parse(&format!("1 8 1 {}", "ab".repeat(20))).is_ok());
-        assert!(TrustAnchor::parse(&format!("1 8 4 {}", "ab".repeat(48))).is_ok());
+    fn trust_anchor_shape_is_checked() {
         assert!(err("[dnssec]\ntrust_anchors = [\"nonsense\"]").contains("trust anchor"));
+        assert!(
+            Config::from_toml(&format!(
+                "[dnssec]\ntrust_anchors = [\"{ROOT_KSK_2024_DS}\"]"
+            ))
+            .is_ok()
+        );
     }
 
     #[test]

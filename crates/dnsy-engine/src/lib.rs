@@ -10,7 +10,7 @@ mod engine;
 pub mod handler;
 mod response;
 
-pub use builder::{EngineBuilder, EngineError};
+pub use builder::{EngineBuilder, EngineError, cache_options, dnssec_options};
 pub use engine::{Engine, MAX_MISS_WAITERS};
 pub use handler::{Admission, Handler, RefusedHandler, RequestContext};
 pub use response::{RESPONSE_IP_LIST, ResponseIpPolicy};

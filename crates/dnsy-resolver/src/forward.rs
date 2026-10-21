@@ -14,10 +14,10 @@ use std::future::Future;
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use dnsy_config::{TrustAnchor, Validation};
-use dnsy_core::DnssecStatus;
+use dnsy_core::{DnssecStatus, Validation};
 use dnsy_dnssec::{
-    DnssecFetcher, FetchError, TrustAnchors, ValidationLimits, ValidationOutcome, Validator,
+    DnssecFetcher, FetchError, TrustAnchor, TrustAnchors, ValidationLimits, ValidationOutcome,
+    Validator,
 };
 use dnsy_proto::{Ds, Edns, Header, Message, Name, Opcode, Question, Rcode, RecordType, ede};
 use tokio::sync::Semaphore;
@@ -37,7 +37,7 @@ pub const RELEASE_FLOOR_UNIX: u64 = 1_790_812_800;
 #[derive(Debug, thiserror::Error)]
 pub enum DnssecConfigError {
     #[error("{0}")]
-    Anchor(#[from] dnsy_config::ConfigError),
+    Anchor(#[from] dnsy_dnssec::TrustAnchorError),
     #[error("trust anchor file {path}: {source}")]
     AnchorFile {
         path: String,
@@ -45,6 +45,21 @@ pub enum DnssecConfigError {
     },
     #[error("negative trust anchor {0:?} is not a domain name")]
     NegativeAnchor(String),
+}
+
+/// The `[dnssec]` settings a [`DnssecPolicy`] is built from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnssecOptions {
+    /// Validation mode.
+    pub validation: Validation,
+    /// Trust anchors as DS records (`keytag algorithm digest-type digest-hex`).
+    pub trust_anchors: Vec<String>,
+    /// File with additional trust anchors, one DS per line.
+    pub trust_anchor_file: Option<std::path::PathBuf>,
+    /// Domains below which validation is skipped.
+    pub negative_trust_anchors: Vec<String>,
+    /// Allowed clock skew when checking signature times, seconds.
+    pub clock_skew_s: u32,
 }
 
 /// How forwarded answers are validated.
@@ -70,13 +85,13 @@ impl DnssecPolicy {
         }
     }
 
-    /// The policy described by `[dnssec]`: root DS anchors from `trust_anchors` and
+    /// The policy described by [`DnssecOptions`]: root DS anchors from `trust_anchors` and
     /// `trust_anchor_file` (one DS per line; blank lines and lines starting with `;` or `#` are
     /// skipped), negative trust anchors and the clock skew.
     ///
     /// # Errors
     /// A malformed anchor, an unreadable anchor file or a bad negative trust anchor name.
-    pub fn from_config(cfg: &dnsy_config::Dnssec) -> Result<Self, DnssecConfigError> {
+    pub fn from_options(cfg: &DnssecOptions) -> Result<Self, DnssecConfigError> {
         let mut anchors = TrustAnchors::new();
         let mut add = |text: &str| -> Result<(), DnssecConfigError> {
             let ta = TrustAnchor::parse(text)?;

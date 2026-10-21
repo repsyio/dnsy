@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use dnsy_config::Validation;
+use dnsy_core::Validation;
 use dnsy_engine::Engine;
 use dnsy_proto::Name;
 use dnsy_resolver::groups::Exchange;

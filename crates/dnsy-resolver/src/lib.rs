@@ -6,7 +6,8 @@ pub mod groups;
 pub mod upstream;
 
 pub use cache::{
-    Cache, CacheKey, CacheLookup, CacheStats, Joined, RefreshGuard, RefreshWait, Refreshes,
+    Cache, CacheKey, CacheLookup, CacheOptions, CacheStats, Joined, PrefetchOptions, RefreshGuard,
+    RefreshWait, Refreshes, ServeStaleOptions,
 };
 pub use upstream::{
     TlsRoots, Upstream, UpstreamClient, UpstreamConfig, UpstreamError, UpstreamTransport,

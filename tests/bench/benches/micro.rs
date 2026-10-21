@@ -4,9 +4,9 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use dnsy_config::Cache as CacheConfig;
 use dnsy_core::DnssecStatus;
 use dnsy_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
+use dnsy_resolver::CacheOptions;
 use dnsy_resolver::{Cache, CacheKey};
 
 fn response() -> Message {
@@ -35,7 +35,7 @@ fn codec(c: &mut Criterion) {
 }
 
 fn cache(c: &mut Criterion) {
-    let cache = Cache::new(&CacheConfig::default());
+    let cache = Cache::new(CacheOptions::default());
     let now = Instant::now();
     let key = CacheKey {
         name: Name::from_ascii("www.example.test.").expect("name"),

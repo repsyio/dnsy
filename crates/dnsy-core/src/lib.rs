@@ -1,5 +1,7 @@
 //! Shared vocabulary types for DNSY. No logic beyond small, total helpers.
 
+use std::net::{Ipv4Addr, Ipv6Addr};
+
 use serde::{Deserialize, Serialize};
 
 /// Transport a DNS request arrived on.
@@ -140,6 +142,40 @@ pub mod net {
     }
 }
 
+/// DNSSEC validation mode. The serde strings are the `[dnssec] validation` config values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Validation {
+    /// No validation.
+    Off,
+    /// Validate; Bogus answers are returned without AD.
+    Permissive,
+    /// Validate; Bogus answers become SERVFAIL.
+    #[default]
+    Strict,
+}
+
+/// How a blocked query is answered. The serde strings are the `[filter] block_mode` config values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockMode {
+    /// NXDOMAIN.
+    #[serde(rename = "nxdomain")]
+    NxDomain,
+    /// `0.0.0.0` for A and `::` for AAAA.
+    #[default]
+    NullIp,
+    /// REFUSED.
+    Refused,
+    /// Operator chosen sinkhole addresses; a family without an address answers NODATA. Set by
+    /// code, not by configuration.
+    #[serde(skip_deserializing)]
+    CustomIp {
+        v4: Option<Ipv4Addr>,
+        v6: Option<Ipv6Addr>,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +231,27 @@ mod tests {
             subject: "CN=a".into(),
         };
         assert_eq!(p.clone(), p);
+    }
+
+    #[test]
+    fn validation_and_block_mode_serde_strings_are_pinned() {
+        for (v, text) in [
+            (Validation::Off, "\"off\""),
+            (Validation::Permissive, "\"permissive\""),
+            (Validation::Strict, "\"strict\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), text);
+            assert_eq!(serde_json::from_str::<Validation>(text).unwrap(), v);
+        }
+        for (m, text) in [
+            (BlockMode::NullIp, "\"null_ip\""),
+            (BlockMode::NxDomain, "\"nxdomain\""),
+            (BlockMode::Refused, "\"refused\""),
+        ] {
+            assert_eq!(serde_json::to_string(&m).unwrap(), text);
+            assert_eq!(serde_json::from_str::<BlockMode>(text).unwrap(), m);
+        }
+        assert_eq!(Validation::default(), Validation::Strict);
+        assert_eq!(BlockMode::default(), BlockMode::NullIp);
     }
 }

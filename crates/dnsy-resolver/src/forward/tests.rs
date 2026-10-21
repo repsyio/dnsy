@@ -3,12 +3,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use dnsy_config::{Config, Dnssec};
 use dnsy_proto::{Class, Dnskey, Ds, RData, Record, RecordType};
 
 use super::*;
 use crate::groups::{GroupMember, GroupSpec, Strategy, SystemClock, ThreadRng};
-use crate::{Upstream, UpstreamError};
+use crate::{CacheOptions, Upstream, UpstreamError};
 
 const ROOT_DS: &str = "20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D";
 
@@ -121,7 +120,7 @@ impl Rig {
         Self {
             groups: groups(),
             fake: Arc::new(fake),
-            cache: Cache::new(&Config::default().cache),
+            cache: Cache::new(CacheOptions::default()),
             permits: Semaphore::new(MAX_CONCURRENT_FETCHES),
         }
     }
@@ -244,19 +243,18 @@ async fn fetch_waits_for_a_permit_only_until_the_deadline() {
 }
 
 #[test]
-fn policy_from_config_reads_anchors_file_and_ntas() {
+fn policy_from_options_reads_anchors_file_and_ntas() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("anchors");
     std::fs::write(&file, format!("; comment\n\n# other\n{ROOT_DS}\n")).unwrap();
-    let cfg = Dnssec {
+    let cfg = DnssecOptions {
         validation: Validation::Permissive,
         trust_anchors: vec![ROOT_DS.to_owned()],
         trust_anchor_file: Some(file.clone()),
         negative_trust_anchors: vec!["Broken.Example".to_owned(), "lab.test.".to_owned()],
         clock_skew_s: 60,
-        key_passphrase_file: None,
     };
-    let p = DnssecPolicy::from_config(&cfg).unwrap();
+    let p = DnssecPolicy::from_options(&cfg).unwrap();
     assert_eq!(p.mode, Validation::Permissive);
     assert_eq!(p.validator.limits().clock_skew, 60);
     assert_eq!(
@@ -276,27 +274,27 @@ fn policy_from_config_reads_anchors_file_and_ntas() {
     assert!(p.validator.anchors().is_negative(&n("x.other.test."), 0));
     assert_eq!(p.validator.limits().clock_skew, 60);
 
-    let bad = |c: Dnssec| DnssecPolicy::from_config(&c).unwrap_err().to_string();
-    let base = Dnssec {
+    let bad = |c: DnssecOptions| DnssecPolicy::from_options(&c).unwrap_err().to_string();
+    let base = DnssecOptions {
         trust_anchor_file: None,
         ..cfg
     };
     assert!(
-        bad(Dnssec {
+        bad(DnssecOptions {
             trust_anchors: vec!["nonsense".to_owned()],
             ..base.clone()
         })
         .contains("trust anchor")
     );
     assert!(
-        bad(Dnssec {
+        bad(DnssecOptions {
             trust_anchor_file: Some(dir.path().join("missing")),
             ..base.clone()
         })
         .contains("trust anchor file")
     );
     assert!(
-        bad(Dnssec {
+        bad(DnssecOptions {
             negative_trust_anchors: vec!["a..b".to_owned()],
             ..base
         })
@@ -307,7 +305,14 @@ fn policy_from_config_reads_anchors_file_and_ntas() {
 #[tokio::test]
 async fn untrusted_clock_is_indeterminate_without_fetching() {
     let rig = Rig::new(Fake::default());
-    let policy = DnssecPolicy::from_config(&Dnssec::default()).unwrap();
+    let policy = DnssecPolicy::from_options(&DnssecOptions {
+        validation: Validation::Strict,
+        trust_anchors: vec![ROOT_DS.to_owned()],
+        trust_anchor_file: None,
+        negative_trust_anchors: Vec::new(),
+        clock_skew_s: 300,
+    })
+    .unwrap();
     assert_eq!(policy.mode, Validation::Strict);
     assert!(policy.clock_trusted(RELEASE_FLOOR_UNIX));
     assert!(!policy.clock_trusted(0));

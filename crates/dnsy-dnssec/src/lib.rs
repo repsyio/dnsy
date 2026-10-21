@@ -11,6 +11,7 @@
 )]
 
 mod algorithm;
+pub mod anchors;
 mod ds;
 mod error;
 mod keys;
@@ -22,6 +23,7 @@ mod validate;
 mod verify;
 
 pub use algorithm::{Algorithm, DigestType};
+pub use anchors::{TrustAnchor, TrustAnchorError};
 pub use ds::ds_for;
 pub use error::{DnssecError, VerifyError};
 pub use keys::{
