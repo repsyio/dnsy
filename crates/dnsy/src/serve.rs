@@ -401,6 +401,13 @@ impl Signals {
     }
 }
 
+/// Logs every non-fatal configuration warning (an open, unlimited resolver on a public listener).
+fn warn_unsafe_config(config: &Config) {
+    for warning in config.warnings() {
+        tracing::warn!("{warning}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,12 +448,5 @@ mod tests {
         let mut config = Config::default();
         config.cache.enabled = false;
         assert!(spawn_prefetch(&engine(&config), &config).is_none());
-    }
-}
-
-/// Logs every non-fatal configuration warning (an open, unlimited resolver on a public listener).
-fn warn_unsafe_config(config: &Config) {
-    for warning in config.warnings() {
-        tracing::warn!("{warning}");
     }
 }
