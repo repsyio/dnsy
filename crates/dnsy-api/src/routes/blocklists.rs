@@ -292,10 +292,10 @@ async fn patch_blocklist(
         // Disabling dropped the list's loaded content; fetch it again now instead of
         // leaving the list empty until the scheduler next wakes up. A failed fetch shows in
         // `last_status` and keeps the previous (empty) state.
-        if let Some(manager) = state.engine.as_ref().and_then(|e| e.list_manager()) {
-            if let Err(e) = manager.refresh_source(id).await {
-                tracing::warn!(id, error = %e, "fetching a re-enabled blocklist failed");
-            }
+        if let Some(manager) = state.engine.as_ref().and_then(|e| e.list_manager())
+            && let Err(e) = manager.refresh_source(id).await
+        {
+            tracing::warn!(id, error = %e, "fetching a re-enabled blocklist failed");
         }
     }
     let source = state

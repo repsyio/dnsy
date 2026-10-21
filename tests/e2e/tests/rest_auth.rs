@@ -811,6 +811,7 @@ async fn the_last_admin_cannot_be_deleted_or_demoted() {
 // ---- roles ----
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "one table-driven role matrix")]
 async fn roles_gate_every_mutating_route_group() {
     let h = start().await;
     let api = h.rest();

@@ -1,5 +1,5 @@
 //! Cross-cutting API behaviour: error mapping (400/401/404/405/413/415/422), security headers,
-//! probes and the OpenAPI document.
+//! probes and the `OpenAPI` document.
 
 use dnsy_e2e::{Auth, Harness, Opts};
 use reqwest::Method;
@@ -96,12 +96,7 @@ async fn malformed_requests_are_client_errors_in_problem_shape() {
         r.problem(r.status);
     }
     // Nothing was created by the rejected requests.
-    assert!(
-        api.get("/acl", admin).await.json()["rules"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(api.get("/acl", admin).await.json()["rules"], json!([]));
 }
 
 #[tokio::test]

@@ -66,6 +66,26 @@ async fn my_case() {
 - Put secrets in neither assertions' messages nor logs: tests that look for leaked tokens assert on
   the server log and on the query log.
 
+### Testing the REST API and the cache
+
+`h.rest()` returns an `Api` client for the management API. Every request states its credential
+explicitly (`Auth::None`, `Bearer`, `Session`, and session variants without or with a wrong CSRF
+header), so tests can assert 401/403 mappings; `Resp::problem(status)` checks the RFC 9457 shape
+and `Resp::ok(status)` returns the JSON body. `Api::login`, `create_user` and `token_for` build
+sessions, users and role-limited tokens (the harness admin is `e2e` / `e2e-password-1234`, its
+token is `h.api_token`). `Req::stream()` and `Stream::next_event` read server-sent events.
+`Opts::no_users` starts a server without users for the bootstrap flow (`h.bootstrap_code()`), and
+`Opts::prefetch` turns cache prefetch on.
+
+- A change made through the API is asserted on the DNS path too, with `eventually`: the zone
+  answer, the REFUSED, the NXDOMAIN with its extended error.
+- Cache tests use 1 to 3 second TTLs (there is no clock hook) and observe the cache through
+  `GET /cache` counters and the upstream's query counts; clamps show on cached answers, not on
+  the first (miss) answer.
+- Query log and stats are written asynchronously: poll them until the expected entries appear.
+
 Suites: `protocol` (UDP, TCP, EDNS, malformed input, hot reload), `transports` (DoT, mTLS, DoH),
 `policy` (ACL, rate limit, blocklists), `resolver` (forwarding, cache, failures, serve-stale,
-validation smoke test), `lifecycle` (SIGHUP, SIGTERM) and `interop`.
+validation smoke test), `lifecycle` (SIGHUP, SIGTERM) and `interop`; the REST suites `rest_auth`,
+`rest_errors`, `rest_zones`, `rest_policy` and `rest_observe`, and the cache suites `cache_api`,
+`cache_ttl` and `cache_stale`.

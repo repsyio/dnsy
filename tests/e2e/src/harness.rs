@@ -298,6 +298,16 @@ async fn create_token(bin: &Path, config: &Path, name: &str, scopes: &[&str]) ->
         .to_owned()
 }
 
+/// Creates the `e2e` admin with the CLI plus a `dns:query` token and an admin API token.
+async fn create_user_and_tokens(bin: &Path, config_path: &Path) -> (String, String) {
+    let mut create = cli(bin, config_path);
+    create.env("DNSY_PASSWORD", "e2e-password-1234");
+    run_cli(create, &["user", "create", "e2e", "--role", "admin"]).await;
+    let doh = create_token(bin, config_path, "doh", &["dns:query"]).await;
+    let api = create_token(bin, config_path, "api", &["admin", "api:read", "api:write"]).await;
+    (doh, api)
+}
+
 impl Harness {
     /// Builds the temp directory, creates a user and tokens, starts `dnsy serve` and waits for
     /// its ready file.
@@ -342,18 +352,7 @@ impl Harness {
         let (doh_token, api_token) = if opts.no_users {
             (String::new(), String::new())
         } else {
-            let mut create = cli(bin, &config_path);
-            create.env("DNSY_PASSWORD", "e2e-password-1234");
-            run_cli(create, &["user", "create", "e2e", "--role", "admin"]).await;
-            let doh = create_token(bin, &config_path, "doh", &["dns:query"]).await;
-            let api = create_token(
-                bin,
-                &config_path,
-                "api",
-                &["admin", "api:read", "api:write"],
-            )
-            .await;
-            (doh, api)
+            create_user_and_tokens(bin, &config_path).await
         };
 
         let ready = root.join("ready.json");

@@ -298,7 +298,7 @@ async fn framework_rejections_are_problem_json() {
         assert_eq!(res.headers()[header::CONTENT_TYPE], PROBLEM_JSON);
         let p = body_json(res).await;
         assert_eq!(p["status"], status.as_u16());
-        assert!(!p["detail"].as_str().unwrap().is_empty());
+        assert_ne!(p["detail"].as_str().unwrap(), "");
     }
     let res = send(&f.app, req(Method::GET, "/api/v1/auth/login", &[])).await;
     assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
