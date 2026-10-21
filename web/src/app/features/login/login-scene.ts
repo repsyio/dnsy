@@ -26,7 +26,7 @@ export interface SceneOptions {
 /**
  * The login blob on a plain 2D canvas: a morphing wireframe icosphere in white hairlines with red
  * pulses sweeping across it. Animates only while the tab is visible, the visitor is active (pointer
- * or keyboard in the last 30 s) and the password field is not focused.
+ * tap or keyboard in the last 30 s) and the password field is not focused.
  */
 export function createLoginScene(canvas: HTMLCanvasElement, options: SceneOptions): LoginScene {
   const ctx = canvas.getContext('2d');
@@ -142,6 +142,7 @@ export function createLoginScene(canvas: HTMLCanvasElement, options: SceneOption
   draw();
   window.addEventListener('resize', onResize);
   window.addEventListener('pointermove', onActivity, { passive: true });
+  window.addEventListener('pointerdown', onActivity, { passive: true });
   window.addEventListener('keydown', onActivity);
   document.addEventListener('visibilitychange', sync);
   document.addEventListener('focusin', onFocus);
@@ -153,6 +154,7 @@ export function createLoginScene(canvas: HTMLCanvasElement, options: SceneOption
       stop();
       window.removeEventListener('resize', onResize);
       window.removeEventListener('pointermove', onActivity);
+      window.removeEventListener('pointerdown', onActivity);
       window.removeEventListener('keydown', onActivity);
       document.removeEventListener('visibilitychange', sync);
       document.removeEventListener('focusin', onFocus);

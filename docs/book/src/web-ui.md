@@ -188,7 +188,7 @@ registered when Angular runs in dev mode, so production builds answer with the 4
   injected randomness); the loop is in `login-scene.ts`.
 - **When it runs:** the loop uses `requestAnimationFrame` outside change detection and stops
   while the tab is hidden, after 30 s without pointer or keyboard activity (it resumes on the next
-  pointer move or key) and while the password field has focus (the DNSY-105 idle pause). The
+  pointer move, tap or key) and while the password field has focus (the DNSY-105 idle pause). The
   pixel ratio is capped at 2 (`cappedPixelRatio`) so 0.5px hairlines stay crisp. With
   `prefers-reduced-motion: reduce` the scene draws one still frame without pulses and redraws only
   on resize; a live change of the preference restarts it in the matching mode. Without a 2D

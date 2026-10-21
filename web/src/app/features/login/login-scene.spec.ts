@@ -119,6 +119,10 @@ describe('createLoginScene', () => {
     expect(frames.size).toBe(1);
     tick();
     expect(frames.size).toBe(1);
+    tick(30_001);
+    expect(frames.size).toBe(0);
+    window.dispatchEvent(new Event('pointerdown')); // a tap on a touch screen
+    expect(frames.size).toBe(1);
     scene.dispose();
   });
 
