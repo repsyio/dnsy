@@ -673,6 +673,39 @@ async fn custom_rule_applies_live() {
 }
 
 #[tokio::test]
+async fn new_blocklist_is_populated_without_waiting_for_the_schedule() {
+    let f = fx().await;
+    let list = f.dir.path().join("fresh.txt");
+    std::fs::write(&list, "fresh.example\n").unwrap();
+    let body = json!({
+        "name": "fresh", "location": list.to_str().unwrap(),
+        "format": "domains", "allow_private": true,
+    });
+    let (s, created) = call(&f, &f.admin, Method::POST, "/blocklists", Some(body)).await;
+    assert_eq!(s, StatusCode::CREATED, "{created}");
+    assert_eq!(created["entries"], 1, "{created}");
+    assert!(created["last_fetched"].is_i64(), "{created}");
+    assert_eq!(
+        ask(&f, [192, 0, 2, 1], "fresh.example.")
+            .await
+            .unwrap()
+            .answers
+            .len(),
+        1
+    );
+    // A disabled source is not fetched.
+    let list2 = f.dir.path().join("off.txt");
+    std::fs::write(&list2, "off.example\n").unwrap();
+    let off = json!({
+        "name": "off", "location": list2.to_str().unwrap(),
+        "format": "domains", "allow_private": true, "enabled": false,
+    });
+    let (s, created) = call(&f, &f.admin, Method::POST, "/blocklists", Some(off)).await;
+    assert_eq!(s, StatusCode::CREATED, "{created}");
+    assert!(created["last_fetched"].is_null(), "{created}");
+}
+
+#[tokio::test]
 async fn blocklist_refresh_endpoint() {
     let f = fx().await;
     let list = f.dir.path().join("list.txt");
@@ -712,10 +745,9 @@ async fn blocklist_refresh_endpoint() {
     let (s, created) = call(&f, &f.admin, Method::POST, "/blocklists", Some(file)).await;
     assert_eq!(s, StatusCode::CREATED, "{created}");
     assert_eq!(created["allow_private"], true);
-    assert!(created["last_fetched"].is_null());
+    assert_eq!(created["entries"], 2, "fetched on create");
     let id = created["id"].as_i64().unwrap();
 
-    assert_eq!(answer_count(&f, [192, 0, 2, 1], "listed.example.").await, 0);
     let (s, r) = call(
         &f,
         &f.operator,
