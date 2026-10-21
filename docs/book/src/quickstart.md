@@ -36,6 +36,12 @@
    dig @127.0.0.1 -p 5353 example.com
    ```
 
+   By default DNSY serves only loopback, private (RFC 1918, 100.64.0.0/10, ULA) and link-local
+   clients, so a query from a public address is answered REFUSED. This keeps a fresh install from
+   becoming an open resolver for the internet. To serve other networks add an ACL rule for them
+   (`POST /acl`), or set `[limits] open_resolver = true` (with a non-zero `per_client_qps`, 50 by
+   default) to answer everyone.
+
 5. Add a zone by dropping a JSON file into `[zones] dir` (see [Zones](zones.md)); it is picked
    up without a restart. Export it with `dnsy zone export example.com`.
 

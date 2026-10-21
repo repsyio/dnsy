@@ -71,6 +71,30 @@ fn invalid(msg: &str) -> ConfigError {
     ConfigError::Invalid(msg.to_owned())
 }
 
+/// Non-fatal configuration problems.
+pub(crate) fn warnings(c: &Config) -> Vec<String> {
+    let mut out = Vec::new();
+    let public = c
+        .dns
+        .udp
+        .iter()
+        .chain(&c.dns.tcp)
+        .chain(&c.dot.listen)
+        .chain(&c.doh.listen)
+        .find(|a| !a.ip().is_loopback());
+    if let Some(addr) = public
+        && c.limits.open_resolver
+        && c.limits.per_client_qps == 0
+    {
+        out.push(format!(
+            "listener {addr} is not loopback while limits.open_resolver = true and \
+             limits.per_client_qps = 0: this is an open, unlimited resolver; set per_client_qps \
+             or restrict clients with ACL rules"
+        ));
+    }
+    out
+}
+
 pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     if !c.dot.listen.is_empty() {
         if c.dot.cert.is_none() || c.dot.key.is_none() {

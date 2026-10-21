@@ -3,7 +3,7 @@
 use std::fmt::Display;
 use std::sync::Arc;
 
-use dnsy_filter::{Acl, AclAction, FilterError};
+use dnsy_filter::FilterError;
 use dnsy_resolver::groups::{GroupSet, GroupSpec, GroupStoreError, SystemClock, ThreadRng};
 
 use crate::error::ApiError;
@@ -50,10 +50,10 @@ pub(super) fn require_cert_reload(state: &ApiState) -> Result<(), ApiError> {
 pub(super) async fn apply_acl(state: &ApiState) -> Result<(), ApiError> {
     let rules = state.rules.list().await.map_err(filter_err)?;
     if let Some(engine) = &state.engine {
-        engine.set_acl(Acl::new(
-            AclAction::Allow,
-            rules.into_iter().map(|r| (r.matcher, r.action)),
-        ));
+        let acl = engine
+            .acl()
+            .with_rules(rules.into_iter().map(|r| (r.matcher, r.action)));
+        engine.set_acl(acl);
     }
     Ok(())
 }

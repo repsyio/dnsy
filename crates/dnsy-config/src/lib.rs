@@ -101,6 +101,13 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         validate::validate(self)
     }
+
+    /// Non-fatal problems worth telling the operator about (an open, unlimited resolver on a
+    /// non-loopback listener).
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        validate::warnings(self)
+    }
 }
 
 fn apply_override(
@@ -141,6 +148,32 @@ fn apply_override(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_warns_for_open_unlimited_listener() {
+        let mut c = Config::default();
+        assert!(c.warnings().is_empty(), "safe defaults do not warn");
+        c.limits.open_resolver = true;
+        assert!(c.warnings().is_empty(), "qps 50 does not warn");
+        c.limits.per_client_qps = 0;
+        let w = c.warnings();
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("0.0.0.0:53"), "{w:?}");
+        c.dns.udp = vec!["127.0.0.1:53".parse().unwrap()];
+        c.dns.tcp = vec!["[::1]:53".parse().unwrap()];
+        assert!(c.warnings().is_empty(), "loopback only does not warn");
+        c.doh.listen = vec!["10.0.0.1:443".parse().unwrap()];
+        assert_eq!(c.warnings().len(), 1);
+    }
+
+    #[test]
+    fn limits_defaults_are_safe() {
+        let l = Config::default().limits;
+        assert_eq!(l.per_client_qps, 50);
+        assert!(!l.open_resolver);
+        let c = Config::from_toml("[limits]\nopen_resolver = true\n").unwrap();
+        assert!(c.limits.open_resolver);
+    }
 
     fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs

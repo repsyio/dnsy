@@ -6,6 +6,14 @@ All notable changes to DNSY are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Behaviour change:** the default client ACL is private-only. Only loopback, RFC 1918,
+  100.64.0.0/10, ULA and link-local clients are answered; other sources get REFUSED. Set
+  `[limits] open_resolver = true` to restore the previous allow-all behaviour. `per_client_qps`
+  now defaults to 50 (0 still disables the limit). `dnsy serve` and `dnsy config check` warn when
+  a non-loopback listener combines `open_resolver = true` with `per_client_qps = 0`.
+
 ### Added
 
 - DNS over UDP and TCP with EDNS0, Extended DNS Errors, truncation, TCP pipelining and bounded

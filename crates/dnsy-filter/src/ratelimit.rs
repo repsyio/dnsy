@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasher, RandomState};
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use dnsy_core::Transport;
+use dnsy_core::net::ClientKey;
+pub use dnsy_core::net::client_key;
 
 const SHARDS: usize = 16;
 
@@ -16,17 +18,6 @@ pub enum RateVerdict {
     Refuse,
     /// Over the limit on UDP: send nothing (a reply to a spoofed source would amplify).
     Drop,
-}
-
-/// Rate-limit key of a client: IPv4 as /32, IPv6 as its /64 (one subscriber
-/// owns a whole /64, so per-address keys would be trivially bypassed).
-/// IPv4-mapped IPv6 addresses count as IPv4.
-#[must_use]
-pub fn client_key(ip: IpAddr) -> IpAddr {
-    match ip.to_canonical() {
-        IpAddr::V4(v4) => IpAddr::V4(v4),
-        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & (!0u128 << 64))),
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,7 +35,7 @@ pub struct RateLimiter {
     burst: f64,
     shard_cap: usize,
     hasher: RandomState,
-    shards: Vec<Mutex<HashMap<IpAddr, Bucket>>>,
+    shards: Vec<Mutex<HashMap<ClientKey, Bucket>>>,
 }
 
 impl RateLimiter {
@@ -94,7 +85,7 @@ impl RateLimiter {
 
     /// Drop buckets that have refilled to full (equivalent to absent); if none,
     /// evict the least recently used one.
-    fn make_room(&self, map: &mut HashMap<IpAddr, Bucket>, now: Instant) {
+    fn make_room(&self, map: &mut HashMap<ClientKey, Bucket>, now: Instant) {
         let full_after = Duration::from_secs_f64(self.burst / self.qps);
         map.retain(|_, b| now.saturating_duration_since(b.last) < full_after);
         if map.len() >= self.shard_cap
@@ -222,8 +213,6 @@ mod tests {
             rl.check(ip("2001:db8:0:2::1"), Transport::Tcp, t),
             RateVerdict::Allow
         );
-        assert_eq!(client_key(ip("2001:db8:0:1:ffff::3")), ip("2001:db8:0:1::"));
-        assert_eq!(client_key(ip("::ffff:192.0.2.9")), ip("192.0.2.9"));
     }
 
     #[test]

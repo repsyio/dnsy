@@ -63,7 +63,22 @@ pub struct Acl {
     certs: HashMap<[u8; 32], AclAction>,
     /// Sorted by prefix length descending, then strictness descending.
     cidrs: Vec<(IpNet, AclAction)>,
+    /// Built by [`Acl::private_only`]; [`Acl::with_rules`] keeps the same base.
+    private_only: bool,
 }
+
+/// Networks a private-only ACL allows: loopback, RFC 1918, 100.64/10, IPv4 and IPv6 link-local
+/// and ULA.
+const PRIVATE_NETS: [&str; 8] = [
+    "127.0.0.0/8",
+    "::1/128",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "169.254.0.0/16",
+    "fe80::/10",
+];
 
 impl Acl {
     #[must_use]
@@ -94,6 +109,32 @@ impl Acl {
             default,
             certs,
             cidrs,
+            private_only: false,
+        }
+    }
+
+    /// The safe default: private networks (loopback, RFC 1918, 100.64/10, ULA, link-local) are
+    /// allowed and everything else is refused. `rules` still win by longest prefix (equal
+    /// prefixes resolve to the stricter action).
+    #[must_use]
+    pub fn private_only(rules: impl IntoIterator<Item = (AclMatcher, AclAction)>) -> Acl {
+        let base = PRIVATE_NETS
+            .iter()
+            .chain(&["fc00::/7"])
+            .filter_map(|n| n.parse().ok())
+            .map(|n| (AclMatcher::Cidr(n), AclAction::Allow));
+        let mut acl = Acl::new(AclAction::Refuse, base.chain(rules));
+        acl.private_only = true;
+        acl
+    }
+
+    /// A new ACL over `rules` with the same base (allow-all or private-only) as `self`.
+    #[must_use]
+    pub fn with_rules(&self, rules: impl IntoIterator<Item = (AclMatcher, AclAction)>) -> Acl {
+        if self.private_only {
+            Acl::private_only(rules)
+        } else {
+            Acl::new(AclAction::Allow, rules)
         }
     }
 
@@ -121,6 +162,35 @@ mod tests {
     }
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn private_only_base_and_rules() {
+        let acl = Acl::private_only([(net("203.0.113.0/24"), AclAction::Allow)]);
+        for ok in [
+            "127.0.0.1",
+            "::1",
+            "10.1.1.1",
+            "172.31.0.1",
+            "192.168.1.1",
+            "100.64.0.1",
+            "169.254.1.1",
+            "fe80::1",
+            "fd00::1",
+            "::ffff:10.0.0.1",
+            "203.0.113.5",
+        ] {
+            assert_eq!(acl.check(ip(ok), None), AclAction::Allow, "{ok}");
+        }
+        for no in ["203.0.114.5", "8.8.8.8", "172.32.0.1", "2001:db8::1"] {
+            assert_eq!(acl.check(ip(no), None), AclAction::Refuse, "{no}");
+        }
+        let acl = Acl::private_only([(net("10.0.0.0/8"), AclAction::Refuse)]);
+        assert_eq!(acl.check(ip("10.1.1.1"), None), AclAction::Refuse);
+        let rebuilt = acl.with_rules([]);
+        assert_eq!(rebuilt.check(ip("8.8.8.8"), None), AclAction::Refuse);
+        let open = Acl::new(AclAction::Allow, []).with_rules([]);
+        assert_eq!(open.check(ip("8.8.8.8"), None), AclAction::Allow);
     }
 
     #[test]

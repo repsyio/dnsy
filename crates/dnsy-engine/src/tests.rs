@@ -723,7 +723,7 @@ async fn assembled(upstream: SocketAddr, timeout_ms: u64) -> (TempDir, Engine) {
     std::fs::create_dir_all(&zones_dir).unwrap();
     std::fs::write(zones_dir.join("home.test.json"), ZONE).unwrap();
     let toml = format!(
-        "[zones]\ndir = {:?}\n[resolver]\nupstreams = [\"{upstream}\"]\ntimeout_ms = {timeout_ms}\nattempts = 2\n[dnssec]\nvalidation = \"permissive\"\n",
+        "[zones]\ndir = {:?}\n[resolver]\nupstreams = [\"{upstream}\"]\ntimeout_ms = {timeout_ms}\nattempts = 2\n[limits]\nopen_resolver = true\n[dnssec]\nvalidation = \"permissive\"\n",
         zones_dir.display().to_string()
     );
     let config = Config::from_toml(&toml).unwrap();
@@ -862,5 +862,72 @@ async fn reload_trust_anchors_swaps_anchors_and_keeps_mode_and_ntas() {
             .len(),
         1,
         "failed reload keeps the previous anchors"
+    );
+}
+
+async fn acl_for(limits: &str) -> (TempDir, dnsy_filter::Acl) {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::from_toml(&format!(
+        "[zones]\ndir = {:?}\n{limits}",
+        dir.path().join("zones").display().to_string()
+    ))
+    .unwrap();
+    let store = Store::open(&dir.path().join("dnsy.db")).unwrap();
+    let engine = EngineBuilder::from_config(&config, &store)
+        .await
+        .unwrap()
+        .build();
+    (dir, (*engine.acl()).clone())
+}
+
+fn addr(s: &str) -> std::net::IpAddr {
+    s.parse().unwrap()
+}
+
+#[tokio::test]
+async fn default_config_refuses_public_client() {
+    let (_d, acl) = acl_for("").await;
+    assert_eq!(
+        acl.check(addr("203.0.113.5"), None),
+        dnsy_filter::AclAction::Refuse
+    );
+    // The refusal reaches the wire once the pipeline checks the ACL.
+    assert_eq!(
+        acl.with_rules([]).check(addr("2001:db8::1"), None),
+        dnsy_filter::AclAction::Refuse
+    );
+}
+
+#[tokio::test]
+async fn default_config_allows_private_and_loopback() {
+    let (_d, acl) = acl_for("").await;
+    for ip in [
+        "127.0.0.1",
+        "::1",
+        "10.2.3.4",
+        "172.16.0.9",
+        "192.168.1.1",
+        "100.64.1.1",
+        "fd12::1",
+        "fe80::2",
+    ] {
+        assert_eq!(
+            acl.check(addr(ip), None),
+            dnsy_filter::AclAction::Allow,
+            "{ip}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn open_resolver_allows_public_client() {
+    let (_d, acl) = acl_for("[limits]\nopen_resolver = true\n").await;
+    assert_eq!(
+        acl.check(addr("203.0.113.5"), None),
+        dnsy_filter::AclAction::Allow
+    );
+    assert_eq!(
+        acl.with_rules([]).check(addr("203.0.113.5"), None),
+        dnsy_filter::AclAction::Allow
     );
 }
