@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
+use std::sync::OnceLock;
 
 use crate::Name;
 
@@ -9,24 +11,16 @@ const MAX_POINTER_OFFSET: usize = 0x4000;
 /// A name has at most 127 labels.
 const MAX_LABELS: usize = 127;
 
-/// The compression table is keyed by an already mixed 64-bit hash; hashing it again is wasted work.
-#[derive(Default)]
-struct PassThrough(u64);
+/// Longest hash chain `find` walks per lookup. Past it the name is simply not compressed, which
+/// keeps hostile names engineered to collide from turning encoding quadratic. Ordinary messages
+/// never reach it: a chain only grows when two different suffixes share a 64-bit keyed hash.
+const MAX_PROBES: usize = 8;
 
-impl Hasher for PassThrough {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 = self.0 << 8 | u64::from(*b);
-        }
-    }
-
-    fn write_u64(&mut self, v: u64) {
-        self.0 = v;
-    }
+/// Per-process random key mixed into every suffix hash, so which names collide cannot be
+/// precomputed by whoever controls names in a message.
+fn hash_seed() -> u64 {
+    static SEED: OnceLock<u64> = OnceLock::new();
+    *SEED.get_or_init(|| RandomState::new().hash_one(0x646e_7379_u64))
 }
 
 /// One name suffix already written to the message, found again by comparing wire bytes.
@@ -38,13 +32,28 @@ struct Suffix {
 }
 
 /// A DNS message builder with name compression.
-#[derive(Default)]
 pub struct WireWriter {
     buf: Vec<u8>,
     /// Case-insensitive suffix hash -> first entry of the chain in `suffixes`. The table only holds
     /// offsets: a candidate is verified against the message bytes already written.
-    heads: HashMap<u64, u32, BuildHasherDefault<PassThrough>>,
+    heads: HashMap<u64, u32>,
     suffixes: Vec<Suffix>,
+    /// Applied to every suffix hash; all ones except in tests that force collisions.
+    pub(crate) hash_mask: u64,
+    /// Entries compared by `find` so far (bounded by `MAX_PROBES` per lookup).
+    pub(crate) probes: usize,
+}
+
+impl Default for WireWriter {
+    fn default() -> Self {
+        Self {
+            buf: Vec::new(),
+            heads: HashMap::new(),
+            suffixes: Vec::new(),
+            hash_mask: u64::MAX,
+            probes: 0,
+        }
+    }
 }
 
 impl WireWriter {
@@ -105,14 +114,14 @@ impl WireWriter {
             at += usize::from(wire[at]) + 1;
         }
         let mut hashes = [0u64; MAX_LABELS];
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ hash_seed();
         for i in (0..count).rev() {
             let from = usize::from(starts[i]);
             let to = from + usize::from(wire[from]) + 1;
             for b in &wire[from..to] {
                 hash = (hash ^ u64::from(b.to_ascii_lowercase())).wrapping_mul(0x0100_0000_01b3);
             }
-            hashes[i] = hash;
+            hashes[i] = hash & self.hash_mask;
         }
 
         for i in 0..count {
@@ -139,9 +148,11 @@ impl WireWriter {
         self.suffixes.push(Suffix { offset, next });
     }
 
-    fn find(&self, hash: u64, suffix: &[u8]) -> Option<u16> {
+    fn find(&mut self, hash: u64, suffix: &[u8]) -> Option<u16> {
         let mut entry = self.heads.get(&hash).copied();
-        while let Some(i) = entry {
+        for _ in 0..MAX_PROBES {
+            let i = entry?;
+            self.probes += 1;
             let candidate = &self.suffixes[i as usize];
             if self.matches(usize::from(candidate.offset), suffix) {
                 return Some(candidate.offset);

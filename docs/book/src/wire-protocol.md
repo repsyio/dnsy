@@ -50,7 +50,7 @@ The codec is allocation-lean because it sits on every query. Names up to 32 octe
 are stored inline in `Name` (longer ones in one boxed slice); `decode` reserves each section from
 its count, capped by what the remaining octets could hold, so a forged count cannot over-allocate;
 `encode` writes straight into the output buffer and the compression table stores only offsets,
-verifying a candidate against the bytes already written. RRset boundaries for truncation are found
+verifying a candidate against the bytes already written. Suffix hashes carry a per-process random key and a lookup compares at most 8 candidates, so names crafted to collide cannot make encoding quadratic; past the cap a name is merely written without compression (still valid, never reached by ordinary messages). RRset boundaries for truncation are found
 by scanning backwards from the end of the section (RRsets are contiguous in practice); bodies of
 more than 64 records use a map. Output is byte-for-byte what the previous implementation produced.
 

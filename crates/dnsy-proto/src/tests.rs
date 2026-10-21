@@ -333,6 +333,42 @@ fn writer_compresses_through_pointer_chains_case_insensitively() {
     assert_eq!(r.read_name().unwrap(), n("www.example.com"));
 }
 
+#[test]
+fn writer_probing_is_bounded_when_every_suffix_collides() {
+    // A zero mask gives every suffix the same hash, the worst case a crafted set of colliding
+    // names could produce. Each lookup may then compare at most MAX_PROBES entries.
+    let mut w = WireWriter::new();
+    w.hash_mask = 0;
+    let names: Vec<Name> = (0..1500)
+        .map(|i| n(&format!("host{i}.zone{}.example.com", i % 7)))
+        .collect();
+    let mut lookups = 0;
+    for name in &names {
+        lookups += usize::from(name.label_count());
+        w.write_name(name);
+    }
+    assert!(w.probes <= lookups * 8, "{} probes", w.probes);
+    let buf = w.finish();
+    let mut r = WireReader::new(&buf);
+    for name in &names {
+        assert_eq!(&r.read_name().unwrap(), name);
+    }
+    assert_eq!(r.remaining(), 0);
+}
+
+#[test]
+fn writer_output_does_not_depend_on_the_hash_seed() {
+    // The per-process hash key only picks table slots; the compression layout is fixed.
+    let mut w = WireWriter::new();
+    for name in ["a.example.com", "B.EXAMPLE.COM", "x.b.example.com"] {
+        w.write_name(&n(name));
+    }
+    let mut want = b"\x01a\x07example\x03com\x00".to_vec();
+    want.extend_from_slice(&[1, b'B', 0xC0, 2]);
+    want.extend_from_slice(&[1, b'x', 0xC0, 15]);
+    assert_eq!(w.finish(), want);
+}
+
 /// Small deterministic generator so `dnsy-proto` stays dependency free.
 struct Rng(u64);
 
