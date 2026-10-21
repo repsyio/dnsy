@@ -298,3 +298,28 @@ fed malformed input, auth, throttles, ACLs, redaction, the DNSSEC validator. Wri
 asserts that behaviour (the right error, nothing added, memory bounded), not one that merely calls
 the function. Put new tests in their own `*_tests.rs` module or `tests/` file. Untestable code
 (process glue) stays measured and is justified in the PR, not hidden.
+
+## Continuous integration
+
+Two workflows run on every pull request and on pushes to `main`; both call the same `just`
+recipes as the local gate, so a green `just ci` predicts a green pipeline.
+
+| Workflow / job | What it runs |
+| --- | --- |
+| `ci` / `rust (linux)` | `just check` (fmt, clippy, cargo-deny, advisory cargo-audit, OpenAPI drift), `just cov-rust` (full nextest suite plus the coverage gates) |
+| `ci` / `rust (embed-ui)` | builds `web/dist`, then clippy and the `dnsy-api` tests with `--features embed-ui`, which the default build compiles out (`ui_serves_brotli_when_accepted`). `just ci` does not run these |
+| `ci` / `web` | `just web` (frozen install, dedupe check, `ng lint`, `ng test --coverage`, `ng build`, API types drift) plus an advisory `pnpm audit` |
+| `ci` / `build-and-test (macos, windows)` | `cargo build --workspace --all-targets` and the nextest suite, without coverage, deny or e2e |
+| `e2e` / `e2e (rust)` | `just e2e` |
+| `e2e` / `e2e (browser)` | the `just e2e-ui` steps, with `playwright install --with-deps chromium`; the report is uploaded on failure |
+
+The jobs named `ci` and `e2e` only aggregate the others, so branch protection needs just those two
+(plus `pr-title`) as required checks. Every third-party action is pinned by commit SHA with its
+version in a comment; Dependabot (`.github/dependabot.yml`) bumps them weekly together with the
+cargo and `web/` npm dependencies (minor and patch grouped, majors individual). Workflows use
+`permissions: contents: read`, never `pull_request_target`, and pass no untrusted input to `run:`.
+
+Dependabot commit and PR titles use the prefix `DNSY-115: ⬆️` (cargo, npm) or `DNSY-115: 👷`
+(github-actions), where DNSY-115 is the tracking story for dependency updates, so they satisfy the
+`pr-title` check, e.g. `DNSY-115: ⬆️ Bump tokio from 1.40.0 to 1.41.0 in the tokio-stack group`.
+No `include: scope` is set, which would insert `(deps)` after the prefix.

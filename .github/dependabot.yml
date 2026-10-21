@@ -1,0 +1,68 @@
+# Dependabot: weekly (Mondays), minor and patch updates grouped per ecosystem; majors stay individual.
+# Grouping and ignore rules follow docs/analysis/2026-10-21-dependency-optimisation.md section 6.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "DNSY-115: ⬆️" }
+    groups:
+      tokio-stack:
+        patterns: [tokio, hyper, hyper-util, http-body-util, axum, tower, futures-util, h2]
+        update-types: [minor, patch]
+      tls:
+        patterns: [rustls, tokio-rustls, rustls-pki-types, webpki-roots, ring, rcgen, x509-parser]
+        update-types: [minor, patch]
+      serde:
+        patterns: [serde, serde_json, toml]
+        update-types: [minor, patch]
+      crypto-and-auth:
+        patterns: [argon2, zeroize, rand, sha2, subtle, base64]
+        update-types: [minor, patch]
+      dev-and-test:
+        patterns: [proptest, insta, criterion, tempfile]
+        update-types: [minor, patch]
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: ring          # exact pin, security review before bumping
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "DNSY-115: ⬆️" }
+    groups:
+      angular:
+        patterns: ["@angular/*", "@angular-eslint/*", angular-eslint]
+        update-types: [minor, patch]
+      lint-and-format:
+        patterns: [eslint, "@eslint/*", typescript-eslint, prettier]
+        update-types: [minor, patch]
+      test:
+        patterns: [vitest, "@vitest/*", jsdom, "@playwright/test", "@axe-core/playwright"]
+        update-types: [minor, patch]
+      tailwind:
+        patterns: [tailwindcss, "@tailwindcss/*", postcss]
+        update-types: [minor, patch]
+      three:
+        patterns: [three, "@types/three"]
+      types-and-tooling:
+        patterns: ["@types/node", openapi-typescript, tslib, rxjs]
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: typescript      # bound to the Angular major (22.2 -> TS 6.0.x)
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: "@types/node"   # tracks the Node major the pipeline runs on
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    commit-message: { prefix: "DNSY-115: 👷" }
+    groups:
+      actions:
+        patterns: ["*"]
