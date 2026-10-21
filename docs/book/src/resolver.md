@@ -47,7 +47,17 @@ and the client's CD bit. DO=0 and DO=1 clients never share entries, and CD=1 ent
 own key space, so unvalidated data cannot reach a validating client.
 
 **Positive answers.** The lifetime is the smallest TTL across the cached records, clamped to
-`[min_ttl, max_ttl]`. A lifetime of zero is not cached.
+`[min_ttl, max_ttl]`. A lifetime of zero is not cached. The answer to the miss itself is the copy
+the cache stored, so the clamps show from the first reply on, not only on later hits.
+
+**Coalesced misses.** Concurrent misses for the same key (name, type, class, DO and CD) share one
+upstream exchange: the first request forwards, validates and caches; the others wait for its
+result, success or failure, and are answered from it with their own id and question. A result is
+shared only while it is in flight (a failure is not remembered afterwards), a waiter whose leader
+is cancelled takes the exchange over, and no waiter waits longer than twice the resolver deadline.
+At most 256 requests wait on one key; beyond that a miss is answered SERVFAIL (EDE 22) at once, so a
+flood of one slow name cannot hold every listener slot. Serve-stale refreshes and prefetches use
+the same per-key slots and hand their result to any miss that waits on them.
 
 **Negative answers (RFC 2308).** NXDOMAIN and NODATA are cached for the smaller of the SOA record
 TTL, the SOA `minimum` field and `negative_max_ttl`; a negative answer without an SOA is not
