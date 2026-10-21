@@ -57,6 +57,11 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
             ));
         }
     }
+    if c.dot.client_crl.is_some() && (c.dot.mtls == crate::Mtls::Off || c.dot.listen.is_empty()) {
+        return Err(invalid(
+            "dot.client_crl needs dot.listen and dot.mtls set to optional or required",
+        ));
+    }
     if !c.doh.listen.is_empty() && (c.doh.cert.is_none() || c.doh.key.is_none()) {
         return Err(invalid(
             "doh.cert and doh.key are required when doh.listen is set",

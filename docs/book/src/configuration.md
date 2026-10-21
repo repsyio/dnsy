@@ -10,11 +10,11 @@ as TOML (numbers, booleans, arrays) and fall back to plain strings.
 | --- | --- |
 | `server` | `data_dir` (`/var/lib/dnsy`), `udp_sockets_per_address` (available parallelism on Linux, 1 elsewhere; see [Operations](operations.md)) |
 | `dns` | `udp`, `tcp` listen lists (`0.0.0.0:53`; empty disables) |
-| `dot` | `listen` (off), `cert`, `key`, `client_ca`, `mtls` = `off`/`optional`/`required` |
+| `dot` | `listen` (off), `cert`, `key`, `client_ca`, `client_crl`, `mtls` = `off`/`optional`/`required` |
 | `doh` | `listen` (off), `cert`, `key`, `path` (`/dns-query`), `require_token` (true) |
 | `api` | `listen` (`127.0.0.1:5380`), `tls_cert`, `tls_key`, `public_url`, `secure_cookies` (`auto`, `true` or `false`; see [Security](security.md)), `login_hash_per_client` (16), `login_hash_wait_ms` (5000; see [Authentication](auth.md)), `max_conns` (256), `max_conns_per_client` (64) |
 | `zones` | `dir` (`/var/lib/dnsy/zones`) |
-| `resolver` | `timeout_ms` (2000), `attempts` (2), `upstreams` (seed upstreams) |
+| `resolver` | `timeout_ms` (2000), `attempts` (2), `upstreams` (seed upstreams), `case_randomization` (false; 0x20, see [Resolver](resolver.md)) |
 | `cache` | `enabled` (true), `max_entries` (100000), `min_ttl` (0), `max_ttl` (86400), `negative_max_ttl` (3600), `servfail_ttl` (5), `bogus_ttl` (60) |
 | `cache.serve_stale` | `enabled` (true), `max_stale` (86400), `answer_ttl` (30), `client_timeout_ms` (1800) |
 | `cache.prefetch` | `enabled` (true), `min_hits` (5), `remaining_ttl_pct` (10) |

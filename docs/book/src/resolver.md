@@ -119,11 +119,30 @@ An upstream is written as a URL:
 | --- | --- |
 | `udp://host[:port]` | UDP (default port 53); a truncated answer (TC) is retried over TCP |
 | `tcp://host[:port]` | TCP with 2-byte framing (default port 53) |
-| `tls://host[:port][#sni]` | DNS over TLS, RFC 7858 (default port 853) |
+| `tls://host[:port][?pin-sha256=BASE64][#sni]` | DNS over TLS, RFC 7858 (default port 853); optional SPKI pin |
 
 IPv6 literals use brackets, for example `tcp://[2001:db8::1]:53`.
 
 Behaviour:
+
+- **SPKI pin.** `?pin-sha256=` takes the base64 SHA-256 of the server certificate's
+  `SubjectPublicKeyInfo` (the RFC 7469 form, 44 characters). It is checked after the normal
+  certificate and host-name verification, on every new connection; a mismatch fails the attempt
+  with a TLS error, which counts against the upstream's health like any transport error. Example:
+  `tls://9.9.9.9:853?pin-sha256=...#dns.quad9.net`. The pin is part of the upstream's identity.
+- **0x20 case randomisation.** With `resolver.case_randomization = true` (default false: it is
+  opt-in) the query name sent to `udp://` and `tcp://` upstreams has random upper/lower case
+  letters, and the answer must echo exactly that case, adding entropy against spoofing. Callers
+  and the cache see the original case. An upstream that answers with another case (it
+  lowercases) is retried at once without 0x20 and then queried without it for 10 minutes before
+  being probed again, so such upstreams keep working. `tls://` upstreams are not randomised
+  (authenticated transport). The setting is global, not per group: groups live in the database
+  and adding a per-group flag would need a migration.
+- **Loop guard.** An upstream (IP literal or host name) that resolves to one of DNSY's own
+  `dns.udp`/`dns.tcp` listen addresses is refused with an error instead of queried, which stops a
+  host whose system resolver points at DNSY from looping. A wildcard listen address (`0.0.0.0`)
+  covers loopback and wildcard addresses on its port. The refusal is a failed attempt, so the
+  upstream's health reflects it.
 
 - Every attempt uses a fresh query ID from the CSPRNG.
 - UDP queries go over a small pool of connected sockets per upstream. The pool keeps these
