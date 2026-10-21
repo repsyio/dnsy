@@ -45,8 +45,8 @@ impl<'a> WireReader<'a> {
     /// Reads a possibly compressed name. Pointers must point strictly before the
     /// pointer itself and are followed at most 128 times.
     pub fn read_name(&mut self) -> Result<Name, WireError> {
-        let mut labels: Vec<&[u8]> = Vec::new();
-        let mut total = 1usize;
+        let mut wire = [0u8; 255];
+        let mut total = 0usize;
         let mut cursor = self.pos;
         let mut resume: Option<usize> = None;
         let mut hops = 0;
@@ -60,11 +60,13 @@ impl<'a> WireReader<'a> {
                     }
                     let end = cursor + usize::from(len);
                     let label = self.buf.get(cursor..end).ok_or(WireError::Truncated)?;
-                    total += label.len() + 1;
-                    if total > 255 {
+                    // The root octet still has to fit after this label.
+                    if total + label.len() + 2 > wire.len() {
                         return Err(NameError::NameTooLong.into());
                     }
-                    labels.push(label);
+                    wire[total] = len;
+                    wire[total + 1..=total + label.len()].copy_from_slice(label);
+                    total += label.len() + 1;
                     cursor = end;
                 }
                 0xC0 => {
@@ -81,6 +83,7 @@ impl<'a> WireReader<'a> {
             }
         }
         self.pos = resume.unwrap_or(cursor);
-        Ok(Name::from_labels(labels)?)
+        // `wire` is zero-initialised, so the root octet is already in place.
+        Ok(Name::from_wire_unchecked(&wire[..=total]))
     }
 }

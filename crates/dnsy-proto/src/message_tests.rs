@@ -654,6 +654,83 @@ fn prop_message_roundtrip() {
     }
 }
 
+/// Owner `i % owners` with a type from `i % 3`, so record sets are scattered through the section.
+fn scattered(count: usize, owners: usize) -> Message {
+    let mut m = message(9);
+    for i in 0..count {
+        let owner = format!("h{}.example.com", i % owners);
+        let data = match i % 3 {
+            0 => RData::A(Ipv4Addr::new(192, 0, 2, u8::try_from(i % 250).unwrap())),
+            1 => RData::Aaaa(Ipv6Addr::LOCALHOST),
+            _ => RData::Txt(vec![vec![b'x'; 3]]),
+        };
+        m.answers.push(rec(&owner, data));
+    }
+    m.authority
+        .push(rec("example.com", RData::Ns(n("ns.example.com"))));
+    m.edns = Some(Edns {
+        options: vec![EdnsOption::Cookie(vec![7; 8])],
+        ..Edns::default()
+    });
+    m
+}
+
+/// Every record set in the truncated answer must be whole: the same number of records as the original.
+fn assert_whole_rrsets(original: &Message, decoded: &Message) {
+    let key = |r: &Record| (r.name.to_string(), u16::from(r.rtype));
+    for r in &decoded.answers {
+        let want = original.answers.iter().filter(|o| key(o) == key(r)).count();
+        let got = decoded.answers.iter().filter(|o| key(o) == key(r)).count();
+        assert_eq!(got, want, "RRset {:?} was split", key(r));
+    }
+}
+
+#[test]
+fn truncation_never_splits_scattered_rrsets() {
+    // 30 records take the scanning path, 150 the map path; both must agree on every limit.
+    for count in [30, 150] {
+        let m = scattered(count, 4);
+        let full = m.encode(usize::from(u16::MAX)).unwrap();
+        assert_eq!(Message::decode(&full).unwrap().answers, m.answers);
+        for limit in (100..full.len()).step_by(37) {
+            let out = m.encode(limit).unwrap();
+            assert!(out.len() <= limit);
+            let decoded = Message::decode(&out).unwrap();
+            assert_whole_rrsets(&m, &decoded);
+            assert_eq!(decoded.edns, m.edns, "OPT survives truncation at {limit}");
+            assert!(decoded.header.tc);
+        }
+    }
+}
+
+#[test]
+fn contiguous_rrsets_keep_a_prefix_of_whole_sets() {
+    let mut sorted = scattered(40, 2);
+    sorted
+        .answers
+        .sort_by_key(|r| (r.name.to_string(), u16::from(r.rtype)));
+    let mut kept_any = false;
+    for limit in (80..400).step_by(13) {
+        if let Ok(out) = sorted.encode(limit) {
+            let decoded = Message::decode(&out).unwrap();
+            assert_whole_rrsets(&sorted, &decoded);
+            assert_eq!(decoded.answers, sorted.answers[..decoded.answers.len()]);
+            kept_any |= !decoded.answers.is_empty();
+        }
+    }
+    assert!(kept_any);
+}
+
+#[test]
+fn forged_counts_decode_to_an_error() {
+    // Counts far beyond the data: the reservation is bounded by the packet, the decode fails.
+    let mut buf = vec![0; HEADER_LEN];
+    buf[4..6].copy_from_slice(&u16::MAX.to_be_bytes());
+    buf[6..8].copy_from_slice(&u16::MAX.to_be_bytes());
+    buf[10..12].copy_from_slice(&u16::MAX.to_be_bytes());
+    assert!(matches!(Message::decode(&buf), Err(DecodeError::Wire(_))));
+}
+
 #[test]
 fn extended_rcode_without_opt_is_an_error() {
     let mut m = message(1);
