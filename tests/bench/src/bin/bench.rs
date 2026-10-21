@@ -46,6 +46,11 @@ async fn main() {
     let opts = Opts {
         doh: true,
         doh_require_token: false,
+        // All 64 loadgen clients share 127.0.0.1, so lift the per-client caps (16 connections,
+        // 64 UDP requests in flight) that would otherwise reset TCP and DoH connections and drop
+        // UDP datagrams.
+        max_conns_per_client: 1024,
+        udp_in_flight_per_client: 4096,
         log_level: "warn",
         ..Opts::default()
     };

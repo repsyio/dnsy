@@ -137,7 +137,8 @@ gate like `dnsy-e2e`) holds the performance tools:
 
 - `just bench`: the scenario runner (`bench` binary). It starts the release `dnsy` (through
   `DNSY_BIN`) with the e2e harness and a scripted upstream and prints QPS, p50 and p99 for UDP
-  hit and miss, TCP and DoH.
+  hit and miss, TCP and DoH. It lifts the per-client connection and UDP in-flight limits because
+  all load clients share one source address; every row must report 0 errors.
 - `loadgen`: a closed-loop load generator for any server over UDP or TCP (`--clients`,
   `--pipeline`, `--count` names cycled for cache hits, `--unique` for misses).
 - `fakeup`: a fast multi-task UDP upstream answering every name (`nx*` gets NXDOMAIN).
