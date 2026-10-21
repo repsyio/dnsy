@@ -7,11 +7,14 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, LOCATION};
-use reqwest::{StatusCode, Url};
+use hyper::body::Incoming;
+use hyper::header::{ETAG, HeaderName, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, LOCATION};
+use hyper::{Method, Response, StatusCode};
 use tokio::io::AsyncReadExt;
+
+use crate::http::{self, Target};
 
 /// Largest list body accepted from one source.
 pub const MAX_LIST_BYTES: u64 = 50 * 1024 * 1024;
@@ -55,23 +58,20 @@ pub enum FetchError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Location {
     File(PathBuf),
-    Url(Url),
+    Url(Target),
 }
 
 impl Location {
     /// Classifies `s`: `http://` and `https://` are URLs, any other `scheme://` is refused and
-    /// everything else is a file path.
+    /// everything else is a file path. URLs are split by [`Target::parse`] (ASCII only, no
+    /// user info).
     ///
     /// # Errors
     /// [`FetchError::UnsupportedScheme`] or [`FetchError::InvalidLocation`].
     pub fn parse(s: &str) -> Result<Location, FetchError> {
         let lower = s.to_ascii_lowercase();
         if lower.starts_with("http://") || lower.starts_with("https://") {
-            let url = Url::parse(s).map_err(|_| FetchError::InvalidLocation)?;
-            if url.host().is_none() || !url.username().is_empty() || url.password().is_some() {
-                return Err(FetchError::InvalidLocation);
-            }
-            Ok(Location::Url(url))
+            Ok(Location::Url(Target::parse(s)?))
         } else if s.contains("://") {
             Err(FetchError::UnsupportedScheme)
         } else if s.is_empty() {
@@ -112,6 +112,8 @@ pub struct Fetcher {
     tls: Arc<rustls::ClientConfig>,
     max_bytes: u64,
     timeout: Duration,
+    #[cfg(test)]
+    dial: Option<SocketAddr>,
 }
 
 impl Default for Fetcher {
@@ -127,21 +129,34 @@ impl Fetcher {
     /// Never in practice: the ring provider supports the default protocol versions.
     #[must_use]
     pub fn new(max_bytes: u64, timeout: Duration) -> Fetcher {
-        let roots = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("ring supports the default protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
         Fetcher {
-            tls: Arc::new(tls),
+            tls: http::tls_config(http::webpki_roots()),
             max_bytes,
             timeout,
+            #[cfg(test)]
+            dial: None,
         }
+    }
+
+    /// A fetcher trusting only `roots`.
+    #[cfg(test)]
+    pub(crate) fn with_roots(
+        roots: rustls::RootCertStore,
+        max_bytes: u64,
+        timeout: Duration,
+    ) -> Fetcher {
+        Fetcher {
+            tls: http::tls_config(roots),
+            ..Fetcher::new(max_bytes, timeout)
+        }
+    }
+
+    /// Dials `addr` instead of the checked addresses (after the policy check passed), so a
+    /// test can stand a local server in for a public host.
+    #[cfg(test)]
+    pub(crate) fn dial_instead(mut self, addr: SocketAddr) -> Fetcher {
+        self.dial = Some(addr);
+        self
     }
 
     /// Fetches `location`. `prior` are validators of a copy the caller still holds; pass `None`
@@ -158,13 +173,9 @@ impl Fetcher {
         match Location::parse(location)? {
             Location::File(path) => self.read_file(path).await,
             Location::Url(url) => {
-                let deadline = Instant::now() + self.timeout;
-                tokio::time::timeout(
-                    self.timeout,
-                    self.fetch_url(url, allow_private, prior, deadline),
-                )
-                .await
-                .map_err(|_| FetchError::Timeout)?
+                tokio::time::timeout(self.timeout, self.fetch_url(url, allow_private, prior))
+                    .await
+                    .map_err(|_| FetchError::Timeout)?
             }
         }
     }
@@ -193,48 +204,34 @@ impl Fetcher {
 
     async fn fetch_url(
         &self,
-        mut url: Url,
+        mut url: Target,
         allow_private: bool,
         prior: Option<&Validators>,
-        deadline: Instant,
     ) -> Result<Fetched, FetchError> {
         let prior = prior.filter(|v| !v.is_empty());
         for _ in 0..=MAX_REDIRECTS {
             let addrs = resolve_checked(&url, allow_private).await?;
-            let mut builder = reqwest::Client::builder()
-                .use_preconfigured_tls((*self.tls).clone())
-                .redirect(reqwest::redirect::Policy::none())
-                .no_proxy()
-                .user_agent("dnsy")
-                .timeout(deadline.saturating_duration_since(Instant::now()));
-            if let Some(domain) = url.domain() {
-                builder = builder.resolve_to_addrs(domain, &addrs);
-            }
-            let client = builder.build().map_err(|_| FetchError::Http)?;
-            let mut req = client.get(url.clone());
+            #[cfg(test)]
+            let addrs = self.dial.map_or(addrs, |a| vec![a]);
+            let mut headers: Vec<(HeaderName, &str)> = Vec::new();
             if let Some(v) = prior {
                 if let Some(e) = &v.etag {
-                    req = req.header(IF_NONE_MATCH, e);
+                    headers.push((IF_NONE_MATCH, e));
                 }
                 if let Some(m) = &v.last_modified {
-                    req = req.header(IF_MODIFIED_SINCE, m);
+                    headers.push((IF_MODIFIED_SINCE, m));
                 }
             }
-            let mut resp = req.send().await.map_err(|_| FetchError::Http)?;
+            let mut exchange = http::send(&self.tls, &addrs, Method::GET, &url, &headers).await?;
+            let resp = &mut exchange.response;
             let status = resp.status();
             if status.is_redirection() && status != StatusCode::NOT_MODIFIED {
                 let next = resp
                     .headers()
                     .get(LOCATION)
                     .and_then(|v| v.to_str().ok())
-                    .and_then(|l| url.join(l).ok())
                     .ok_or(FetchError::BadRedirect)?;
-                let downgrade = url.scheme() == "https" && next.scheme() != "https";
-                if !matches!(next.scheme(), "http" | "https") || downgrade || next.host().is_none()
-                {
-                    return Err(FetchError::BadRedirect);
-                }
-                url = next;
+                url = url.resolve_location(next)?;
                 continue;
             }
             if status == StatusCode::NOT_MODIFIED && prior.is_some() {
@@ -243,27 +240,18 @@ impl Fetcher {
             if status != StatusCode::OK {
                 return Err(FetchError::Status(status.as_u16()));
             }
-            if resp.content_length().is_some_and(|n| n > self.max_bytes) {
-                return Err(FetchError::TooLarge);
-            }
             let validators = Validators {
-                etag: header_value(&resp, ETAG.as_str()),
-                last_modified: header_value(&resp, LAST_MODIFIED.as_str()),
+                etag: header_value(resp, &ETAG),
+                last_modified: header_value(resp, &LAST_MODIFIED),
             };
-            let mut bytes = Vec::new();
-            while let Some(chunk) = resp.chunk().await.map_err(|_| FetchError::Http)? {
-                if (bytes.len() + chunk.len()) as u64 > self.max_bytes {
-                    return Err(FetchError::TooLarge);
-                }
-                bytes.extend_from_slice(&chunk);
-            }
+            let bytes = http::read_body(resp, self.max_bytes).await?;
             return Ok(Fetched::Body { bytes, validators });
         }
         Err(FetchError::TooManyRedirects)
     }
 }
 
-fn header_value(resp: &reqwest::Response, name: &str) -> Option<String> {
+pub(crate) fn header_value(resp: &Response<Incoming>, name: &HeaderName) -> Option<String> {
     resp.headers()
         .get(name)
         .and_then(|v| v.to_str().ok())
@@ -271,25 +259,10 @@ fn header_value(resp: &reqwest::Response, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Resolves the URL's host and applies the SSRF policy to every address.
-async fn resolve_checked(url: &Url, allow_private: bool) -> Result<Vec<SocketAddr>, FetchError> {
-    let port = url
-        .port_or_known_default()
-        .ok_or(FetchError::InvalidLocation)?;
-    let addrs: Vec<SocketAddr> = if let Some(domain) = url.domain() {
-        tokio::net::lookup_host((domain, port))
-            .await
-            .map_err(|_| FetchError::Resolve)?
-            .collect()
-    } else {
-        let host = url.host_str().ok_or(FetchError::InvalidLocation)?;
-        let host = host.trim_start_matches('[').trim_end_matches(']');
-        let ip: IpAddr = host.parse().map_err(|_| FetchError::InvalidLocation)?;
-        vec![SocketAddr::new(ip, port)]
-    };
-    if addrs.is_empty() {
-        return Err(FetchError::Resolve);
-    }
+/// Resolves the URL's host and applies the SSRF policy to every address. The connection is
+/// then dialled to exactly these addresses.
+async fn resolve_checked(url: &Target, allow_private: bool) -> Result<Vec<SocketAddr>, FetchError> {
+    let addrs = http::resolve(url).await?;
     if !allow_private && addrs.iter().any(|a| !is_public(a.ip())) {
         return Err(FetchError::PrivateTarget);
     }

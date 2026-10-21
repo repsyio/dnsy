@@ -118,8 +118,10 @@ Everything on the network path is Rust. Crates worth knowing about when you audi
   compile time) and cannot be replaced cheaply without a build script, so it is accepted and
   watched through `cargo deny` advisories.
 - `rusqlite` bundles SQLite, compiled from source with the system C compiler.
-- `reqwest` fetches blocklists over HTTPS with the bundled `webpki-roots` trust anchors;
-  certificate verification is always on.
+- A small in-house HTTP/1.1 client on `hyper` and `tokio-rustls` (`dnsy-filter::http`) fetches
+  blocklists and sends `dnsy cache flush`; HTTPS uses the bundled `webpki-roots` trust anchors
+  and certificate verification is always on. URLs are split by hand (ASCII only, no IDNA), so
+  the `url`/`idna`/ICU crates are not in the binary.
 - mTLS subjects in logs come from a small DER walk in `dnsy-server`, not an X.509 library; it
   only reads the common name and text subject alternative names, bounds the result and replaces
   control characters. Chain and validity checks stay in `rustls`.

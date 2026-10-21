@@ -4,6 +4,7 @@
 
 mod acl;
 mod fetch;
+pub mod http;
 mod manager;
 mod matcher;
 mod parse;
@@ -32,6 +33,8 @@ pub use sources::{
 
 #[cfg(test)]
 mod blocklist_tests;
+#[cfg(test)]
+mod http_tests;
 #[cfg(test)]
 mod parse_edge_tests;
 #[cfg(test)]
