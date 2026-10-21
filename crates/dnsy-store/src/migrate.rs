@@ -100,6 +100,11 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "client_certs_autoincrement",
         sql: include_str!("../migrations/0014_client_certs_autoincrement.sql"),
     },
+    Migration {
+        version: 15,
+        name: "querylog_compact",
+        sql: include_str!("../migrations/0015_querylog_compact.sql"),
+    },
 ];
 
 /// Applied state of one known migration.
@@ -150,8 +155,31 @@ fn verify(
     Ok(())
 }
 
+/// SQL helpers migrations may call. `dnsy_ip_blob(text)` turns an IP address in text form into
+/// its 4 (IPv4) or 16 (IPv6) network-order bytes, for the compact query-log client column
+/// (0015); text that is not an address is an error, which rolls the migration back.
+fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "dnsy_ip_blob",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text = ctx.get::<String>(0)?;
+            let ip: std::net::IpAddr = text.parse().map_err(|_| {
+                rusqlite::Error::UserFunctionError(format!("not an IP address: {text:?}").into())
+            })?;
+            Ok(match ip {
+                std::net::IpAddr::V4(a) => a.octets().to_vec(),
+                std::net::IpAddr::V6(a) => a.octets().to_vec(),
+            })
+        },
+    )
+}
+
 /// Apply every migration in `known` missing from the database, in version order.
 pub(crate) fn run(conn: &mut Connection, known: &[Migration]) -> Result<(), StoreError> {
+    register_functions(conn)?;
     verify(&applied(conn)?, known)?;
     let done = applied(conn)?;
     let mut pending: Vec<&Migration> = known

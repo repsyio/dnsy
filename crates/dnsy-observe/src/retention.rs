@@ -462,7 +462,7 @@ mod tests {
             &store,
             "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 119999)
              INSERT INTO query_log (ts_ms, client, transport, qname, qtype, rcode, source, dnssec, latency_us)
-             SELECT i, '192.0.2.1', 'udp', 'a.example.', 1, 0, 'upstream', 'unchecked', 1 FROM n;
+             SELECT i, X'C0000201', 0, 'a.example.', 1, 0, 3, 0, 1 FROM n;
              WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 119999)
              INSERT INTO stats_top_hour (hour, kind, key, count)
              SELECT 0, 'qname', 'k' || i, 1 FROM n",
@@ -477,7 +477,7 @@ mod tests {
                 exec(
                     &store,
                     "INSERT INTO query_log (ts_ms, client, transport, qname, qtype, rcode, source, dnssec, latency_us)
-                     VALUES (9000000, '192.0.2.2', 'udp', 'new.example.', 1, 0, 'upstream', 'unchecked', 1)",
+                     VALUES (9000000, X'C0000202', 0, 'new.example.', 1, 0, 3, 0, 1)",
                 )
                 .await;
             }

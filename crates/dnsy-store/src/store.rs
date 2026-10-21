@@ -755,9 +755,282 @@ mod tests {
         assert!(st.iter().any(|m| m.version == 10) && st.iter().any(|m| m.version == 11));
         // The partial index holds exactly the rare rows (1 in 100).
         let rare: i64 = after
-            .read(|c| Ok(c.query_row("SELECT count(*) FROM query_log INDEXED BY query_log_rare WHERE source IN ('blocked', 'refused', 'error') OR rcode NOT IN (0, 3)", [], |r| r.get(0))?))
+            .read(|c| Ok(c.query_row("SELECT count(*) FROM query_log INDEXED BY query_log_rare WHERE source IN (4, 5, 6) OR rcode NOT IN (0, 3)", [], |r| r.get(0))?))
             .await
             .unwrap();
         assert_eq!(rare, 200);
+    }
+
+    const BEFORE_COMPACT: usize = 14;
+
+    /// Rows with every transport, source, dnssec value, IPv4 and IPv6 clients (compressed and
+    /// IPv4-mapped forms) and a text sequence high-water mark above the largest id.
+    fn populate_text_rows(c: &rusqlite::Connection, n: i64) {
+        let mut ins = c
+            .prepare(
+                "INSERT INTO query_log (ts_ms, client, transport, principal, qname, qtype, rcode,
+                                        source, source_detail, dnssec, latency_us)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, 10)",
+            )
+            .unwrap();
+        let clients = [
+            "192.0.2.7",
+            "2001:db8:1::",
+            "::ffff:192.0.2.1",
+            "::1",
+            "2001:db8::8a2e:370:7334",
+        ];
+        let transports = ["udp", "tcp", "dot", "doh"];
+        let sources = [
+            "authoritative",
+            "cache",
+            "cache_stale",
+            "upstream",
+            "blocked",
+            "refused",
+            "error",
+        ];
+        let dnssec = ["unchecked", "secure", "insecure", "bogus", "indeterminate"];
+        for i in 0..n {
+            let u = usize::try_from(i).unwrap();
+            ins.execute(rusqlite::params![
+                i,
+                clients[u % clients.len()],
+                transports[u % 4],
+                (u % 3 == 0).then_some("tok"),
+                format!("host{i}.example."),
+                i % 6,
+                sources[u % 7],
+                (u % 7 == 3).then_some("198.51.100.1:53"),
+                dnssec[u % 5],
+            ])
+            .unwrap();
+        }
+    }
+
+    /// A 0014 database with 3 500 text rows, the last ten deleted (sequence 3 500, 3 490 rows),
+    /// migrated by the current binary.
+    fn upgraded_log() -> (TempDir, std::path::PathBuf) {
+        let (d, p) = db();
+        Store::open_with(&p, &MIGRATIONS[..BEFORE_COMPACT]).unwrap();
+        assert_eq!(MIGRATIONS[BEFORE_COMPACT - 1].version, 14);
+        let c = rusqlite::Connection::open(&p).unwrap();
+        populate_text_rows(&c, 3_500);
+        c.execute("DELETE FROM query_log WHERE id > 3490", [])
+            .unwrap();
+        let seq: i64 = c
+            .query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'query_log'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(seq, 3_500);
+        drop(c);
+        drop(Store::open(&p).unwrap());
+        (d, p)
+    }
+
+    /// A populated database at the previous migration (0014) upgrades through 0015: every row
+    /// keeps its meaning (read back through the integer codes).
+    #[test]
+    fn compact_migration_converts_a_populated_database() {
+        let (_d, p) = upgraded_log();
+        let c = rusqlite::Connection::open(&p).unwrap();
+        let rows: i64 = c
+            .query_row("SELECT count(*) FROM query_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 3_490);
+        let mut st = c
+            .prepare(
+                "SELECT id, client, transport, principal, qname, source, source_detail, dnssec
+                 FROM query_log ORDER BY id",
+            )
+            .unwrap();
+        let clients: [Vec<u8>; 5] = [
+            vec![192, 0, 2, 7],
+            "2001:db8:1::"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets()
+                .to_vec(),
+            "::ffff:192.0.2.1"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets()
+                .to_vec(),
+            "::1"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets()
+                .to_vec(),
+            "2001:db8::8a2e:370:7334"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets()
+                .to_vec(),
+        ];
+        let mut seen = 0;
+        for r in st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, i64>(7)?,
+                ))
+            })
+            .unwrap()
+        {
+            let (id, client, transport, principal, qname, source, detail, dnssec) = r.unwrap();
+            let u = usize::try_from(id - 1).unwrap();
+            assert_eq!(client, clients[u % 5], "id {id}");
+            assert_eq!(usize::try_from(transport).unwrap(), u % 4);
+            assert_eq!(principal.as_deref(), (u % 3 == 0).then_some("tok"));
+            assert_eq!(qname, format!("host{}.example.", id - 1));
+            assert_eq!(usize::try_from(source).unwrap(), u % 7);
+            assert_eq!(detail.is_some(), u % 7 == 3);
+            assert_eq!(usize::try_from(dnssec).unwrap(), u % 5);
+            seen += 1;
+        }
+        assert_eq!(seen, 3_490);
+    }
+
+    /// Ids survive, the sequence high-water mark carries over (no id is reused) and the three
+    /// indexes exist, the partial one over the codes.
+    #[test]
+    fn compact_migration_keeps_ids_sequence_and_indexes() {
+        let (_d, p) = upgraded_log();
+        let c = rusqlite::Connection::open(&p).unwrap();
+        c.execute(
+            "INSERT INTO query_log (ts_ms, client, transport, qname, qtype, rcode, source, dnssec, latency_us)
+             VALUES (1, X'C0000201', 0, 'n.example.', 1, 0, 3, 0, 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(c.last_insert_rowid(), 3_501);
+        let idx: Vec<String> = c
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='query_log' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(idx, ["query_log_client", "query_log_rare", "query_log_ts"]);
+        let rare: i64 = c
+            .query_row("SELECT count(*) FROM query_log INDEXED BY query_log_rare WHERE source IN (4, 5, 6) OR rcode NOT IN (0, 3)", [], |r| r.get(0))
+            .unwrap();
+        let expected: i64 = c
+            .query_row(
+                "SELECT count(*) FROM query_log WHERE source IN (4, 5, 6) OR rcode NOT IN (0, 3)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rare, expected);
+        assert!(rare > 0);
+    }
+
+    /// Empty table: the migration applies and the sequence row is not invented.
+    #[test]
+    fn compact_migration_on_an_empty_log() {
+        let (_d, p) = db();
+        Store::open_with(&p, &MIGRATIONS[..BEFORE_COMPACT]).unwrap();
+        Store::open(&p).unwrap();
+        let c = rusqlite::Connection::open(&p).unwrap();
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM query_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// A row the mapping cannot represent aborts the whole migration: nothing is applied, the
+    /// text table is intact and the error names the migration.
+    #[test]
+    fn compact_migration_rolls_back_on_a_bad_row() {
+        for bad in [
+            "UPDATE query_log SET client = 'not-an-ip' WHERE id = 3",
+            "UPDATE query_log SET source = 'mystery' WHERE id = 3",
+            "UPDATE query_log SET transport = 'quic' WHERE id = 3",
+            "UPDATE query_log SET dnssec = 'odd' WHERE id = 3",
+        ] {
+            let (_d, p) = db();
+            Store::open_with(&p, &MIGRATIONS[..BEFORE_COMPACT]).unwrap();
+            let c = rusqlite::Connection::open(&p).unwrap();
+            populate_text_rows(&c, 10);
+            c.execute(bad, []).unwrap();
+            drop(c);
+            let err = Store::open(&p).err().expect("migration fails");
+            assert!(
+                matches!(err, StoreError::Migration { version: 15, .. }),
+                "{bad}: {err:?}"
+            );
+            let c = rusqlite::Connection::open(&p).unwrap();
+            let (n, ty): (i64, String) = c
+                .query_row(
+                    "SELECT count(*), typeof(min(client)) FROM query_log",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!((n, ty.as_str()), (10, "text"), "{bad}");
+            let tables: i64 = c
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name = 'query_log_new'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(tables, 0, "{bad}");
+            let applied: i64 = c
+                .query_row(
+                    "SELECT count(*) FROM schema_migrations WHERE version = 15",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(applied, 0, "{bad}");
+        }
+    }
+
+    /// Size per row, measured on the file after a VACUUM so free pages do not count.
+    fn vacuumed_bytes(p: &std::path::Path) -> i64 {
+        let c = rusqlite::Connection::open(p).unwrap();
+        c.execute_batch("VACUUM").unwrap();
+        let pages: i64 = c.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap();
+        let size: i64 = c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
+        pages * size
+    }
+
+    /// Benchmark for the story's size criterion: the same 200k rows before and after the
+    /// migration (all three indexes present both times), at least 20 percent smaller.
+    #[test]
+    fn compact_encoding_shrinks_the_query_log_by_at_least_20_percent() {
+        let (_d, p) = db();
+        Store::open_with(&p, &MIGRATIONS[..BEFORE_COMPACT]).unwrap();
+        let c = rusqlite::Connection::open(&p).unwrap();
+        c.execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 199999)
+             INSERT INTO query_log (ts_ms, client, transport, principal, qname, qtype, rcode,
+                                    source, source_detail, dnssec, latency_us)
+             SELECT 1700000000000 + i * 37, '10.' || (i % 7) || '.' || (i % 251) || '.' || (i % 13),
+                    CASE i % 4 WHEN 0 THEN 'udp' WHEN 1 THEN 'tcp' WHEN 2 THEN 'dot' ELSE 'doh' END,
+                    NULL, 'host' || (i % 5000) || '.example.com.', 1 + i % 3, CASE WHEN i % 50 = 0 THEN 3 ELSE 0 END,
+                    CASE i % 5 WHEN 0 THEN 'cache' WHEN 1 THEN 'upstream' WHEN 2 THEN 'cache' WHEN 3 THEN 'authoritative' ELSE 'blocked' END,
+                    NULL, CASE i % 9 WHEN 0 THEN 'secure' ELSE 'unchecked' END, 100 + i % 900
+             FROM n",
+        )
+        .unwrap();
+        drop(c);
+        let before = vacuumed_bytes(&p);
+        Store::open(&p).unwrap();
+        let after = vacuumed_bytes(&p);
+        let saved = 100 - after * 100 / before;
+        eprintln!("query_log 200k rows: {before} -> {after} bytes, {saved} percent smaller");
+        assert!(after * 100 <= before * 80, "{before} -> {after}");
     }
 }
