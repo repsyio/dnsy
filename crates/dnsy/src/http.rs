@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::ConnectInfo;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -75,8 +76,11 @@ pub(crate) async fn serve(
                 },
                 None => Box::new(stream),
             };
+            // Handlers read the peer address from `ConnectInfo` (login throttling is keyed on it).
             let service = service_fn(move |req: hyper::Request<Incoming>| {
-                app.clone().oneshot(req.map(axum::body::Body::new))
+                let mut req = req.map(axum::body::Body::new);
+                req.extensions_mut().insert(ConnectInfo(peer));
+                app.clone().oneshot(req)
             });
             let builder = Builder::new(TokioExecutor::new());
             let conn = builder.serve_connection(TokioIo::new(io), service);
@@ -99,3 +103,94 @@ pub(crate) async fn serve(
 trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use dnsy_api::{ApiConfig, ApiState, router};
+    use dnsy_core::Role;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use serde_json::json;
+
+    use super::*;
+
+    const PW: &str = "correct horse battery";
+
+    struct Server {
+        addr: SocketAddr,
+        store: dnsy_store::Store,
+        _stop: watch::Sender<bool>,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn server() -> Server {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
+        let state = ApiState::new(store.clone());
+        state.users.create("admin", PW, Role::Admin).await.unwrap();
+        let app = router(state.clone(), ApiConfig { tls: false });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, rx) = watch::channel(false);
+        tokio::spawn(serve(listener, app, None, rx));
+        Server {
+            addr,
+            store,
+            _stop: stop,
+            _dir: dir,
+        }
+    }
+
+    /// Posts a login from the given loopback source address; returns status and headers text.
+    async fn login(s: &Server, from: &str, password: &str) -> (u16, String) {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind(SocketAddr::new(from.parse().unwrap(), 0)).unwrap();
+        let mut stream = socket.connect(s.addr).await.unwrap();
+        let body = json!({"username": "admin", "password": password}).to_string();
+        let request = format!(
+            "POST /api/v1/auth/login HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).await.unwrap();
+        let status = raw.split(' ').nth(1).unwrap().parse().unwrap();
+        (status, raw.to_ascii_lowercase())
+    }
+
+    async fn recorded_ips(s: &Server) -> Vec<String> {
+        s.store
+            .read(|c| {
+                let mut stmt = c.prepare("SELECT DISTINCT ip FROM login_attempts")?;
+                Ok(stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<std::result::Result<Vec<String>, _>>()?)
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_attempts_record_peer_ip_through_real_listener() {
+        let s = server().await;
+        assert_eq!(login(&s, "127.0.0.2", "wrong-password").await.0, 401);
+        let ips = recorded_ips(&s).await;
+        assert_eq!(ips, vec!["127.0.0.2".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn locked_out_address_does_not_lock_out_another_address() {
+        let s = server().await;
+        for _ in 0..5 {
+            assert_eq!(login(&s, "127.0.0.2", "wrong-password").await.0, 401);
+        }
+        let (status, raw) = login(&s, "127.0.0.2", PW).await;
+        assert_eq!(status, 429);
+        assert!(raw.contains("retry-after:"));
+        // The attacker's address is locked; the administrator elsewhere is not.
+        assert_eq!(login(&s, "127.0.0.3", PW).await.0, 200);
+        assert!(!recorded_ips(&s).await.contains(&"0.0.0.0".to_owned()));
+    }
+}
