@@ -32,7 +32,7 @@ impl Fx {
     }
 
     fn app(&self) -> Router {
-        router(self.state.clone(), ApiConfig { tls: false })
+        router(self.state.clone(), ApiConfig { tls: false, ..ApiConfig::default() })
     }
 
     async fn token(&self, name: &str, role: Role, scopes: &[Scope]) -> String {
@@ -518,7 +518,7 @@ async fn client_ips_are_redacted_when_configured() {
     g.ingest(vec![event("a.example.", now_ms())]).await;
     let mut state = g.state.clone();
     state.redact_client_ip = true;
-    let app = router(state, ApiConfig { tls: false });
+    let app = router(state, ApiConfig { tls: false, ..ApiConfig::default() });
     let tk = g.viewer().await;
     let req = Request::builder()
         .uri("/api/v1/querylog")

@@ -112,7 +112,7 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
                 .0,
         );
     }
-    let app = build(state.clone(), ApiConfig { tls: false }, Router::new());
+    let app = build(state.clone(), ApiConfig { tls: false, ..ApiConfig::default() }, Router::new());
     let viewer = tokens.pop().unwrap();
     let operator = tokens.pop().unwrap();
     let admin = tokens.pop().unwrap();
@@ -307,7 +307,7 @@ async fn policy_validation_and_availability() {
     assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
     let mut no_engine = bare.state.clone();
     no_engine.validation = None;
-    let app = build(no_engine, ApiConfig { tls: false }, Router::new());
+    let app = build(no_engine, ApiConfig { tls: false, ..ApiConfig::default() }, Router::new());
     let req = Request::builder()
         .uri("/api/v1/settings/dnssec")
         .header("authorization", format!("Bearer {}", bare.admin))

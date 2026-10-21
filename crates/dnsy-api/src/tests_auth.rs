@@ -28,7 +28,7 @@ fn fixture_with(bootstrap: Option<Arc<BootstrapCode>>) -> Fixture {
     if let Some(code) = bootstrap {
         state = state.with_bootstrap(code);
     }
-    let app = router(state.clone(), ApiConfig { tls: false });
+    let app = router(state.clone(), ApiConfig { tls: false, ..ApiConfig::default() });
     Fixture {
         state,
         app,
@@ -844,7 +844,7 @@ async fn secure_cookie_flag_follows_tls_config() {
     let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
     let state = ApiState::new(store);
     state.users.create("alice", PW, Role::Viewer).await.unwrap();
-    let app = router(state, ApiConfig { tls: true });
+    let app = router(state, ApiConfig { tls: true, ..ApiConfig::default() });
     let r = req(
         Method::POST,
         "/api/v1/auth/login",
@@ -853,4 +853,56 @@ async fn secure_cookie_flag_follows_tls_config() {
     );
     let res = app.oneshot(r).await.unwrap();
     assert!(set_cookies(&res).iter().all(|c| c.contains("; Secure")));
+}
+
+#[tokio::test]
+async fn secure_cookies_true_overrides_missing_tls() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
+    let state = ApiState::new(store);
+    state.users.create("alice", PW, Role::Viewer).await.unwrap();
+    let config = ApiConfig {
+        tls: false,
+        secure_cookies: Some(true),
+    };
+    let app = router(state, config);
+    let r = req(
+        Method::POST,
+        "/api/v1/auth/login",
+        None,
+        Some(json!({"username": "alice", "password": PW})),
+    );
+    let res = app.oneshot(r).await.unwrap();
+    let cookies = set_cookies(&res);
+    assert_eq!(cookies.len(), 2);
+    assert!(cookies.iter().all(|c| c.contains("; Secure")), "{cookies:?}");
+    assert!(
+        res.headers()
+            .contains_key(axum::http::header::STRICT_TRANSPORT_SECURITY)
+    );
+}
+
+#[tokio::test]
+async fn secure_cookies_false_overrides_tls() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
+    let state = ApiState::new(store);
+    state.users.create("alice", PW, Role::Viewer).await.unwrap();
+    let config = ApiConfig {
+        tls: true,
+        secure_cookies: Some(false),
+    };
+    let app = router(state, config);
+    let r = req(
+        Method::POST,
+        "/api/v1/auth/login",
+        None,
+        Some(json!({"username": "alice", "password": PW})),
+    );
+    let res = app.oneshot(r).await.unwrap();
+    assert!(set_cookies(&res).iter().all(|c| !c.contains("Secure")));
+    assert!(
+        !res.headers()
+            .contains_key(axum::http::header::STRICT_TRANSPORT_SECURITY)
+    );
 }

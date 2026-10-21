@@ -853,7 +853,7 @@ mod tests {
                     .0,
             );
         }
-        let app = build(state, ApiConfig { tls: false }, Router::new());
+        let app = build(state, ApiConfig { tls: false, ..ApiConfig::default() }, Router::new());
         let viewer = tokens.pop().unwrap();
         let admin = tokens.pop().unwrap();
         Fx {
@@ -1428,7 +1428,7 @@ mod tests {
             .await
             .unwrap();
         let bare = Fx {
-            app: build(state, ApiConfig { tls: false }, Router::new()),
+            app: build(state, ApiConfig { tls: false, ..ApiConfig::default() }, Router::new()),
             zones: ZoneStore::open(dir.path().join("unused")).unwrap(),
             dir,
             admin: tok.clone(),
