@@ -264,6 +264,17 @@ mod tests {
     }
 
     #[test]
+    fn secure_cookies_accepts_auto_and_booleans() {
+        use crate::model::SecureCookies::{Always, Auto, Never};
+        let parse = |v: &str| Config::from_toml(&format!("[api]\nsecure_cookies = {v}")).unwrap();
+        assert_eq!(parse("\"auto\"").api.secure_cookies, Auto);
+        assert_eq!(parse("true").api.secure_cookies, Always);
+        assert_eq!(parse("false").api.secure_cookies, Never);
+        assert_eq!(Config::default().api.secure_cookies, Auto);
+        assert!(err("[api]\nsecure_cookies = \"yes\"").contains("secure_cookies"));
+    }
+
+    #[test]
     fn cache_min_ttl_le_max_ttl() {
         assert!(err("[cache]\nmin_ttl = 10\nmax_ttl = 5").contains("min_ttl"));
         assert!(err("[cache]\nmax_entries = 0").contains("max_entries"));

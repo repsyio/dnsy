@@ -25,6 +25,16 @@ pub use state::ApiState;
 pub struct ApiConfig {
     /// The API is served over TLS: send `Strict-Transport-Security`.
     pub tls: bool,
+    /// Override of the `Secure` cookie attribute and HSTS: `None` follows `tls`. Set it behind
+    /// a TLS-terminating reverse proxy (`Some(true)`) or to opt out (`Some(false)`).
+    pub secure_cookies: Option<bool>,
+}
+
+impl ApiConfig {
+    /// Whether cookies are `Secure` and HSTS is sent.
+    fn secure(self) -> bool {
+        self.secure_cookies.unwrap_or(self.tls)
+    }
 }
 
 struct SecurityAddon;
@@ -81,7 +91,7 @@ pub fn router(state: ApiState, config: ApiConfig) -> Router {
 fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router {
     let (router, spec) = assemble();
     let mut state = state;
-    state.cookie_secure = config.tls;
+    state.cookie_secure = config.secure();
     router
         .merge(extra)
         .route(
@@ -94,7 +104,7 @@ fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router 
         .fallback(ui::fallback)
         .layer(middleware::from_fn(security::problem_rejections))
         .layer(middleware::from_fn_with_state(
-            config.tls,
+            config.secure(),
             security::security_headers,
         ))
         .layer(middleware::from_fn(security::trace))
@@ -105,6 +115,8 @@ fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router 
 mod tests;
 #[cfg(test)]
 mod tests_auth;
+#[cfg(test)]
+mod tests_matrix;
 #[cfg(test)]
 mod tests_obs;
 #[cfg(test)]

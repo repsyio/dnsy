@@ -149,6 +149,48 @@ pub struct Api {
     pub tls_key: Option<PathBuf>,
     /// Externally visible base URL.
     pub public_url: Option<String>,
+    /// `Secure` cookie attribute and HSTS: `auto` follows DNSY's own TLS, `true` forces them
+    /// (TLS terminated by a reverse proxy), `false` disables them.
+    pub secure_cookies: SecureCookies,
+}
+
+/// `[api] secure_cookies`: the string `"auto"` or a boolean.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SecureCookies {
+    /// Follow `tls_cert` / `tls_key`.
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl From<SecureCookies> for Option<bool> {
+    fn from(v: SecureCookies) -> Self {
+        match v {
+            SecureCookies::Auto => None,
+            SecureCookies::Always => Some(true),
+            SecureCookies::Never => Some(false),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SecureCookies {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Flag(bool),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Flag(true) => Ok(Self::Always),
+            Raw::Flag(false) => Ok(Self::Never),
+            Raw::Text(t) if t == "auto" => Ok(Self::Auto),
+            Raw::Text(t) => Err(serde::de::Error::custom(format!(
+                "invalid secure_cookies {t:?}: expected \"auto\", true or false"
+            ))),
+        }
+    }
 }
 
 impl Default for Api {
@@ -158,6 +200,7 @@ impl Default for Api {
             tls_cert: None,
             tls_key: None,
             public_url: None,
+            secure_cookies: SecureCookies::Auto,
         }
     }
 }

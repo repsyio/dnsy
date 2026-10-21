@@ -36,7 +36,14 @@ fn fixture() -> Fixture {
         )
         .route("/w", post(|_: RequireScope<Write>| ok()))
         .route("/a", get(|_: RequireScope<AdminScope>| ok()));
-    let app = crate::build(state.clone(), ApiConfig { tls: false }, probes);
+    let app = crate::build(
+        state.clone(),
+        ApiConfig {
+            tls: false,
+            ..ApiConfig::default()
+        },
+        probes,
+    );
     Fixture {
         state,
         app,
@@ -342,7 +349,13 @@ async fn security_headers_present() {
 #[tokio::test]
 async fn hsts_only_with_tls() {
     let f = fixture();
-    let app = router(f.state.clone(), ApiConfig { tls: true });
+    let app = router(
+        f.state.clone(),
+        ApiConfig {
+            tls: true,
+            ..ApiConfig::default()
+        },
+    );
     let res = send(&app, req(Method::GET, "/healthz", &[])).await;
     assert!(
         res.headers()

@@ -244,18 +244,26 @@ async fn create_blocklist(
     if state.sources.list().await.map_err(filter_err)?.len() >= MAX_SOURCES {
         return Err(ApiError::Unprocessable("too many blocklists".to_owned()));
     }
+    let enabled = req.enabled.unwrap_or(true);
     let id = state
         .sources
         .add(NewSource {
             name: req.name,
             location: req.location,
             format: req.format.unwrap_or(Format::Auto).into(),
-            enabled: req.enabled.unwrap_or(true),
+            enabled,
             interval_secs: interval,
             allow_private: req.allow_private,
         })
         .await
         .map_err(filter_err)?;
+    if enabled
+        && let Some(manager) = state.engine.as_ref().and_then(|e| e.list_manager())
+        && let Err(e) = manager.refresh_source(id).await
+    {
+        // A failed fetch shows in `last_status`; the source stays and the scheduler retries.
+        tracing::warn!(id, error = %e, "initial blocklist fetch failed");
+    }
     let source = state
         .sources
         .list()

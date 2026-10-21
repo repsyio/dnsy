@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use dnsy_auth::ClientCertService;
@@ -102,6 +103,23 @@ impl Allowlist {
     }
 }
 
+/// Source of the current time for re-verifying open connections; tests inject their own.
+pub type Clock = Arc<dyn Fn() -> UnixTime + Send + Sync>;
+
+/// How often an open connection's certificate is re-verified against the clock even when
+/// nothing was reloaded, so a certificate that merely expires stops working.
+const RECHECK_INTERVAL_SECS: u64 = 30;
+
+fn system_clock() -> Clock {
+    Arc::new(|| {
+        UnixTime::since_unix_epoch(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default(),
+        )
+    })
+}
+
 /// Client certificate verifier: client CA chain validation, optional CRL, optional allowlist.
 pub struct MtlsVerifier {
     mode: MtlsMode,
@@ -111,6 +129,7 @@ pub struct MtlsVerifier {
     inner: ArcSwap<Arc<dyn ClientCertVerifier>>,
     /// Bumped when the CA bundle or CRL is reloaded.
     generation: AtomicU64,
+    clock: Clock,
 }
 
 impl std::fmt::Debug for MtlsVerifier {
@@ -136,6 +155,20 @@ impl MtlsVerifier {
         crl: Option<&Path>,
         allowlist: Option<Allowlist>,
     ) -> io::Result<Arc<Self>> {
+        Self::with_clock(mode, ca, crl, allowlist, system_clock())
+    }
+
+    /// [`Self::new`] with the time used to re-verify open connections supplied by `clock`.
+    ///
+    /// # Errors
+    /// Unreadable or empty CA bundle, or unreadable CRL file.
+    pub fn with_clock(
+        mode: MtlsMode,
+        ca: &Path,
+        crl: Option<&Path>,
+        allowlist: Option<Allowlist>,
+        clock: Clock,
+    ) -> io::Result<Arc<Self>> {
         let inner = build(mode, ca, crl)?;
         Ok(Arc::new(Self {
             mode,
@@ -144,6 +177,7 @@ impl MtlsVerifier {
             allowlist,
             inner: ArcSwap::from_pointee(inner),
             generation: AtomicU64::new(0),
+            clock,
         }))
     }
 
@@ -407,7 +441,16 @@ fn subject_parts(der: &[u8]) -> Option<(Option<String>, Vec<String>)> {
 pub(crate) struct ClientSession {
     pub(crate) principal: Principal,
     chain: Vec<CertificateDer<'static>>,
-    verifier: Option<(Arc<MtlsVerifier>, u64)>,
+    verifier: Option<Recheck>,
+}
+
+/// When the chain was last verified against the verifier's state.
+struct Recheck {
+    verifier: Arc<MtlsVerifier>,
+    /// Generation seen at the last check.
+    seen: u64,
+    /// Unix seconds at which the time-based validity is checked again.
+    next_at: u64,
 }
 
 impl ClientSession {
@@ -423,7 +466,11 @@ impl ClientSession {
         let mut session = Self {
             principal: principal(&chain[0]),
             chain: chain.to_vec(),
-            verifier: verifier.map(|v| (Arc::clone(v), v.generation().wrapping_sub(1))),
+            verifier: verifier.map(|v| Recheck {
+                verifier: Arc::clone(v),
+                seen: v.generation().wrapping_sub(1),
+                next_at: 0,
+            }),
         };
         if session.still_permitted() {
             Ok(Some(session))
@@ -432,19 +479,23 @@ impl ClientSession {
         }
     }
 
-    /// Re-verifies the chain against the current CA, CRL and allowlist when any of them
-    /// changed since the last check.
+    /// Re-verifies the chain against the current CA, CRL and allowlist when any of them changed
+    /// since the last check, and at least every [`RECHECK_INTERVAL_SECS`] so that a certificate
+    /// whose validity (leaf `notAfter` or allowlist `expires_at`) lapses is refused too.
     pub(crate) fn still_permitted(&mut self) -> bool {
-        let Some((verifier, seen)) = &mut self.verifier else {
+        let Some(check) = &mut self.verifier else {
             return true;
         };
-        let now = verifier.generation();
-        if now == *seen {
+        let generation = check.verifier.generation();
+        let now = (check.verifier.clock)();
+        if generation == check.seen && now.as_secs() < check.next_at {
             return true;
         }
-        *seen = now;
-        verifier
-            .verify_client_cert(&self.chain[0], &self.chain[1..], UnixTime::now())
+        check.seen = generation;
+        check.next_at = now.as_secs().saturating_add(RECHECK_INTERVAL_SECS);
+        check
+            .verifier
+            .verify_client_cert(&self.chain[0], &self.chain[1..], now)
             .is_ok()
     }
 }

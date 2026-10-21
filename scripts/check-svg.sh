@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# Validate branding SVGs: well-formed XML, viewBox set, no external refs, size budget.
+# Validate branding SVGs: parsed as XML (no script, foreignObject, image, style, on* handlers,
+# external href or url(), DOCTYPE/ENTITY), viewBox set, size budget.
+# `check-svg.sh --self-test` proves every negative fixture is rejected and the positive one passes.
 set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+check() { python3 -I "$here/check-svg.py" "$1"; }
 max=20480
+
+if [ "${1:-}" = "--self-test" ]; then
+  fail=0
+  check "$here/check-svg-fixtures/good.svg" >/dev/null || { echo "FAIL good fixture rejected"; fail=1; }
+  for f in "$here"/check-svg-fixtures/bad/*.svg; do
+    if check "$f" >/dev/null; then echo "FAIL not rejected: $f"; fail=1; fi
+  done
+  [ "$fail" -eq 0 ] && echo "check-svg self-test ok"
+  exit "$fail"
+fi
+
 fail=0
 mapfile -t files < <(find "${1:-branding}" -name '*.svg' | sort)
 if [ "${#files[@]}" -eq 0 ]; then echo "no SVG files found" >&2; exit 1; fi
 for f in "${files[@]}"; do
-  if command -v xmllint >/dev/null 2>&1; then
-    xmllint --noout "$f" || { echo "FAIL not well-formed: $f"; fail=1; continue; }
-  else
-    python3 -I -c 'import sys,xml.dom.minidom as m; m.parse(sys.argv[1])' "$f" 2>/dev/null \
-      || { echo "FAIL not well-formed: $f"; fail=1; continue; }
-  fi
-  grep -q 'viewBox="' "$f" || { echo "FAIL no viewBox: $f"; fail=1; }
-  if grep -E -q '(href|src)=|url\((https?:|//)|@import|<image|<script|<foreignObject' "$f"; then
-    echo "FAIL external reference or script: $f"; fail=1
+  if reasons=$(check "$f"); then :; else
+    while IFS= read -r r; do echo "FAIL $r: $f"; done <<<"$reasons"
+    fail=1
   fi
   size=$(wc -c <"$f")
   [ "$size" -lt "$max" ] || { echo "FAIL ${size} bytes >= ${max}: $f"; fail=1; }

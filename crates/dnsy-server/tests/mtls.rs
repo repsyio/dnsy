@@ -2,6 +2,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,7 +19,7 @@ use rcgen::{
     KeyIdMethod, KeyPair, KeyUsagePurpose, RevocationReason, RevokedCertParams, SerialNumber,
     date_time_ymd,
 };
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -63,6 +64,11 @@ struct Client {
 }
 
 fn client(ca: &Ca, serial: u64, expired: bool) -> Client {
+    client_until(ca, serial, expired, None)
+}
+
+/// A client certificate whose `notAfter` is `not_after` (default: rcgen's far future).
+fn client_until(ca: &Ca, serial: u64, expired: bool, not_after: Option<(i32, u8, u8)>) -> Client {
     let key = KeyPair::generate().unwrap();
     let mut params = CertificateParams::new(vec!["laptop.example".to_owned()]).unwrap();
     params
@@ -72,6 +78,9 @@ fn client(ca: &Ca, serial: u64, expired: bool) -> Client {
     if expired {
         params.not_before = date_time_ymd(2000, 1, 1);
         params.not_after = date_time_ymd(2001, 1, 1);
+    }
+    if let Some((y, m, d)) = not_after {
+        params.not_after = date_time_ymd(y, m, d);
     }
     let cert = params.signed_by(&key, &ca.issuer).unwrap();
     Client {
@@ -445,5 +454,121 @@ async fn open_connection_closed_after_crl_reload() {
     std::fs::write(&crl, crl_pem(&env.client_ca, &[5])).unwrap();
     v.reload().unwrap();
     assert!(ask(&mut tls).await.is_err());
+    server.shutdown().await;
+}
+
+/// A clock the test moves: seconds since the epoch.
+fn manual_clock(start: u64) -> (Arc<AtomicU64>, dnsy_server::MtlsClock) {
+    let secs = Arc::new(AtomicU64::new(start));
+    let shared = Arc::clone(&secs);
+    let clock: dnsy_server::MtlsClock = Arc::new(move || {
+        UnixTime::since_unix_epoch(Duration::from_secs(shared.load(Ordering::SeqCst)))
+    });
+    (secs, clock)
+}
+
+fn real_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+#[tokio::test]
+async fn expired_client_cert_closes_open_connection() {
+    let env = env();
+    // Valid until 2030; the test clock jumps past that while the connection stays open.
+    let c = client_until(&env.client_ca, 1, false, Some((2030, 1, 1)));
+    let (secs, clock) = manual_clock(real_now());
+    let v = MtlsVerifier::with_clock(
+        MtlsMode::Required,
+        &env.dir.path().join("client-ca.pem"),
+        None,
+        Some(allow(&[&c])),
+        clock,
+    )
+    .unwrap();
+    let (server, addr, rec) = start(&env, &v).await;
+
+    let mut tls = connect(addr, &client_config(&env, Some(&c))).await.unwrap();
+    ask(&mut tls).await.unwrap();
+    // Nothing was reloaded: only the passage of time invalidates the certificate.
+    secs.store(2_000_000_000, Ordering::SeqCst); // 2033
+    assert!(ask(&mut tls).await.is_err());
+    assert_eq!(rec.0.lock().unwrap().len(), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn expired_allowlist_entry_closes_open_connection() {
+    let env = env();
+    let c = client(&env.client_ca, 1, false);
+    let start_at = real_now();
+    let list = Allowlist::new();
+    list.replace([AllowedCert {
+        sha256: fingerprint(&c),
+        expires_at: Some(i64::try_from(start_at).unwrap() + 3600),
+    }]);
+    let (secs, clock) = manual_clock(start_at);
+    let v = MtlsVerifier::with_clock(
+        MtlsMode::Required,
+        &env.dir.path().join("client-ca.pem"),
+        None,
+        Some(list),
+        clock,
+    )
+    .unwrap();
+    let (server, addr, _rec) = start(&env, &v).await;
+
+    let mut tls = connect(addr, &client_config(&env, Some(&c))).await.unwrap();
+    ask(&mut tls).await.unwrap();
+    // Within the interval and before expiry the connection keeps working.
+    secs.store(start_at + 10, Ordering::SeqCst);
+    ask(&mut tls).await.unwrap();
+    secs.store(start_at + 7200, Ordering::SeqCst);
+    assert!(ask(&mut tls).await.is_err());
+    server.shutdown().await;
+}
+
+/// Resumption would skip client certificate verification at the handshake, so mTLS must never
+/// resume: both TLS versions do a full handshake every time. (The post-handshake re-check
+/// would also reject a removed certificate, which is why `removed_cert_cannot_resume_session`
+/// alone cannot notice session storage being switched back on.)
+#[tokio::test]
+async fn mtls_handshakes_are_never_resumed() {
+    let env = env();
+    let c = client(&env.client_ca, 1, false);
+    let v = verifier(&env, MtlsMode::Required, Some(allow(&[&c])));
+    let (server, addr, _rec) = start(&env, &v).await;
+
+    for versions in [
+        &[&rustls::version::TLS13][..],
+        &[&rustls::version::TLS12][..],
+    ] {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(env.server_ca.der.clone()).unwrap();
+        let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(versions)
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_client_auth_cert(
+            vec![CertificateDer::from(c.der.clone())],
+            PrivateKeyDer::try_from(c.key.clone()).unwrap(),
+        )
+        .unwrap();
+        config.alpn_protocols = vec![b"dot".to_vec()];
+        let config = Arc::new(config);
+        // The same config keeps its session cache, so the second connect offers resumption.
+        for _ in 0..2 {
+            let mut tls = connect(addr, &config).await.unwrap();
+            ask(&mut tls).await.unwrap();
+            assert_eq!(
+                tls.get_ref().1.handshake_kind(),
+                Some(rustls::HandshakeKind::Full)
+            );
+        }
+    }
     server.shutdown().await;
 }

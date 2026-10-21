@@ -29,6 +29,11 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
 - Run as a dedicated non-root user with `CAP_NET_BIND_SERVICE`.
 - Keep `[api] listen` on loopback or put it behind a TLS terminator; set `api.tls_cert` and
   `api.tls_key` to serve TLS directly.
+- Behind a TLS-terminating reverse proxy set `[api] secure_cookies = true`: the session and CSRF
+  cookies then carry `Secure` and responses send `Strict-Transport-Security`, even though DNSY
+  itself speaks plain HTTP to the proxy. `auto` (the default) follows `api.tls_cert`; `false`
+  turns both off. DNSY does not read `X-Forwarded-For`, so login throttling and the query log see
+  the proxy's address; trusted-proxy support is planned after 1.0.
 - Set a DNSSEC key passphrase before enabling signing.
 - Leave `doh.require_token = true` on public listeners.
 - DNSY is private-only by default: `limits.open_resolver = false` serves only loopback, RFC 1918,
@@ -62,4 +67,6 @@ finding is printed but does not fail the recipe).
 
 ## Known limits
 
+- Live tail (`/querylog/stream`) allows 4 streams per user and 16 overall, with 2 of the 16
+  reserved for admins.
 - Settings changed through `PATCH /settings*` are runtime-only (the rate limit excepted).

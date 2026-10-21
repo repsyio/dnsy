@@ -53,8 +53,8 @@ The indexes add write work per logged query (two indexes instead of one) and fil
 ## Reading it over the API
 
 `GET /api/v1/querylog` searches with the filters above and a cursor, and
-`GET /api/v1/querylog/stream` tails new rows as server-sent events (operator or admin, at most 16
-streams). `GET /api/v1/stats/*` serves the summary, timeseries and top lists, and
+`GET /api/v1/querylog/stream` tails new rows as server-sent events (operator or admin, at most 4
+streams per user and 16 overall). `GET /api/v1/stats/*` serves the summary, timeseries and top lists, and
 `GET /api/v1/cache` the live cache counters. See [REST API](rest-api.md). The API applies client
 redaction again on output and replaces anything shaped like a token with `[redacted]`.
 

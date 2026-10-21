@@ -1,5 +1,6 @@
 //! Shared state handed to every handler.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
@@ -7,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dnsy_auth::{BootstrapCode, ClientCertService, SessionService, TokenService, UserService};
+use dnsy_core::{Role, UserId};
 use dnsy_dnssec::{Clock, SystemClock};
 use dnsy_engine::Engine;
 use dnsy_filter::{RuleStore, SourceStore};
@@ -14,7 +16,6 @@ use dnsy_resolver::Cache;
 use dnsy_resolver::groups::GroupStore;
 use dnsy_store::Store;
 use dnsy_zone::{ZoneSigning, ZoneStore};
-use tokio::sync::Semaphore;
 
 use crate::routes::RuntimeSettings;
 use crate::validation::ValidationControl;
@@ -44,8 +45,8 @@ pub struct ApiState {
     pub cache: Option<Arc<Cache>>,
     /// Show client addresses truncated to /24 (IPv4) or /48 (IPv6) (`querylog.redact_client_ip`).
     pub redact_client_ip: bool,
-    /// Concurrent live-tail (SSE) connections.
-    pub live_tail: Arc<Semaphore>,
+    /// Concurrent live-tail (SSE) connections, capped in total and per principal.
+    pub live_tail: Arc<LiveTails>,
     /// How often a live-tail connection looks for new rows.
     pub live_tail_poll: Duration,
     /// Set by the engine while the system clock is before the build time (DNSSEC validation
@@ -74,6 +75,86 @@ pub struct ApiState {
 
 /// Default cap on concurrent live-tail connections.
 pub const MAX_LIVE_TAILS: usize = 16;
+/// Default cap on live-tail connections per user.
+pub const MAX_LIVE_TAILS_PER_PRINCIPAL: usize = 4;
+/// Live-tail slots only admins may take, so a flood of operator streams cannot lock them out.
+pub const LIVE_TAIL_ADMIN_RESERVE: usize = 2;
+
+/// Counts open live-tail streams: a total cap, a cap per user and slots kept for admins.
+#[derive(Debug)]
+pub struct LiveTails {
+    total: usize,
+    per_principal: usize,
+    admin_reserve: usize,
+    open: Mutex<LiveTailCounts>,
+}
+
+#[derive(Debug, Default)]
+struct LiveTailCounts {
+    total: usize,
+    per_user: HashMap<UserId, usize>,
+}
+
+/// One open live-tail stream; dropping it frees the slot.
+#[derive(Debug)]
+pub struct LiveTailPermit {
+    tails: Arc<LiveTails>,
+    user: UserId,
+}
+
+impl LiveTails {
+    #[must_use]
+    pub fn new(total: usize, per_principal: usize, admin_reserve: usize) -> LiveTails {
+        LiveTails {
+            total,
+            per_principal,
+            admin_reserve,
+            open: Mutex::new(LiveTailCounts::default()),
+        }
+    }
+
+    /// Takes a slot for `user`, or `None` when the user, or the shared pool for their role, is
+    /// full.
+    #[must_use]
+    pub fn acquire(self: &Arc<Self>, user: UserId, role: Role) -> Option<LiveTailPermit> {
+        let limit = if role == Role::Admin {
+            self.total
+        } else {
+            self.total.saturating_sub(self.admin_reserve)
+        };
+        let mut open = self
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mine = open.per_user.get(&user).copied().unwrap_or(0);
+        if open.total >= limit || mine >= self.per_principal {
+            return None;
+        }
+        open.total += 1;
+        open.per_user.insert(user, mine + 1);
+        Some(LiveTailPermit {
+            tails: Arc::clone(self),
+            user,
+        })
+    }
+}
+
+impl Drop for LiveTailPermit {
+    fn drop(&mut self) {
+        let mut open = self
+            .tails
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        open.total -= 1;
+        if let Some(n) = open.per_user.get_mut(&self.user) {
+            *n -= 1;
+            if *n == 0 {
+                open.per_user.remove(&self.user);
+            }
+        }
+    }
+}
 
 impl ApiState {
     #[must_use]
@@ -97,7 +178,11 @@ impl ApiState {
             zone_lock: Arc::new(Mutex::new(())),
             cache: None,
             redact_client_ip: false,
-            live_tail: Arc::new(Semaphore::new(MAX_LIVE_TAILS)),
+            live_tail: Arc::new(LiveTails::new(
+                MAX_LIVE_TAILS,
+                MAX_LIVE_TAILS_PER_PRINCIPAL,
+                LIVE_TAIL_ADMIN_RESERVE,
+            )),
             live_tail_poll: Duration::from_millis(500),
             dnssec_clock_untrusted: Arc::new(AtomicBool::new(false)),
             signing: None,
@@ -164,10 +249,16 @@ impl ApiState {
         self
     }
 
-    /// Cap concurrent live-tail connections at `max`.
+    /// Cap live-tail connections: `total` overall, `per_principal` per user, `admin_reserve`
+    /// of the total only for admins.
     #[must_use]
-    pub fn with_max_live_tails(mut self, max: usize) -> ApiState {
-        self.live_tail = Arc::new(Semaphore::new(max));
+    pub fn with_live_tail_limits(
+        mut self,
+        total: usize,
+        per_principal: usize,
+        admin_reserve: usize,
+    ) -> ApiState {
+        self.live_tail = Arc::new(LiveTails::new(total, per_principal, admin_reserve));
         self
     }
 

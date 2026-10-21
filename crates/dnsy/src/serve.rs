@@ -93,7 +93,11 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
         (Some(cert), Some(key)) => Some(http::acceptor(cert, key)?),
         _ => None,
     };
-    let app = dnsy_api::router(state, ApiConfig { tls: tls.is_some() });
+    let api_config = ApiConfig {
+        tls: tls.is_some(),
+        secure_cookies: config.api.secure_cookies.into(),
+    };
+    let app = dnsy_api::router(state, api_config);
     let (stop_api, stop_rx) = watch::channel(false);
     let mut api_addrs = Vec::new();
     let mut api_tasks = Vec::new();

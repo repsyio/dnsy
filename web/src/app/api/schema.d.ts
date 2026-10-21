@@ -3527,6 +3527,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Name over 128 characters, or 100 tokens already */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     revoke_token: {
@@ -3925,6 +3934,15 @@ export interface operations {
             };
             /** @description Username taken */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Username over 64 characters */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

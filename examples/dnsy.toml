@@ -30,6 +30,8 @@ listen = ["127.0.0.1:5380"]
 # tls_cert = "/etc/dnsy/tls/fullchain.pem"
 # tls_key = "/etc/dnsy/tls/privkey.pem"
 # public_url = "https://dns.example.com"
+# Secure cookie attribute + HSTS: "auto" (follow tls_cert), true (TLS ends at a reverse proxy), false.
+# secure_cookies = "auto"
 
 [zones]
 dir = "/var/lib/dnsy/zones"
