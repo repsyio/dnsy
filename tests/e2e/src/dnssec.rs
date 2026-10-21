@@ -684,3 +684,61 @@ pub async fn start_with(tree: &Arc<Tree>, mut opts: Opts) -> Harness {
 pub fn upstream(h: &Harness) -> &FakeUpstream {
     h.upstream.as_ref().expect("the harness has an upstream")
 }
+
+// ---------------------------------------------------------------------------------------
+// validating the server's own answers on the client side
+
+use std::net::SocketAddr;
+
+use dnsy_dnssec::{DnssecFetcher, FetchError, TrustAnchors, ValidationOutcome, Validator};
+use dnsy_proto::{Ds, Question};
+
+/// Fetches DS and DNSKEY records from a server over UDP (DO and CD set), for [`Validator`].
+pub struct WireFetcher(pub SocketAddr);
+
+impl DnssecFetcher for WireFetcher {
+    async fn fetch(&self, q: Question) -> Result<Message, FetchError> {
+        let mut m = checking_disabled(dnssec_query(&q.name.to_string(), q.qtype));
+        m.header.rd = true;
+        let bytes = crate::udp_raw(self.0, &crate::clients::wire(&m), crate::DEADLINE)
+            .await
+            .ok_or_else(|| FetchError("no reply".to_owned()))?;
+        Message::decode(&bytes).map_err(|e| FetchError(e.to_string()))
+    }
+}
+
+/// Parses a DS from the API's export (`key_tag`, `algorithm`, `digest_type`, upper-case hex).
+pub fn ds_from_export(v: &serde_json::Value) -> Ds {
+    let hex = v["digest"].as_str().expect("digest");
+    let digest = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+        .collect();
+    Ds {
+        key_tag: u16::try_from(v["key_tag"].as_u64().expect("tag")).expect("u16"),
+        algorithm: u8::try_from(v["algorithm"].as_u64().expect("alg")).expect("u8"),
+        digest_type: u8::try_from(v["digest_type"].as_u64().expect("dt")).expect("u8"),
+        digest,
+    }
+}
+
+/// Trust anchors with one DS anchor for `zone` (a zone's DS as handed to its parent).
+pub fn anchors_for(zone: &str, ds: Ds) -> TrustAnchors {
+    let mut anchors = TrustAnchors::new();
+    anchors.add_ds(Name::from_ascii(zone).expect("zone"), ds);
+    anchors
+}
+
+/// Validates `resp` (the answer of the server at `addr` to `q`) like a validating resolver
+/// would: fetching DS and DNSKEY from the same server, starting at `anchors`.
+pub async fn validate_answer(
+    addr: SocketAddr,
+    anchors: TrustAnchors,
+    q: &Message,
+    resp: &Message,
+) -> ValidationOutcome {
+    let now = u32::try_from(now_unix()).expect("unix time");
+    Validator::new(anchors)
+        .validate(&WireFetcher(addr), &q.questions[0], resp, now)
+        .await
+}

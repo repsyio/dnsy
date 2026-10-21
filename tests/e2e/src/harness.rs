@@ -70,6 +70,8 @@ pub struct Opts {
     pub prefetch: Option<(u32, u8)>,
     /// Runs this `dnsy` executable instead of the one built with the workspace.
     pub binary: Option<PathBuf>,
+    /// Forward to this address when no fake upstream is started (another `dnsy`, for instance).
+    pub upstream_addr: Option<SocketAddr>,
 }
 
 impl Default for Opts {
@@ -97,6 +99,7 @@ impl Default for Opts {
             no_users: false,
             prefetch: None,
             binary: None,
+            upstream_addr: None,
         }
     }
 }
@@ -349,7 +352,14 @@ impl Harness {
         let config_path = root.join("dnsy.toml");
         std::fs::write(
             &config_path,
-            config(root, &opts, upstream.as_ref().map(FakeUpstream::addr)),
+            config(
+                root,
+                &opts,
+                upstream
+                    .as_ref()
+                    .map(FakeUpstream::addr)
+                    .or(opts.upstream_addr),
+            ),
         )
         .expect("write config");
 
