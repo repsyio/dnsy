@@ -6,6 +6,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
+import type { Subscription } from 'rxjs';
 import {
   MascotEmptyComponent,
   MascotErrorComponent,
@@ -61,12 +62,24 @@ export class DashboardPage {
   protected readonly formatCount = formatCount;
   protected readonly formatCompact = formatCompact;
 
+  private inflight: Subscription | null = null;
+
   constructor() {
     this.refresh();
+    // A tick never stacks on a running load and never fires for a hidden tab; coming back to the
+    // tab refreshes once, so the page is current without background polling.
     const timer = setInterval(() => {
-      if (!this.paused()) this.refresh();
+      if (!this.paused() && !document.hidden && !this.inflight) this.refresh();
     }, REFRESH_MS);
-    inject(DestroyRef).onDestroy(() => clearInterval(timer));
+    const onVisible = () => {
+      if (!document.hidden && !this.paused() && !this.inflight) this.refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    inject(DestroyRef).onDestroy(() => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      this.inflight?.unsubscribe();
+    });
   }
 
   protected selectRange(key: RangeKey): void {
@@ -87,7 +100,8 @@ export class DashboardPage {
 
   protected refresh(): void {
     const range = this.range();
-    this.service.load(range, Date.now()).subscribe({
+    this.inflight?.unsubscribe(); // a manual refresh or range change supersedes the running load
+    const sub: Subscription = this.service.load(range, Date.now()).subscribe({
       next: (d) => {
         if (range !== this.range()) return;
         this.data.set(d);
@@ -98,6 +112,10 @@ export class DashboardPage {
         if (range !== this.range()) return;
         this.failed.set(true);
       },
+    });
+    this.inflight = sub.closed ? null : sub;
+    sub.add(() => {
+      if (this.inflight === sub) this.inflight = null;
     });
   }
 
