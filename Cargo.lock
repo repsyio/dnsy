@@ -523,7 +523,6 @@ dependencies = [
  "hyper-util",
  "rand",
  "rcgen",
- "reqwest",
  "rustls",
  "rustls-pki-types",
  "serde_json",
@@ -533,7 +532,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
- "webpki-roots",
 ]
 
 [[package]]
@@ -680,15 +678,20 @@ dependencies = [
  "dnsy-core",
  "dnsy-proto",
  "dnsy-store",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "ipnet",
  "proptest",
  "rand",
- "reqwest",
+ "rcgen",
  "rusqlite",
  "rustls",
+ "rustls-pki-types",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "webpki-roots",
 ]

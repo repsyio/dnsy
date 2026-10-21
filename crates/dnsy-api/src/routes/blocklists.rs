@@ -177,7 +177,6 @@ fn needs_private(location: &str) -> Result<bool, ApiError> {
         Location::Url(url) => {
             let host = url
                 .host_str()
-                .unwrap_or_default()
                 .trim_start_matches('[')
                 .trim_end_matches(']')
                 .trim_end_matches('.')

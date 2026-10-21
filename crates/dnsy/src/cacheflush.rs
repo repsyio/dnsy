@@ -2,14 +2,20 @@
 
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
 use std::time::Duration;
 
 use dnsy_config::Config;
+use dnsy_filter::http;
 use dnsy_proto::Name;
 
 use crate::cli::CacheCommand;
 use crate::{Error, Result};
+
+/// Time allowed for the whole request.
+const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Largest API answer read.
+const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) async fn run(config: &Config, cmd: CacheCommand, out: &mut impl Write) -> Result<()> {
     let CacheCommand::Flush {
@@ -20,18 +26,16 @@ pub(crate) async fn run(config: &Config, cmd: CacheCommand, out: &mut impl Write
     } = cmd;
     let base = url.unwrap_or_else(|| default_base(config));
     let path = request_path(name.as_deref(), subtree)?;
-    let client = client()?;
-    let response = client
-        .delete(format!("{}{path}", base.trim_end_matches('/')))
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| Error::msg(format!("cannot reach the API at {base}: {e}")))?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|e| Error::msg(format!("reading the API response: {e}")))?;
+    let bearer = format!("Bearer {token}");
+    let (status, body) = http::request(
+        hyper::Method::DELETE,
+        &format!("{}{path}", base.trim_end_matches('/')),
+        &[(hyper::header::AUTHORIZATION, &bearer)],
+        MAX_RESPONSE_BYTES,
+        TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::msg(format!("cannot reach the API at {base}: {e}")))?;
     if !status.is_success() {
         return Err(Error::msg(format!(
             "the API answered {status}: {}",
@@ -89,24 +93,6 @@ pub(crate) fn request_path(name: Option<&str>, subtree: bool) -> Result<String> 
     Ok(format!(
         "/api/v1/cache/entries?name={encoded}&subtree={subtree}"
     ))
-}
-
-fn client() -> Result<reqwest::Client> {
-    let roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    Ok(reqwest::Client::builder()
-        .use_preconfigured_tls(tls)
-        .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
-        .timeout(Duration::from_secs(10))
-        .build()?)
 }
 
 #[cfg(test)]
