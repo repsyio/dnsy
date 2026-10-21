@@ -258,7 +258,7 @@ async fn create_blocklist(
         .await
         .map_err(filter_err)?;
     if enabled
-        && let Some(manager) = state.engine.as_ref().and_then(|e| e.list_manager())
+        && let Some(manager) = &state.lists
         && let Err(e) = manager.refresh_source(id).await
     {
         // A failed fetch shows in `last_status`; the source stays and the scheduler retries.
@@ -300,7 +300,7 @@ async fn patch_blocklist(
         // Disabling dropped the list's loaded content; fetch it again now instead of
         // leaving the list empty until the scheduler next wakes up. A failed fetch shows in
         // `last_status` and keeps the previous (empty) state.
-        if let Some(manager) = state.engine.as_ref().and_then(|e| e.list_manager())
+        if let Some(manager) = &state.lists
             && let Err(e) = manager.refresh_source(id).await
         {
             tracing::warn!(id, error = %e, "fetching a re-enabled blocklist failed");
@@ -348,11 +348,7 @@ async fn refresh_blocklist(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> Result<Json<RefreshResult>, ApiError> {
-    let manager = state
-        .engine
-        .as_ref()
-        .and_then(|e| e.list_manager())
-        .ok_or(ApiError::Unavailable)?;
+    let manager = state.lists.as_ref().ok_or(ApiError::Unavailable)?;
     match manager.refresh_source(id).await {
         Ok(RefreshOutcome::Updated { entries }) => Ok(Json(RefreshResult {
             outcome: "updated".to_owned(),

@@ -60,7 +60,7 @@ pub(super) async fn apply_acl(state: &ApiState) -> Result<(), ApiError> {
 
 /// Rebuilds the blocklist filter (custom rules, enabled sources) in the running engine.
 pub(super) async fn reload_filter(state: &ApiState) -> Result<(), ApiError> {
-    if let Some(manager) = state.engine.as_ref().and_then(|e| e.list_manager()) {
+    if let Some(manager) = &state.lists {
         manager.reload().await.map_err(internal)?;
     }
     Ok(())

@@ -357,9 +357,9 @@ negative trust anchor short-circuit and the work limits.
 ## Authoritative DNSSEC responses
 
 Zones whose `dnssec` block has `enabled = true` are served signed. `ZoneSigning` (in
-`dnsy-zone`) holds the zone store and the key store; `EngineBuilder::from_config` creates it,
-signs every such zone before it returns and hands it out as `Engine::zone_signing()` so the
-caller can spawn its refresh task (`ZoneSigning::spawn(interval)`). A zone without keys gets its
+`dnsy-zone`) holds the zone store and the key store; `Services::open` creates it, signs every
+such zone before it returns and exposes it as `Services::signing`; `Services::spawn_background`
+starts its refresh task (`ZoneSigning::spawn(interval)`). A zone without keys gets its
 first key set (`KeyStore::bootstrap`) on the first signing pass.
 
 ### Signed snapshots

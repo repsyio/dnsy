@@ -157,7 +157,7 @@ fn view(spec: GroupSpec, live: Option<&GroupSet>) -> GroupView {
 }
 
 fn live(state: &ApiState) -> Option<Arc<GroupSet>> {
-    state.engine.as_ref().and_then(|e| e.groups())
+    state.live_groups.as_ref().and_then(|g| g.load_full())
 }
 
 fn parse_member(m: &MemberInput) -> Result<GroupMember, ApiError> {

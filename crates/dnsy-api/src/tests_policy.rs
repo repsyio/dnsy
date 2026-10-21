@@ -14,7 +14,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use dnsy_config::Config;
 use dnsy_core::{DnssecStatus, Role, Scope, Transport};
-use dnsy_engine::{Engine, EngineBuilder, RequestContext};
+use dnsy_engine::{Engine, EngineBuilder, RequestContext, Services};
 use dnsy_filter::{Fetcher, FilterLimits, ListManager, SourceStore, SystemClock};
 use dnsy_proto::{
     Class, Header, Message, Name, Opcode, Question, RData, Rcode, Record, RecordType,
@@ -69,15 +69,18 @@ async fn fx() -> Fx {
         Arc::new(SystemClock),
     );
     let client = UpstreamClient::new(UpstreamConfig::default()).unwrap();
+    let mut services = Services::bare(&config);
+    services.lists = Some(manager);
+    services.groups.store(Some(Arc::new(default_group())));
     let engine = Arc::new(
         EngineBuilder::new(&config, client)
-            .list_manager(manager)
-            .groups(default_group())
+            .services(&services)
             .build(),
     );
     let reloads = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&reloads);
     let state = ApiState::new(store)
+        .with_services(&services)
         .with_engine(Arc::clone(&engine))
         .with_config(&config)
         .with_cert_reload(Arc::new(move || {
@@ -388,7 +391,7 @@ async fn upstream_health_reported() {
     assert_eq!(g["health"][0]["available"], true);
 
     // Three failed exchanges eject the first member in the live set.
-    let live = f.engine.groups().unwrap();
+    let live = f.state.live_groups.as_ref().unwrap().load_full().unwrap();
     for _ in 0..3 {
         let _ = live.resolve(&Down, &query("x.test.")).await;
     }
@@ -497,8 +500,11 @@ async fn upstream_group_crud_and_validation() {
     assert_eq!(defaults[0]["name"], "second");
     // Routing is live: corp.example goes to "main".
     assert_eq!(
-        f.engine
-            .groups()
+        f.state
+            .live_groups
+            .as_ref()
+            .unwrap()
+            .load_full()
             .unwrap()
             .group_for(&name("a.corp.example.")),
         "main"
@@ -593,7 +599,7 @@ async fn upstream_group_crud_and_validation() {
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, _) = call(&f, &a, Method::DELETE, "/upstream-groups/second", None).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    assert!(f.engine.groups().is_none());
+    assert!(f.state.live_groups.as_ref().unwrap().load_full().is_none());
     let (s, _) = call(&f, &a, Method::GET, "/upstream-groups/second", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
@@ -1180,7 +1186,7 @@ async fn block_mode_patch_changes_blocked_answers() {
 #[tokio::test]
 async fn cache_settings_patch_applies_live() {
     let f = fx().await;
-    let cache = f.engine.cache();
+    let cache = f.state.cache.as_ref().unwrap();
     let key = CacheKey {
         name: name("www.example.com."),
         qtype: RecordType::A,
