@@ -64,7 +64,7 @@ refused.
 When an `Allowlist` is attached, a certificate that passes chain validation must also be on the
 list, otherwise the handshake fails. Entries are stored in the `client_certs` table (migration
 `0008`) and managed through `ClientCertService`: SHA-256 of the DER certificate, a label, an
-enabled flag and an optional expiry. `Allowlist::refresh` / `spawn_refresh` load the enabled,
+enabled flag and an optional expiry (ids are AUTOINCREMENT since migration `0014`, so a deleted entry's id is never reused). `Allowlist::refresh` / `spawn_refresh` load the enabled,
 unexpired entries; a list with no entries admits no certificate. Disabling, deleting or expiring
 an entry takes effect for new handshakes at the next refresh.
 
