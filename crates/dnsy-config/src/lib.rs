@@ -264,6 +264,18 @@ mod tests {
     }
 
     #[test]
+    fn login_hash_limits_have_defaults_and_can_be_set() {
+        let d = Config::default().api;
+        assert_eq!((d.login_hash_per_client, d.login_hash_wait_ms), (16, 5000));
+        let c = Config::from_toml("[api]\nlogin_hash_per_client = 64\nlogin_hash_wait_ms = 10000")
+            .unwrap();
+        assert_eq!(
+            (c.api.login_hash_per_client, c.api.login_hash_wait_ms),
+            (64, 10000)
+        );
+    }
+
+    #[test]
     fn secure_cookies_accepts_auto_and_booleans() {
         use crate::model::SecureCookies::{Always, Auto, Never};
         let parse = |v: &str| Config::from_toml(&format!("[api]\nsecure_cookies = {v}")).unwrap();

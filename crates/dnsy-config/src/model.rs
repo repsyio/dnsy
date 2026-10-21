@@ -152,6 +152,12 @@ pub struct Api {
     /// `Secure` cookie attribute and HSTS: `auto` follows DNSY's own TLS, `true` forces them
     /// (TLS terminated by a reverse proxy), `false` disables them.
     pub secure_cookies: SecureCookies,
+    /// Login requests per client address (IPv6 `/64`) that may be queued or hashing at once;
+    /// more are refused with 503 immediately (default 16).
+    pub login_hash_per_client: usize,
+    /// How long a login queues for a password-hashing slot before it is refused with 503
+    /// (default 5000 ms).
+    pub login_hash_wait_ms: u64,
 }
 
 /// `[api] secure_cookies`: the string `"auto"` or a boolean.
@@ -201,6 +207,8 @@ impl Default for Api {
             tls_key: None,
             public_url: None,
             secure_cookies: SecureCookies::Auto,
+            login_hash_per_client: 16,
+            login_hash_wait_ms: 5000,
         }
     }
 }

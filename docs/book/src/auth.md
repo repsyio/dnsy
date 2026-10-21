@@ -41,9 +41,32 @@ count as one. `dnsy user disable|enable <username>` does the same offline.
 
 ## Login throttling
 
-After 5 failed logins for the same username and client IP within 15 minutes, further attempts
-are refused with HTTP 429 and a `Retry-After` header until the oldest failure leaves the
-window. A successful login clears the counter.
+The API takes the client address from the TCP peer. Behind a reverse proxy every client shares
+the proxy's address, so the limits below apply to all of them together; trusted-proxy headers are
+not interpreted. Addresses are grouped before counting: an IPv6 client counts as its `/64`, and an
+IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) counts as the plain IPv4 address.
+
+Login attempts are limited in one write transaction, so concurrent requests cannot exceed the
+limits:
+
+- **Per username and client**: at most 5 attempts within 15 minutes, and at most 20 per client
+  across all usernames. Further attempts get HTTP 429 with `Retry-After` until the oldest one
+  leaves the window. A locked-out client cannot lock the account out for anyone else.
+- **Per username, across clients**: after 10 attempts on one username within the window from
+  clients that have not recently logged in as that user, each further attempt from such a client
+  must wait `2^n` seconds after the previous one, capped at 60 seconds. This slows distributed
+  guessing without ever locking the account; the correct password is delayed in the same way (429,
+  never exempt). Clients that completed a login as the user in the last 7 days (the last 8 are
+  remembered in memory and forgotten on restart) are exempt, so an attacker cannot slow the
+  owner's usual address. Behind a reverse proxy all users share the proxy's address, so this
+  exemption makes the account-wide delay ineffective there; only the per-client limits protect.
+
+Refused attempts are not counted, so hammering a locked client does not extend the lock. A
+successful login clears the username's counters. Passwords longer than 1 KiB are refused (400)
+before hashing. At most as many argon2 hashes as CPUs run at once, and at most 16 requests per client (waiting or hashing; `[api] login_hash_per_client`), and at most 64
+requests wait at once; excess is refused immediately. A login queues up to 5 seconds
+(`[api] login_hash_wait_ms`) for a slot, then gets 503 with `Retry-After: 1`. The slot is taken
+before the attempt is recorded, so a busy refusal never counts as a failed password.
 
 ## Web UI
 

@@ -314,6 +314,21 @@ async fn repeated_failed_logins_are_throttled_with_retry_after() {
 }
 
 #[tokio::test]
+async fn a_locked_out_address_does_not_lock_the_administrator_out() {
+    let h = start().await;
+    let attacker = h.rest_from("127.0.0.2");
+    for _ in 0..5 {
+        attacker
+            .login_resp(ADMIN, "wrong-password")
+            .await
+            .problem(401);
+    }
+    attacker.login_resp(ADMIN, ADMIN_PW).await.problem(429);
+    // The same account from another address still works.
+    h.rest_from("127.0.0.3").login(ADMIN, ADMIN_PW).await;
+}
+
+#[tokio::test]
 async fn a_successful_login_resets_the_failure_count() {
     let h = start().await;
     let api = h.rest();

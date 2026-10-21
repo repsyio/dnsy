@@ -209,6 +209,10 @@ impl ApiState {
     #[must_use]
     pub fn with_config(mut self, config: &dnsy_config::Config) -> ApiState {
         self.settings = Arc::new(RuntimeSettings::new(config));
+        self.users = self.users.with_login_limits(
+            config.api.login_hash_per_client,
+            std::time::Duration::from_millis(config.api.login_hash_wait_ms),
+        );
         self
     }
 

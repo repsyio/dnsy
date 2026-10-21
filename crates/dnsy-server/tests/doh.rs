@@ -64,6 +64,10 @@ struct Fixture {
 }
 
 async fn fixture(require: bool, max_failures: u32) -> Fixture {
+    fixture_tracking(require, max_failures, dnsy_auth::DEFAULT_MAX_TRACKED).await
+}
+
+async fn fixture_tracking(require: bool, max_failures: u32, max_tracked: usize) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let ca_key = KeyPair::generate().unwrap();
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -103,6 +107,7 @@ async fn fixture(require: bool, max_failures: u32) -> Fixture {
     );
     doh.require_token = require;
     doh.max_auth_failures = max_failures;
+    doh.max_tracked_clients = max_tracked;
     let mut config = ServerConfig::new(vec![], vec![]);
     config.doh = Some(doh);
     let server = Server::start(config, Arc::new(recorder.clone()))
@@ -138,6 +143,11 @@ struct Reply {
 
 impl Client {
     async fn connect(f: &Fixture, h2: bool) -> Client {
+        Client::connect_from(f, h2, None).await
+    }
+
+    /// Connects from the given loopback source address.
+    async fn connect_from(f: &Fixture, h2: bool, from: Option<&str>) -> Client {
         let mut roots = rustls::RootCertStore::empty();
         roots.add(f.ca.clone()).unwrap();
         let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -152,7 +162,16 @@ impl Client {
         } else {
             b"http/1.1".to_vec()
         }];
-        let tcp = TcpStream::connect(f.addr).await.unwrap();
+        let tcp = match from {
+            Some(src) => {
+                let socket = tokio::net::TcpSocket::new_v4().unwrap();
+                socket
+                    .bind((src.parse::<Ipv4Addr>().unwrap(), 0).into())
+                    .unwrap();
+                socket.connect(f.addr).await.unwrap()
+            }
+            None => TcpStream::connect(f.addr).await.unwrap(),
+        };
         let tls = TlsConnector::from(Arc::new(config))
             .connect(ServerName::try_from("dns.test").unwrap(), tcp)
             .await
@@ -401,6 +420,56 @@ async fn doh_auth_failures_throttled_without_leaking_token_existence() {
     assert_eq!(r.status, 429);
     assert!(r.headers.contains_key(header::RETRY_AFTER));
     assert!(f.recorder.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn doh_throttle_is_per_client_address() {
+    let f = fixture(true, 2).await;
+    let mut a = Client::connect_from(&f, false, Some("127.0.0.2")).await;
+    for _ in 0..2 {
+        assert_eq!(
+            a.send(get_dns("/dns-query", Some("garbage"))).await.status,
+            401
+        );
+    }
+    assert_eq!(
+        a.send(get_dns("/dns-query", Some(&f.good))).await.status,
+        429
+    );
+    // Another address is not locked out by the first one's failures.
+    let mut b = Client::connect_from(&f, false, Some("127.0.0.3")).await;
+    assert_eq!(
+        b.send(get_dns("/dns-query", Some(&f.good))).await.status,
+        200
+    );
+}
+
+#[tokio::test]
+async fn doh_throttle_saturation_keeps_blocked_ip_blocked() {
+    // Room for 16 keys; 120 other clients fail once each and fill every shard.
+    let f = fixture_tracking(true, 2, 16).await;
+    let mut attacker = Client::connect_from(&f, false, Some("127.0.0.2")).await;
+    for _ in 0..2 {
+        assert_eq!(
+            attacker
+                .send(get_dns("/dns-query", Some("garbage")))
+                .await
+                .status,
+            401
+        );
+    }
+    for host in 10..130 {
+        let mut c = Client::connect_from(&f, false, Some(&format!("127.0.0.{host}"))).await;
+        c.send(get_dns("/dns-query", Some("garbage"))).await;
+    }
+    assert_eq!(
+        attacker
+            .send(get_dns("/dns-query", Some(&f.good)))
+            .await
+            .status,
+        429,
+        "a full table must not forget a blocked client"
+    );
 }
 
 #[derive(Clone, Default)]

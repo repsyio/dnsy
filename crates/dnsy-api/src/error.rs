@@ -149,6 +149,10 @@ impl IntoResponse for ApiError {
                 res.headers_mut()
                     .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
             }
+            ApiError::Unavailable => {
+                res.headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            }
             _ => {}
         }
         res
@@ -174,7 +178,7 @@ impl From<AuthError> for ApiError {
 impl From<UserError> for ApiError {
     fn from(e: UserError) -> Self {
         match e {
-            UserError::Empty => ApiError::BadRequest(e.to_string()),
+            UserError::Empty | UserError::PasswordTooLong => ApiError::BadRequest(e.to_string()),
             UserError::DuplicateUsername | UserError::LastAdmin => {
                 ApiError::Conflict(e.to_string())
             }
@@ -182,6 +186,7 @@ impl From<UserError> for ApiError {
             UserError::InvalidCredentials | UserError::InvalidBootstrapCode => {
                 ApiError::Unauthorized
             }
+            UserError::Busy => ApiError::Unavailable,
             UserError::Hash | UserError::Store(_) => ApiError::Internal(e.to_string()),
         }
     }

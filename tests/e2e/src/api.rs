@@ -275,6 +275,20 @@ impl Api {
         }
     }
 
+    /// Like [`Api::new`] but connecting from the loopback source address `source`, to exercise
+    /// per-client behaviour.
+    pub fn from_source(addr: std::net::SocketAddr, source: std::net::IpAddr) -> Api {
+        Api {
+            base: format!("http://{addr}"),
+            http: reqwest::Client::builder()
+                .timeout(DEADLINE)
+                .redirect(reqwest::redirect::Policy::none())
+                .local_address(source)
+                .build()
+                .expect("http client"),
+        }
+    }
+
     /// A request to `/api/v1` + `path`.
     pub fn req(&self, method: Method, path: &str) -> Req<'_> {
         self.raw(method, &format!("/api/v1{path}"))
@@ -394,5 +408,10 @@ impl Harness {
     /// A client for this server's REST API.
     pub fn rest(&self) -> Api {
         Api::new(self.api)
+    }
+
+    /// A REST client whose connections come from the loopback address `source`.
+    pub fn rest_from(&self, source: &str) -> Api {
+        Api::from_source(self.api, source.parse().expect("source address"))
     }
 }

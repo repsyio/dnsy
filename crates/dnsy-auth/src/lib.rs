@@ -11,6 +11,7 @@ mod client_certs;
 mod error;
 mod password;
 mod sessions;
+mod throttle;
 mod tokens;
 mod users;
 
@@ -19,8 +20,9 @@ pub use client_certs::{ClientCert, ClientCertService};
 pub use error::{AuthError, UserError};
 pub use sessions::{
     ABSOLUTE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, MAX_FAILURES, Session, SessionService,
-    THROTTLE_WINDOW_SECS,
+    THROTTLE_WINDOW_SECS, USERNAME_BACKOFF_CAP_SECS, USERNAME_FREE_ATTEMPTS,
 };
+pub use throttle::{DEFAULT_MAX_TRACKED, FailureThrottle};
 pub use tokens::{TokenMeta, TokenService, TokenVerifier};
 pub use users::{User, UserService};
 
