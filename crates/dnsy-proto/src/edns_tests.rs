@@ -136,16 +136,10 @@ fn ext_rcode_combines() {
     let got = Message::decode(&m.encode(512).unwrap()).unwrap();
     assert_eq!(got.header.rcode, Rcode::Unknown(0x123));
     assert_eq!(got.edns.unwrap().ext_rcode, 0x12);
-    // without OPT only the low four bits survive
+    // without OPT a wide rcode is refused instead of truncated
     let mut m = query();
     m.header.rcode = Rcode::BadVers;
-    assert_eq!(
-        Message::decode(&m.encode(512).unwrap())
-            .unwrap()
-            .header
-            .rcode,
-        Rcode::NoError
-    );
+    assert_eq!(m.encode(512), Err(EncodeError::BadRcode));
     // wider than 12 bits cannot be encoded
     m.header.rcode = Rcode::Unknown(0x1000);
     m.edns = Some(Edns::default());

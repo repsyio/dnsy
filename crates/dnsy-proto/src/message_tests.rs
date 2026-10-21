@@ -653,3 +653,317 @@ fn prop_message_roundtrip() {
         }
     }
 }
+
+#[test]
+fn extended_rcode_without_opt_is_an_error() {
+    let mut m = message(1);
+    m.header.rcode = Rcode::from(0x10);
+    assert_eq!(m.encode(512), Err(EncodeError::BadRcode));
+    m.header.rcode = Rcode::from(0xF);
+    assert!(m.encode(512).is_ok());
+    m.edns = Some(opt(1232));
+    m.header.rcode = Rcode::from(0x10);
+    assert!(m.encode(512).is_ok());
+}
+
+#[test]
+fn opt_outside_additional_rejected() {
+    let mut m = message(2);
+    m.edns = Some(opt(1232));
+    let wire = m.encode(512).unwrap();
+    let opt_rr = wire[wire.len() - 11..].to_vec();
+    assert_eq!(opt_rr[0], 0, "root owner");
+    for section in [ANSWER, AUTHORITY] {
+        let mut moved = wire[..wire.len() - 11].to_vec();
+        moved.extend_from_slice(&opt_rr);
+        moved[10..12].copy_from_slice(&0u16.to_be_bytes());
+        let at = 6 + 2 * section;
+        moved[at..at + 2].copy_from_slice(&1u16.to_be_bytes());
+        assert_eq!(
+            Message::decode(&moved),
+            Err(DecodeError::BadOpt),
+            "{section}"
+        );
+    }
+    // two OPT records in the additional section
+    let mut two = wire.clone();
+    two.extend_from_slice(&opt_rr);
+    two[10..12].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(Message::decode(&two), Err(DecodeError::BadOpt));
+}
+
+#[test]
+fn padding_never_evicts_answers() {
+    let mut m = message(3);
+    m.edns = Some(Edns {
+        options: vec![EdnsOption::Padding(0)],
+        ..opt(1232)
+    });
+    m.answers = (0..20u8)
+        .map(|i| {
+            rec(
+                &format!("host{i}.example.com"),
+                RData::A([192, 0, 2, i].into()),
+            )
+        })
+        .collect();
+    let plain = m.encode(65535).unwrap().len();
+    for max in plain - 40..plain + 480 {
+        let mut bare = m.clone();
+        bare.edns = Some(opt(1232));
+        let Ok(unpadded) = bare.encode(max) else {
+            continue;
+        };
+        let kept = Message::decode(&unpadded).unwrap().answers.len();
+        let padded = m.encode_padded(max).unwrap();
+        assert!(padded.len() <= max, "{max}");
+        assert_eq!(
+            Message::decode(&padded).unwrap().answers.len(),
+            kept,
+            "{max}"
+        );
+    }
+}
+
+fn hdr(qd: u16, an: u16, ns: u16, ar: u16) -> Vec<u8> {
+    let mut v = vec![0x12, 0x34, 0x01, 0x00];
+    for c in [qd, an, ns, ar] {
+        v.extend_from_slice(&c.to_be_bytes());
+    }
+    v
+}
+
+/// A header with one `example.com A IN` question.
+fn query_head(an: u16, ns: u16, ar: u16) -> Vec<u8> {
+    cat(&[&hdr(1, an, ns, ar), QNAME, b"\x00\x01\x00\x01"])
+}
+
+/// Header, question and one answer with the given owner bytes, type and RDATA.
+fn with_answer(owner: &[u8], rtype: u16, rdata: &[u8]) -> Vec<u8> {
+    let mut v = query_head(1, 0, 0);
+    v.extend_from_slice(owner);
+    v.extend_from_slice(&rtype.to_be_bytes());
+    v.extend_from_slice(b"\x00\x01\x00\x00\x0e\x10");
+    v.extend_from_slice(&u16::try_from(rdata.len()).unwrap().to_be_bytes());
+    v.extend_from_slice(rdata);
+    v
+}
+
+fn with_opt(rdata: &[u8]) -> Vec<u8> {
+    let mut v = query_head(0, 0, 1);
+    v.extend_from_slice(b"\x00\x00\x29\x04\xd0\x00\x00\x00\x00");
+    v.extend_from_slice(&u16::try_from(rdata.len()).unwrap().to_be_bytes());
+    v.extend_from_slice(rdata);
+    v
+}
+
+/// The 42 hand-crafted hostile inputs from the security analysis (section 4.1). Every one must
+/// be rejected (bar the tolerated ones) without panicking, and `formerr_for` must never panic.
+#[test]
+fn hostile_inputs_are_rejected() {
+    // Decoded leniently by design: the option payload is opaque or lossy, never a panic.
+    const TOLERATED: &[&str] = &["EDE bad UTF-8"];
+    let cases = hostile_cases();
+    assert_eq!(cases.len(), 42);
+    for (what, wire) in &cases {
+        let _ = Message::formerr_for(wire);
+        match Message::decode(wire) {
+            Err(_) => assert!(!TOLERATED.contains(what), "{what} is rejected now"),
+            Ok(msg) => {
+                // A tolerated input must at least survive a re-encode round trip.
+                assert!(TOLERATED.contains(what), "{what} was accepted");
+                let again = msg.encode(usize::from(u16::MAX)).unwrap();
+                assert_eq!(Message::decode(&again).unwrap(), msg, "{what}");
+            }
+        }
+    }
+}
+
+#[expect(clippy::too_many_lines, reason = "a flat table of hostile inputs")]
+fn hostile_cases() -> Vec<(&'static str, Vec<u8>)> {
+    let long_label = {
+        let mut v = vec![63];
+        v.extend_from_slice(&[b'a'; 63]);
+        v
+    };
+    let name_of = |labels: usize| {
+        let mut v = Vec::new();
+        for _ in 0..labels {
+            v.extend_from_slice(&long_label);
+        }
+        v.push(0);
+        v
+    };
+    let chain = |depth: usize| {
+        // the question name is the last of `depth` pointers, each jumping to the one before it
+        let mut v = hdr(1, 0, 0, 0);
+        v.extend_from_slice(b"\x01a\x00");
+        for i in 0..depth {
+            let target = if i == 0 { 12 } else { 15 + 2 * (i - 1) };
+            v.extend_from_slice(&(0xC000u16 | u16::try_from(target).unwrap()).to_be_bytes());
+        }
+        v
+    };
+    let ptr_questions = {
+        let mut v = hdr(3000, 0, 0, 0);
+        for _ in 0..3000 {
+            v.extend_from_slice(b"\xC0\x0C\x00\x01\x00\x01");
+        }
+        v
+    };
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("empty", vec![]),
+        ("short header", vec![0; 11]),
+        (
+            "pointer to itself",
+            cat(&[&hdr(1, 0, 0, 0), b"\xC0\x0C\x00\x01\x00\x01"]),
+        ),
+        (
+            "forward pointer",
+            cat(&[&hdr(1, 0, 0, 0), b"\xC0\x20\x00\x01\x00\x01"]),
+        ),
+        (
+            "pointer loop",
+            cat(&[&hdr(1, 0, 0, 0), b"\x01a\xC0\x0C\x00\x01\x00\x01"]),
+        ),
+        (
+            "ping-pong pointers",
+            cat(&[&hdr(1, 0, 0, 0), b"\xC0\x0E\xC0\x0C\x00\x01\x00\x01"]),
+        ),
+        ("200-deep pointer chain", chain(200)),
+        ("300-deep pointer chain", chain(300)),
+        ("pointer as last byte", cat(&[&hdr(1, 0, 0, 0), b"\xC0"])),
+        (
+            "label length 64",
+            cat(&[
+                &hdr(1, 0, 0, 0),
+                b"\x40",
+                &[b'a'; 64],
+                b"\x00\x00\x01\x00\x01",
+            ]),
+        ),
+        (
+            "reserved label type 0x80",
+            cat(&[&hdr(1, 0, 0, 0), b"\x80\x00\x00\x01\x00\x01"]),
+        ),
+        (
+            "name of 257 octets",
+            cat(&[&hdr(1, 0, 0, 0), &name_of(4), b"\x00\x01\x00\x01"]),
+        ),
+        (
+            "name of 320 octets",
+            cat(&[&hdr(1, 0, 0, 0), &name_of(5), b"\x00\x01\x00\x01"]),
+        ),
+        ("qdcount 65535 on 12 bytes", hdr(65535, 0, 0, 0)),
+        ("3000 pointer questions", ptr_questions),
+        ("all counts 65535", hdr(65535, 65535, 65535, 65535)),
+        ("ancount 65535", cat(&[&query_head(65535, 0, 0)])),
+        ("RDLENGTH beyond the packet", {
+            let mut v = with_answer(b"\xC0\x0C", 1, b"\x01\x02\x03\x04");
+            let at = v.len() - 6;
+            v[at..at + 2].copy_from_slice(&0xFFFFu16.to_be_bytes());
+            v
+        }),
+        (
+            "OPT option length overflow",
+            with_opt(b"\x00\x0a\xff\xff\x00"),
+        ),
+        ("EDE too short", with_opt(b"\x00\x0f\x00\x01\x00")),
+        (
+            "EDE bad UTF-8",
+            with_opt(b"\x00\x0f\x00\x04\x00\x01\xff\xfe"),
+        ),
+        ("duplicate OPT", {
+            let mut v = query_head(0, 0, 2);
+            for _ in 0..2 {
+                v.extend_from_slice(b"\x00\x00\x29\x04\xd0\x00\x00\x00\x00\x00\x00");
+            }
+            v
+        }),
+        ("OPT with non-root owner", {
+            let mut v = query_head(0, 0, 1);
+            v.extend_from_slice(b"\x01a\x00\x00\x29\x04\xd0\x00\x00\x00\x00\x00\x00");
+            v
+        }),
+        ("OPT in the answer section", {
+            let mut v = query_head(1, 0, 0);
+            v.extend_from_slice(b"\x00\x00\x29\x04\xd0\x00\x00\x00\x00\x00\x00");
+            v
+        }),
+        ("OPT in the authority section", {
+            let mut v = query_head(0, 1, 0);
+            v.extend_from_slice(b"\x00\x00\x29\x04\xd0\x00\x00\x00\x00\x00\x00");
+            v
+        }),
+        (
+            "NSEC window 0 length 0",
+            with_answer(b"\xC0\x0C", 47, b"\x00\x00\x00"),
+        ),
+        ("NSEC window 33 length 33", {
+            let mut r = vec![0, 33, 33];
+            r.extend_from_slice(&[0xFF; 33]);
+            with_answer(b"\xC0\x0C", 47, &r)
+        }),
+        (
+            "NSEC full window length 0",
+            with_answer(b"\xC0\x0C", 47, b"\x00\x00\x20"),
+        ),
+        (
+            "NSEC3 salt length overflow",
+            with_answer(b"\xC0\x0C", 50, b"\x01\x00\x00\x0a\xff\x00"),
+        ),
+        (
+            "NSEC3 hash length overflow",
+            with_answer(b"\xC0\x0C", 50, b"\x01\x00\x00\x0a\x00\xff\x01"),
+        ),
+        (
+            "NSEC3 empty hash",
+            with_answer(b"\xC0\x0C", 50, b"\x01\x00\x00\x0a\x00\x00"),
+        ),
+        (
+            "TXT string overflow",
+            with_answer(b"\xC0\x0C", 16, b"\x05ab"),
+        ),
+        (
+            "CAA tag overflow",
+            with_answer(b"\xC0\x0C", 257, b"\x00\xff\x61"),
+        ),
+        (
+            "CNAME pointer to the header",
+            with_answer(b"\xC0\x0C", 5, b"\xC0\x00"),
+        ),
+        ("CNAME pointer to its own RDATA", {
+            let mut v = with_answer(b"\xC0\x0C", 5, b"\xC0\x00");
+            let rdata_at = v.len() - 2;
+            v[rdata_at + 1] = u8::try_from(rdata_at).unwrap();
+            v
+        }),
+        (
+            "SOA too short",
+            with_answer(b"\xC0\x0C", 6, b"\x00\x00\x00\x01\x02\x03"),
+        ),
+        (
+            "A of length 3",
+            with_answer(b"\xC0\x0C", 1, b"\x01\x02\x03"),
+        ),
+        (
+            "A of length 5",
+            with_answer(b"\xC0\x0C", 1, b"\x01\x02\x03\x04\x05"),
+        ),
+        ("AAAA of length 15", with_answer(b"\xC0\x0C", 28, &[0; 15])),
+        ("trailing byte", {
+            let mut v = with_answer(b"\xC0\x0C", 1, b"\x01\x02\x03\x04");
+            v.push(0);
+            v
+        }),
+        (
+            "question truncated before class",
+            cat(&[&hdr(1, 0, 0, 0), QNAME, b"\x00\x01\x00"]),
+        ),
+        (
+            "MX without exchange",
+            with_answer(b"\xC0\x0C", 15, b"\x00\x0a"),
+        ),
+    ];
+    cases
+}

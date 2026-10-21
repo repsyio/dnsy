@@ -2,7 +2,7 @@
 
 use crate::{Name, RData, Record, Rrsig, WireWriter};
 
-/// Canonical RDATA wire form: names of NS, CNAME, PTR, MX, SOA and SRV lowercased, no
+/// Canonical RDATA wire form: names of NS, CNAME, PTR, MX, SOA, SRV, DNAME and the NAPTR replacement lowercased, no
 /// name compression anywhere. Names inside NSEC and RRSIG are left as they are (RFC 6840
 /// 5.1). RDATA that cannot be encoded (a CAA with an invalid tag) yields no octets.
 pub fn rdata_wire(r: &RData) -> Vec<u8> {
@@ -34,6 +34,8 @@ pub fn rdata_wire(r: &RData) -> Vec<u8> {
             w.write_u16(*port);
             name(&mut w, target);
         }
+        RData::Opaque { rtype: 39, data } => w.write_bytes(&lowercase_dname(data)),
+        RData::Opaque { rtype: 35, data } => w.write_bytes(&lowercase_naptr(data)),
         other => {
             if other.encode(&mut w).is_err() {
                 return Vec::new();
@@ -41,6 +43,48 @@ pub fn rdata_wire(r: &RData) -> Vec<u8> {
         }
     }
     w.finish()
+}
+
+/// Lowercases a wire-form name in `data` starting at `at`, leaving everything after the name
+/// untouched. Data whose name does not terminate inside the buffer (or that uses a pointer)
+/// is returned unchanged.
+fn lowercase_name_at(data: &[u8], at: usize) -> Vec<u8> {
+    let mut out = data.to_vec();
+    let mut i = at;
+    loop {
+        let Some(&len) = data.get(i) else {
+            return data.to_vec();
+        };
+        if len == 0 {
+            return out;
+        }
+        if len > 63 {
+            return data.to_vec();
+        }
+        let end = i + 1 + usize::from(len);
+        let Some(label) = out.get_mut(i + 1..end) else {
+            return data.to_vec();
+        };
+        label.make_ascii_lowercase();
+        i = end;
+    }
+}
+
+/// DNAME RDATA (RFC 6672) is one uncompressed name; RFC 4034 6.2 lowercases it.
+fn lowercase_dname(data: &[u8]) -> Vec<u8> {
+    lowercase_name_at(data, 0)
+}
+
+/// NAPTR RDATA (RFC 3403): order, preference, three character-strings, then the replacement name.
+fn lowercase_naptr(data: &[u8]) -> Vec<u8> {
+    let mut at = 4;
+    for _ in 0..3 {
+        let Some(&len) = data.get(at) else {
+            return data.to_vec();
+        };
+        at += 1 + usize::from(len);
+    }
+    lowercase_name_at(data, at)
 }
 
 fn name(w: &mut WireWriter, n: &Name) {
