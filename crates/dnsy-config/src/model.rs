@@ -453,6 +453,12 @@ pub struct QueryLog {
     pub retention_days: u32,
     /// Store client addresses truncated to /24 (IPv4) or /48 (IPv6).
     pub redact_client_ip: bool,
+    /// Keep one raw row in `sample` queries (1 keeps all; 0 is treated as 1). Rollups and top-N
+    /// counts stay exact.
+    pub sample: u32,
+    /// Cap on the live data in the database, in MiB (0 = unlimited); the oldest day of raw rows
+    /// is purged after each retention pass while over the cap.
+    pub max_size_mb: u64,
 }
 
 impl Default for QueryLog {
@@ -461,6 +467,8 @@ impl Default for QueryLog {
             enabled: true,
             retention_days: 30,
             redact_client_ip: false,
+            sample: 1,
+            max_size_mb: 0,
         }
     }
 }

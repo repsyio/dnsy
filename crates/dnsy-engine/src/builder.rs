@@ -209,6 +209,8 @@ impl EngineBuilder<UpstreamClient> {
                 store.clone(),
                 WriterConfig {
                     redact_client_ip: config.querylog.redact_client_ip,
+                    sample: config.querylog.sample,
+                    max_size_mb: config.querylog.max_size_mb,
                     ..WriterConfig::default()
                 },
             );

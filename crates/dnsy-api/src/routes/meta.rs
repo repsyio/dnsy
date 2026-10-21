@@ -95,6 +95,9 @@ async fn readyz(State(state): State<ApiState>) -> Response {
     if state.dnssec_clock_untrusted.load(Ordering::Relaxed) {
         warnings.push("dnssec_clock_untrusted");
     }
+    if dnsy_observe::querylog_counters().disk_full {
+        warnings.push("querylog_disk_full");
+    }
     Json(Ready {
         status: "ready",
         warnings,

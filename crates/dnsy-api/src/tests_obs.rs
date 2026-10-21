@@ -650,3 +650,60 @@ async fn live_tail_keeps_a_reservation_for_admins() {
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn readyz_warns_while_the_query_log_disk_is_full() {
+    let fx = Fx::new(|s| s);
+    let pages: i64 = fx
+        .state
+        .store
+        .write(|t| Ok(t.query_row("PRAGMA page_count", [], |r| r.get(0))?))
+        .await
+        .unwrap();
+    fx.state
+        .store
+        .write(move |t| Ok(t.execute_batch(&format!("PRAGMA max_page_count = {pages}"))?))
+        .await
+        .unwrap();
+    let (w, task) = QueryLogWriter::spawn(
+        fx.state.store.clone(),
+        WriterConfig {
+            flush_interval: Duration::from_millis(5),
+            ..WriterConfig::default()
+        },
+    );
+    let ready = || async {
+        let res = fx.call(Method::GET, "/readyz", None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        json(res).await
+    };
+    assert!(ready().await.get("warnings").is_none());
+    for i in 0..400 {
+        w.record(event(&format!("host{i}.example."), i));
+    }
+    let mut full = false;
+    for _ in 0..200 {
+        if ready().await["warnings"][0] == "querylog_disk_full" {
+            full = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(full, "readyz never reported querylog_disk_full");
+
+    fx.state
+        .store
+        .write(|t| Ok(t.execute_batch("PRAGMA max_page_count = 1073741823")?))
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        w.record(event("ok.example.", 1));
+        if ready().await.get("warnings").is_none() {
+            drop(w);
+            task.await.unwrap();
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the warning never cleared");
+}

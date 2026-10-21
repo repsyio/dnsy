@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,6 +23,11 @@ pub struct WriterConfig {
     pub flush_interval: Duration,
     /// Store /24 (IPv4) or /48 (IPv6) instead of the full client address.
     pub redact_client_ip: bool,
+    /// Keep one raw row in `sample` events (values below 2 keep all). Rollups and top-N counts
+    /// always include every event.
+    pub sample: u32,
+    /// Cap on live database data in MiB for the retention task (0 = unlimited).
+    pub max_size_mb: u64,
 }
 
 impl Default for WriterConfig {
@@ -31,6 +37,8 @@ impl Default for WriterConfig {
             max_batch: 500,
             flush_interval: Duration::from_secs(1),
             redact_client_ip: false,
+            sample: 1,
+            max_size_mb: 0,
         }
     }
 }
@@ -39,6 +47,12 @@ impl Default for WriterConfig {
 struct Counters {
     dropped: AtomicU64,
     flush_errors: AtomicU64,
+    /// The last flush failed with `SQLITE_FULL`.
+    disk_full: AtomicBool,
+    /// Events seen, for sampling.
+    seen: AtomicU64,
+    /// `[querylog] max_size_mb` in bytes (0 = unlimited), read by the retention task.
+    max_size_bytes: AtomicU64,
 }
 
 /// The counters of the most recently started writer: one query log per process, readable by the
@@ -52,6 +66,8 @@ pub struct QueryLogCounters {
     pub dropped: u64,
     /// Batches that failed to write.
     pub flush_errors: u64,
+    /// The last flush failed because the disk is full (cleared by the next successful flush).
+    pub disk_full: bool,
 }
 
 /// Loss counters of the running query-log writer (zero when none was started).
@@ -64,15 +80,30 @@ pub fn querylog_counters() -> QueryLogCounters {
     current.map_or_else(QueryLogCounters::default, |c| QueryLogCounters {
         dropped: c.dropped.load(Ordering::Relaxed),
         flush_errors: c.flush_errors.load(Ordering::Relaxed),
+        disk_full: c.disk_full.load(Ordering::Relaxed),
     })
 }
+
+/// The configured size cap of the running writer in bytes (0 = unlimited or no writer).
+pub(crate) fn max_size_bytes() -> u64 {
+    CURRENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map_or(0, |c| c.max_size_bytes.load(Ordering::Relaxed))
+}
+
+/// One queued event; `raw` is false when sampling keeps it out of `query_log` (it still feeds the
+/// rollups).
+type Queued = (QueryEvent, bool);
 
 /// Non-blocking sink feeding a batched SQLite writer task. Cloning shares the
 /// channel and the loss counters.
 #[derive(Clone)]
 pub struct QueryLogWriter {
-    tx: mpsc::Sender<QueryEvent>,
+    tx: mpsc::Sender<Queued>,
     counters: Arc<Counters>,
+    sample: u64,
 }
 
 impl QueryLogWriter {
@@ -80,7 +111,12 @@ impl QueryLogWriter {
     /// clone of the returned writer is dropped.
     #[must_use]
     pub fn spawn(store: Store, config: WriterConfig) -> (QueryLogWriter, JoinHandle<()>) {
-        let (writer, rx) = Self::channel(config.channel_capacity);
+        let (mut writer, rx) = Self::channel(config.channel_capacity);
+        writer.sample = u64::from(config.sample.max(1));
+        writer.counters.max_size_bytes.store(
+            config.max_size_mb.saturating_mul(1024 * 1024),
+            Ordering::Relaxed,
+        );
         *CURRENT
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -89,11 +125,12 @@ impl QueryLogWriter {
         (writer, task)
     }
 
-    pub(crate) fn channel(capacity: usize) -> (QueryLogWriter, mpsc::Receiver<QueryEvent>) {
+    pub(crate) fn channel(capacity: usize) -> (QueryLogWriter, mpsc::Receiver<Queued>) {
         let (tx, rx) = mpsc::channel(capacity);
         let writer = QueryLogWriter {
             tx,
             counters: Arc::new(Counters::default()),
+            sample: 1,
         };
         (writer, rx)
     }
@@ -113,7 +150,18 @@ impl QueryLogWriter {
 
 impl QueryEventSink for QueryLogWriter {
     fn record(&self, ev: QueryEvent) {
-        if self.tx.try_send(ev).is_err() {
+        // A full channel is the common overload case: decide before doing any other work.
+        if self.tx.capacity() == 0 {
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let raw = self.sample <= 1
+            || self
+                .counters
+                .seen
+                .fetch_add(1, Ordering::Relaxed)
+                .is_multiple_of(self.sample);
+        if self.tx.try_send((ev, raw)).is_err() {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -122,7 +170,7 @@ impl QueryEventSink for QueryLogWriter {
 async fn run(
     store: Store,
     config: WriterConfig,
-    mut rx: mpsc::Receiver<QueryEvent>,
+    mut rx: mpsc::Receiver<Queued>,
     counters: Arc<Counters>,
 ) {
     let max_batch = config.max_batch.max(1);
@@ -137,12 +185,31 @@ async fn run(
         }
         let redact = config.redact_client_ip;
         let n = batch.len();
-        if let Err(e) = store.write(move |tx| flush(tx, &batch, redact)).await {
-            counters.flush_errors.fetch_add(1, Ordering::Relaxed);
-            counters.dropped.fetch_add(n as u64, Ordering::Relaxed);
-            tracing::warn!(error = %e, dropped = n, "query log flush failed");
+        match store.write(move |tx| flush(tx, &batch, redact)).await {
+            Ok(()) => {
+                if counters.disk_full.swap(false, Ordering::Relaxed) {
+                    tracing::info!("query log writes recovered after a full disk");
+                }
+            }
+            Err(e) => {
+                counters.flush_errors.fetch_add(1, Ordering::Relaxed);
+                counters.dropped.fetch_add(n as u64, Ordering::Relaxed);
+                if !is_disk_full(&e) {
+                    tracing::warn!(error = %e, dropped = n, "query log flush failed");
+                } else if !counters.disk_full.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(error = %e, "query log cannot write: the disk is full");
+                }
+            }
         }
     }
+}
+
+fn is_disk_full(e: &StoreError) -> bool {
+    matches!(
+        e,
+        StoreError::Sqlite(rusqlite::Error::SqliteFailure(f, _))
+            if f.code == rusqlite::ErrorCode::DiskFull
+    )
 }
 
 #[derive(Default)]
@@ -160,53 +227,80 @@ impl Agg {
     }
 }
 
-fn flush(tx: &mut Transaction, batch: &[QueryEvent], redact: bool) -> Result<(), StoreError> {
-    let mut minute: BTreeMap<(i64, &'static str, String), Agg> = BTreeMap::new();
-    let mut top: BTreeMap<(i64, &'static str, String), i64> = BTreeMap::new();
+/// `map[(bucket, dimension)][key]`, allocating the key only the first time it is seen.
+fn slot<'a, V: Default>(
+    map: &'a mut BTreeMap<(i64, &'static str), BTreeMap<String, V>>,
+    bucket: i64,
+    dim: &'static str,
+    key: &str,
+) -> &'a mut V {
+    let inner = map.entry((bucket, dim)).or_default();
+    if !inner.contains_key(key) {
+        inner.insert(key.to_owned(), V::default());
+    }
+    inner.get_mut(key).expect("inserted above")
+}
+
+fn flush(tx: &mut Transaction, batch: &[Queued], redact: bool) -> Result<(), StoreError> {
+    type Rollup<V> = BTreeMap<(i64, &'static str), BTreeMap<String, V>>;
+    let mut minute: Rollup<Agg> = BTreeMap::new();
+    let mut top: Rollup<i64> = BTreeMap::new();
+    // Strings are built into these buffers, reused for the whole batch.
+    let mut qname = String::new();
+    let mut client_s = String::new();
+    let mut rcode_s = String::new();
     {
         let mut insert = tx.prepare_cached(
             "INSERT INTO query_log (ts_ms, client, transport, principal, qname, qtype, rcode,
                                     source, source_detail, dnssec, latency_us)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
-        for ev in batch {
+        for (ev, raw) in batch {
             let client: IpAddr = if redact {
                 redact_client_ip(ev.client)
             } else {
                 ev.client
             };
-            let qname = ev.qname.to_string().to_ascii_lowercase();
+            qname.clear();
+            let _ = write!(qname, "{}", ev.qname);
+            qname.make_ascii_lowercase();
+            client_s.clear();
+            let _ = write!(client_s, "{client}");
             let kind = ev.source.kind();
             let rcode = u16::from(ev.rcode);
-            insert.execute(params![
-                ev.ts_unix_ms,
-                client.to_string(),
-                transport_str(ev.transport),
-                ev.principal,
-                qname,
-                u16::from(ev.qtype),
-                rcode,
-                kind.as_str(),
-                ev.source.detail(),
-                dnssec_str(ev.dnssec),
-                ev.latency_us,
-            ])?;
+            rcode_s.clear();
+            let _ = write!(rcode_s, "{rcode}");
+            if *raw {
+                insert.execute(params![
+                    ev.ts_unix_ms,
+                    client_s,
+                    transport_str(ev.transport),
+                    ev.principal,
+                    qname,
+                    u16::from(ev.qtype),
+                    rcode,
+                    kind.as_str(),
+                    ev.source.detail(),
+                    dnssec_str(ev.dnssec),
+                    ev.latency_us,
+                ])?;
+            }
 
             let m = ev.ts_unix_ms.div_euclid(60_000) * 60;
             let h = ev.ts_unix_ms.div_euclid(3_600_000) * 3600;
             for (dim, key) in [
-                ("total", String::new()),
-                ("rcode", rcode.to_string()),
-                ("source", kind.as_str().to_owned()),
-                ("dnssec", dnssec_str(ev.dnssec).to_owned()),
+                ("total", ""),
+                ("rcode", rcode_s.as_str()),
+                ("source", kind.as_str()),
+                ("dnssec", dnssec_str(ev.dnssec)),
             ] {
-                minute.entry((m, dim, key)).or_default().add(ev.latency_us);
+                slot(&mut minute, m, dim, key).add(ev.latency_us);
             }
             if kind == SourceKind::Blocked {
-                *top.entry((h, "blocked", qname.clone())).or_default() += 1;
+                *slot(&mut top, h, "blocked", &qname) += 1;
             }
-            *top.entry((h, "qname", qname)).or_default() += 1;
-            *top.entry((h, "client", client.to_string())).or_default() += 1;
+            *slot(&mut top, h, "qname", &qname) += 1;
+            *slot(&mut top, h, "client", &client_s) += 1;
         }
     }
     let mut up_min = tx.prepare_cached(
@@ -217,15 +311,19 @@ fn flush(tx: &mut Transaction, batch: &[QueryEvent], redact: bool) -> Result<(),
              latency_sum_us = latency_sum_us + excluded.latency_sum_us,
              latency_max_us = max(latency_max_us, excluded.latency_max_us)",
     )?;
-    for ((m, dim, key), a) in &minute {
-        up_min.execute(params![m, dim, key, a.count, a.latency_sum, a.latency_max])?;
+    for ((m, dim), keys) in &minute {
+        for (key, a) in keys {
+            up_min.execute(params![m, dim, key, a.count, a.latency_sum, a.latency_max])?;
+        }
     }
     let mut up_top = tx.prepare_cached(
         "INSERT INTO stats_top_hour (hour, kind, key, count) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (hour, kind, key) DO UPDATE SET count = count + excluded.count",
     )?;
-    for ((h, kind, key), c) in &top {
-        up_top.execute(params![h, kind, key, c])?;
+    for ((h, kind), keys) in &top {
+        for (key, c) in keys {
+            up_top.execute(params![h, kind, key, c])?;
+        }
     }
     Ok(())
 }
@@ -327,8 +425,122 @@ mod tests {
             querylog_counters(),
             QueryLogCounters {
                 dropped: 3,
-                flush_errors: 1
+                flush_errors: 1,
+                disk_full: false
             }
         );
+    }
+
+    async fn rows_and_rollup_total(store: &Store) -> (i64, i64) {
+        let rows = count_rows(store, "query_log").await;
+        let total = store
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT coalesce(sum(count), 0) FROM stats_minute WHERE dimension = 'total'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        (rows, total)
+    }
+
+    #[tokio::test]
+    async fn sampling_keeps_rollups_exact() {
+        let (store, _d) = open_store();
+        let (w, task) = QueryLogWriter::spawn(
+            store.clone(),
+            WriterConfig {
+                sample: 10,
+                ..WriterConfig::default()
+            },
+        );
+        for i in 0..100 {
+            w.record(event("a.example.", 1_000 + i));
+        }
+        drop(w);
+        task.await.unwrap();
+        let (rows, total) = rows_and_rollup_total(&store).await;
+        assert_eq!(rows, 10, "one raw row in ten");
+        assert_eq!(total, 100, "rollups count every event");
+        let top: i64 = store
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT count FROM stats_top_hour WHERE kind = 'qname'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(top, 100);
+    }
+
+    #[tokio::test]
+    async fn sample_zero_or_one_keeps_every_row() {
+        for sample in [0, 1] {
+            let (store, _d) = open_store();
+            let (w, task) = QueryLogWriter::spawn(
+                store.clone(),
+                WriterConfig {
+                    sample,
+                    ..WriterConfig::default()
+                },
+            );
+            for i in 0..5 {
+                w.record(event("a.example.", i));
+            }
+            drop(w);
+            task.await.unwrap();
+            assert_eq!(count_rows(&store, "query_log").await, 5);
+        }
+    }
+
+    #[tokio::test]
+    async fn disk_full_sets_and_clears_the_warning() {
+        let (store, _d) = open_store();
+        let pages: i64 = store
+            .write(|t| Ok(t.query_row("PRAGMA page_count", [], |r| r.get(0))?))
+            .await
+            .unwrap();
+        store
+            .write(move |t| Ok(t.execute_batch(&format!("PRAGMA max_page_count = {pages}"))?))
+            .await
+            .unwrap();
+        let (w, task) = QueryLogWriter::spawn(
+            store.clone(),
+            WriterConfig {
+                flush_interval: Duration::from_millis(10),
+                ..WriterConfig::default()
+            },
+        );
+        let mut i = 0;
+        for _ in 0..500 {
+            if querylog_counters().disk_full {
+                break;
+            }
+            for _ in 0..200 {
+                i += 1;
+                w.record(event(&format!("host{i}.example."), i));
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert!(querylog_counters().disk_full, "SQLITE_FULL raises the flag");
+        assert!(w.flush_errors() > 0);
+        store
+            .write(|t| Ok(t.execute_batch("PRAGMA max_page_count = 1073741823")?))
+            .await
+            .unwrap();
+        for _ in 0..500 {
+            if !querylog_counters().disk_full {
+                break;
+            }
+            w.record(event("ok.example.", 1));
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert!(!querylog_counters().disk_full, "a good flush clears it");
+        drop(w);
+        task.await.unwrap();
     }
 }
