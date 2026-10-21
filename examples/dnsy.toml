@@ -102,6 +102,8 @@ udp_in_flight_per_client = 64
 enabled = true
 retention_days = 30
 redact_client_ip = false
+sample = 1        # keep one raw row in N queries; rollups stay exact
+max_size_mb = 0    # purge the oldest day of raw rows while live data exceeds this (0 = off)
 
 [logging]
 level = "info" # trace | debug | info | warn | error

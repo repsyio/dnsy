@@ -140,10 +140,69 @@ impl Optimizer {
     }
 }
 
+const DAY_MS: i64 = 24 * 3_600 * 1000;
+
+/// Live database bytes: used pages, not the file size (freed pages are reused, not returned).
+async fn used_bytes(store: &Store) -> Result<u64, ObserveError> {
+    Ok(store
+        .read(|c| {
+            let pages: i64 = c.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+            let free: i64 = c.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+            let size: i64 = c.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+            Ok(u64::try_from((pages - free).max(0) * size).unwrap_or(0))
+        })
+        .await?)
+}
+
+/// While the live data exceeds `max_bytes`, delete the oldest UTC day of raw query-log rows.
+/// Rollups are kept. The current day is never purged (a warning is logged when the cap cannot be
+/// met). Returns the rows removed.
+async fn enforce_size_cap(
+    store: &Store,
+    max_bytes: u64,
+    now_ms: i64,
+) -> Result<usize, ObserveError> {
+    let today = now_ms.div_euclid(DAY_MS);
+    let mut removed = 0;
+    while used_bytes(store).await? > max_bytes {
+        let oldest: Option<i64> = store
+            .read(|c| Ok(c.query_row("SELECT min(ts_ms) FROM query_log", [], |r| r.get(0))?))
+            .await?;
+        let Some(oldest) = oldest else { break };
+        let day = oldest.div_euclid(DAY_MS);
+        if day >= today {
+            tracing::warn!(
+                max_bytes,
+                "query log is over max_size_mb but only today's rows remain"
+            );
+            break;
+        }
+        removed += delete_batched(
+            store,
+            "DELETE FROM query_log WHERE rowid IN
+                 (SELECT rowid FROM query_log WHERE ts_ms < ?1 LIMIT ?2)",
+            (day + 1) * DAY_MS,
+            PURGE_BATCH,
+            &mut || async {},
+        )
+        .await?;
+    }
+    Ok(removed)
+}
+
 async fn pass(store: &Store, keep: Duration, optimizer: &mut Optimizer) {
-    let cutoff = now_ms().saturating_sub(i64::try_from(keep.as_millis()).unwrap_or(i64::MAX));
+    let now = now_ms();
+    let cutoff = now.saturating_sub(i64::try_from(keep.as_millis()).unwrap_or(i64::MAX));
     if let Err(e) = purge_before(store, cutoff).await {
         tracing::warn!(error = %e, "query log retention purge failed");
+    }
+    let cap = crate::writer::max_size_bytes();
+    if cap > 0 {
+        match enforce_size_cap(store, cap, now).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(rows = n, "query log size cap purged old days"),
+            Err(e) => tracing::warn!(error = %e, "query log size cap purge failed"),
+        }
     }
     optimizer.maybe(store).await;
 }
@@ -222,6 +281,35 @@ mod tests {
         // The hour holding only the old event is gone, the recent one stays.
         assert_eq!(count_rows(&store, "stats_top_hour").await, 2);
         assert!(count_rows(&store, "stats_minute").await > 0);
+    }
+
+    #[tokio::test]
+    async fn size_cap_purges_the_oldest_day_and_keeps_today() {
+        let (store, _d) = open_store();
+        let now = 100 * DAY_MS + 3_600_000;
+        let mut events = Vec::new();
+        for day in [97, 98, 99, 100] {
+            for i in 0..2_000 {
+                events.push(event(&format!("host{i}.example."), day * DAY_MS + i));
+            }
+        }
+        ingest(&store, events).await;
+        wait_for_rows(&store, 8_000).await;
+        let used = used_bytes(&store).await.unwrap();
+        // Unlimited-ish cap: nothing happens.
+        assert_eq!(enforce_size_cap(&store, used, now).await.unwrap(), 0);
+        // A cap slightly below the current use drops exactly the oldest day.
+        let removed = enforce_size_cap(&store, used - 1, now).await.unwrap();
+        assert_eq!(removed, 2_000);
+        let oldest: i64 = store
+            .read(|c| Ok(c.query_row("SELECT min(ts_ms) FROM query_log", [], |r| r.get(0))?))
+            .await
+            .unwrap();
+        assert_eq!(oldest.div_euclid(DAY_MS), 98);
+        // An impossible cap purges every past day but never today.
+        enforce_size_cap(&store, 0, now).await.unwrap();
+        assert_eq!(count_rows(&store, "query_log").await, 2_000);
+        assert!(count_rows(&store, "stats_minute").await > 0, "rollups stay");
     }
 
     #[tokio::test]

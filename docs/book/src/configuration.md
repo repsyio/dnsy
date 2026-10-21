@@ -22,6 +22,9 @@ as TOML (numbers, booleans, arrays) and fall back to plain strings.
 | `filter` | `block_mode` = `null_ip`/`nxdomain`/`refused`, `blocklists`, `refresh_interval` (seconds, 86400) |
 | `limits` | `per_client_qps` (50; 0 = unlimited), `open_resolver` (false), `tcp_idle_ms` (10000), `max_tcp_conns` (1024), `max_conns_per_client` (16), `udp_in_flight` (4096), `udp_in_flight_per_client` (64; see [Security](security.md)) |
 | `querylog` | `enabled` (true), `retention_days` (30), `redact_client_ip` (false) |
+
+| `limits` | `per_client_qps` (50; 0 = unlimited), `open_resolver` (false), `tcp_idle_ms` (10000), `max_tcp_conns` (1024) |
+| `querylog` | `enabled` (true), `retention_days` (30), `redact_client_ip` (false), `sample` (1), `max_size_mb` (0) |
 | `logging` | `level` = `trace`..`error` (`info`), `format` = `pretty`/`json` |
 
 **Behaviour change: private-only by default.** With `limits.open_resolver = false` (the default)

@@ -7,6 +7,21 @@ read-only database) counts its events as dropped as well and increments a flush-
 `GET /api/v1/stats/summary` reports both since the server started, as `querylog_dropped` and
 `querylog_flush_errors`; watch them for gaps in the log.
 
+## Sampling, size cap and a full disk
+
+- `[querylog] sample = N` keeps one raw `query_log` row in N queries (default 1: all). Only raw rows
+  are sampled: minute rollups and hourly top-N counts include every query, so the stats endpoints
+  stay exact while the log grows N times slower. Searching the log shows the sample; at high QPS use
+  100 or more. `0` is treated as `1`.
+- `[querylog] max_size_mb = M` (default 0: unlimited) caps the live data in the database (used pages,
+  not the file size; freed pages are reused). After each retention pass, while the data exceeds the
+  cap, the oldest UTC day of raw rows is deleted. Rollups are kept. Today's rows are never purged;
+  if only today remains, a warning is logged. The cap is read at startup.
+- When a write fails with `SQLITE_FULL`, the events of that batch are dropped and counted, the log
+  warns once, and `/readyz` reports the warning `querylog_disk_full` (the status stays 200). The
+  warning clears after the next successful write; free disk space or lower `retention_days` or
+  `max_size_mb`.
+
 ## What is stored
 
 Per query: time, client address, transport, principal, query name (lowercased), type, response code,

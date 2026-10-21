@@ -18,7 +18,8 @@ container's stderr.
 
 Every answered query becomes one event: time, client, transport, principal, name, type, response
 code, answer source, DNSSEC status and latency. Events are written to SQLite in batches and kept for
-`[querylog] retention_days`; `redact_client_ip` stores only the client network. See
+`[querylog] retention_days`; `redact_client_ip` stores only the client network, `sample` keeps one raw row in N queries and
+`max_size_mb` caps the database. See
 [Query log and stats](query-log.md) for the fields, rollups and the filter syntax.
 
 The statistics endpoints are the metrics interface:
@@ -43,7 +44,7 @@ it reads precomputed rollups) or scrape the JSON with an exporter of your own.
 ## Health
 
 `GET /healthz` is liveness (the process runs). `GET /readyz` is readiness: 200 when the database
-answers and every DNSSEC zone can be signed, 503 otherwise (`dnssec_signing_failed` when a zone's keys cannot be opened), and a `warnings` list such as `dnssec_clock_untrusted` while the system
+answers and every DNSSEC zone can be signed, 503 otherwise (`dnssec_signing_failed` when a zone's keys cannot be opened), and a `warnings` list such as `querylog_disk_full` (the query-log writer hit `SQLITE_FULL`; clears after the next successful write) or `dnssec_clock_untrusted` while the system
 clock is earlier than the build time. Neither needs credentials.
 
 ## What to alert on
