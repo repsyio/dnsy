@@ -544,9 +544,12 @@ impl KeyStore {
         algorithm: Algorithm,
     ) -> Result<KeyRecord, KeyStoreError> {
         let _shared = self.key_lock.read().await;
-        if self.keys(zone).await?.iter().any(|k| {
-            k.role == role && matches!(k.state, KeyState::Generated | KeyState::Published)
-        }) {
+        if self
+            .keys(zone)
+            .await?
+            .iter()
+            .any(|k| k.role == role && matches!(k.state, KeyState::Generated | KeyState::Published))
+        {
             return Err(KeyStoreError::RolloverInProgress(role));
         }
         let z = zone.clone();

@@ -329,7 +329,11 @@ async fn permissive_fetch_failure_serves_without_ad_and_a_short_ttl() {
     let resp = r.ask(q("www.example.", true, true, false)).await;
     assert_eq!(resp.header.rcode, Rcode::NoError);
     assert!(!resp.header.ad);
-    assert!(resp.answers.iter().all(|x| x.ttl <= 5), "{:?}", resp.answers);
+    assert!(
+        resp.answers.iter().all(|x| x.ttl <= 5),
+        "{:?}",
+        resp.answers
+    );
     assert_eq!(r.statuses(), [DnssecStatus::Indeterminate]);
 }
 

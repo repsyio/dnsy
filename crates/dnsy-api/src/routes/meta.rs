@@ -82,7 +82,9 @@ async fn readyz(State(state): State<ApiState>) -> Result<Json<Ready>, Response> 
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",
                 "Service unavailable",
-                format!("dnssec_signing_failed: {failed} signed zone(s) cannot be signed; see the log"),
+                format!(
+                    "dnssec_signing_failed: {failed} signed zone(s) cannot be signed; see the log"
+                ),
             ));
         }
     }

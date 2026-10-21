@@ -267,8 +267,10 @@ fn scrub_fetch(q: &Question, resp: &mut Message) {
     });
     let negative = !resp.answers.iter().any(|r| r.rtype == q.qtype);
     resp.authority.retain(|r| {
-        matches!(r.rtype, RecordType::Rrsig | RecordType::Nsec | RecordType::Nsec3)
-            || (negative && r.rtype == RecordType::Soa)
+        matches!(
+            r.rtype,
+            RecordType::Rrsig | RecordType::Nsec | RecordType::Nsec3
+        ) || (negative && r.rtype == RecordType::Soa)
     });
 }
 

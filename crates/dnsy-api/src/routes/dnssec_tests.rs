@@ -1288,11 +1288,15 @@ async fn key_export_refused_on_plaintext_listener() {
         .uri("/api/v1/dnssec/keys/export")
         .header("authorization", format!("Bearer {}", fx.admin))
         .header("content-type", "application/json")
-        .body(Body::from(json!({"passphrase": BACKUP_PASSPHRASE}).to_string()))
+        .body(Body::from(
+            json!({"passphrase": BACKUP_PASSPHRASE}).to_string(),
+        ))
         .unwrap();
     let res = plain.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
-    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let problem: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(problem["status"], 403);
     assert!(problem["detail"].as_str().unwrap().contains("plain-HTTP"));
@@ -1318,7 +1322,9 @@ async fn unopenable_keys_fail_readiness_instead_of_serving_unsigned() {
     signing.sign_due().await;
     let res = ready(&fx).await.unwrap();
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let problem: Value = serde_json::from_slice(&body).unwrap();
     assert!(
         problem["detail"]

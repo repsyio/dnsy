@@ -3,7 +3,9 @@
 mod fixture;
 
 use dnsy_core::DnssecStatus;
-use dnsy_dnssec::{Algorithm, DigestType, SigningKey, TrustAnchors, ValidationLimits, Validator, ds_for};
+use dnsy_dnssec::{
+    Algorithm, DigestType, SigningKey, TrustAnchors, ValidationLimits, Validator, ds_for,
+};
 use dnsy_proto::{Ds, Message, RData, Rcode, Record, RecordType, ede};
 use fixture::{
     INCEPTION, NOW, Net, Zone, a, anchors, block_on, corrupt, msg, n, rec, run, unsigned_soa,
@@ -293,7 +295,10 @@ fn fetch_error_is_indeterminate_not_bogus() {
     // cached only for `indeterminate_ttl`.
     assert_eq!(out.status, DnssecStatus::Indeterminate);
     assert_eq!(out.ede.unwrap().0, ede::DNSSEC_INDETERMINATE);
-    assert_eq!(out.min_ttl, Some(ValidationLimits::default().indeterminate_ttl));
+    assert_eq!(
+        out.min_ttl,
+        Some(ValidationLimits::default().indeterminate_ttl)
+    );
 
     // The same for a failed DS fetch.
     let w = world();
@@ -726,10 +731,7 @@ fn wildcard_expansion_proof_nsec3_opt_out_is_insecure() {
     };
     // The covering NSEC3 may span an unsigned delegation, so the next closer name is not
     // proven absent (RFC 5155 8.8).
-    assert_eq!(
-        w.check(&resp_with(true)),
-        (DnssecStatus::Insecure, None)
-    );
+    assert_eq!(w.check(&resp_with(true)), (DnssecStatus::Insecure, None));
     assert_eq!(w.check(&resp_with(false)), (DnssecStatus::Secure, None));
 }
 
@@ -754,7 +756,12 @@ fn revoked_zsk_world(revoke: bool) -> (World, Message) {
     let mut sig = match w
         .example
         .zsk
-        .sign_rrset(&rrset, &n("example."), fixture::INCEPTION, fixture::EXPIRATION)
+        .sign_rrset(
+            &rrset,
+            &n("example."),
+            fixture::INCEPTION,
+            fixture::EXPIRATION,
+        )
         .unwrap()
         .data
     {
@@ -806,8 +813,13 @@ fn rollover_world(old_signs: bool, new_signs: bool, ds_old: bool) -> World {
         .filter_map(|(on, k)| on.then_some(k))
     {
         served.push(
-            key.sign_rrset(&keys, &n("example."), fixture::INCEPTION, fixture::EXPIRATION)
-                .unwrap(),
+            key.sign_rrset(
+                &keys,
+                &n("example."),
+                fixture::INCEPTION,
+                fixture::EXPIRATION,
+            )
+            .unwrap(),
         );
     }
     net.serve(msg("example.", Dnskey, Rcode::NoError, served, vec![]));
@@ -842,8 +854,14 @@ fn retired_ksk_still_signs_dnskey_rrset() {
         );
     }
     // Signed by the new key alone (what the signer did before): the old DS no longer chains.
-    assert_eq!(probe(&rollover_world(false, true, false)).0, DnssecStatus::Secure);
-    assert_eq!(probe(&rollover_world(false, true, true)).0, DnssecStatus::Bogus);
+    assert_eq!(
+        probe(&rollover_world(false, true, false)).0,
+        DnssecStatus::Secure
+    );
+    assert_eq!(
+        probe(&rollover_world(false, true, true)).0,
+        DnssecStatus::Bogus
+    );
 }
 
 fn ds_rrset(owner: &str, ds: Ds) -> Vec<Record> {

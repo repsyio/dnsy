@@ -826,7 +826,11 @@ async fn failed_resign_keeps_the_signed_snapshot() {
     let f = fixture();
     f.signing.sign_due().await;
     let db = Store::open(&f.dir.path().join("dnsy.db")).unwrap();
-    let ks = KeyStore::open(db, Some(crate::Passphrase::new("secret")), Arc::new(f.clock.clone()));
+    let ks = KeyStore::open(
+        db,
+        Some(crate::Passphrase::new("secret")),
+        Arc::new(f.clock.clone()),
+    );
     // Seal the keys under a passphrase the signer below does not have.
     f.keys
         .change_passphrase(crate::Passphrase::new("other"))
@@ -1046,7 +1050,10 @@ async fn ksk_rollover_timeline_keeps_every_dnskey_signature_valid() {
         &ZONE
             .replace("DENIAL", "nsec3")
             .replace("OPTOUT", "false")
-            .replace(r#""algorithm":13,"#, r#""algorithm":13,"key_layout":"ksk_zsk","#),
+            .replace(
+                r#""algorithm":13,"#,
+                r#""algorithm":13,"key_layout":"ksk_zsk","#,
+            ),
     );
     f.store.reload().unwrap();
     let now = |f: &Fixture| u32::try_from(Clock::now(&f.clock)).unwrap();

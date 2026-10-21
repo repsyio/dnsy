@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use super::denial::{Cut, Denial, Hasher};
 use super::rrset::{rrset_at, sigs_for, ttl_cap};
 use super::{DnssecFetcher, Failure, Res, Validator, Verdict};
-use crate::{Algorithm, DigestType, ds_for};
 use crate::verify::DNSKEY_REVOKE;
+use crate::{Algorithm, DigestType, ds_for};
 use dnsy_proto::{Class, Dnskey, Ds, Message, Name, Question, RData, Record, RecordType, ede};
 
 /// What is known about the zone a name belongs to.
@@ -295,7 +295,9 @@ impl<'a, F: DnssecFetcher> Ctx<'a, F> {
         let all: Vec<Dnskey> = rrset
             .iter()
             .filter_map(|r| match &r.data {
-                RData::Dnskey(k) if k.is_zone_key() && k.flags & DNSKEY_REVOKE == 0 => Some(k.clone()),
+                RData::Dnskey(k) if k.is_zone_key() && k.flags & DNSKEY_REVOKE == 0 => {
+                    Some(k.clone())
+                }
                 _ => None,
             })
             .collect();
