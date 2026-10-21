@@ -21,6 +21,16 @@ The UI is compiled into the binary with the `embed-ui` feature from `web/dist/dn
 Building that feature without `web/dist` prints a warning and fails to compile, so run
 `just build` rather than passing the feature by hand.
 
+## Release profile
+
+`cargo build --release` uses fat LTO, one codegen unit, stripped symbols and overflow checks
+(integer overflow panics instead of wrapping). Panics unwind: a panic ends one connection task,
+not the process. A release binary with the UI embedded is about 17 MB (29 MB before the profile),
+and a clean release build takes roughly three minutes on a laptop-class machine.
+
+The embedded UI ships a brotli and a gzip copy of every text asset (written by `pnpm build` in
+`web/`); the server picks one from `Accept-Encoding` and sends `Vary: Accept-Encoding`.
+
 ## Files and users
 
 | Path | Purpose |

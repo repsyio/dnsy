@@ -11,6 +11,7 @@
     "e2e": "tsc -p e2e/tsconfig.json && playwright test",
     "types": "openapi-typescript ../openapi/dnsy.json -o src/app/api/schema.d.ts",
     "format": "prettier --write .",
+    "postbuild": "node scripts/compress-dist.mjs",
     "sync:branding": "node scripts/sync-branding.mjs"
   },
   "private": true,

@@ -3,6 +3,34 @@
 Workflow, conventions and the `just ci` gate are described in `AGENTS.md` in the repository.
 This page covers the end-to-end tests.
 
+## Release profile and dependencies
+
+`[profile.release]` in the root `Cargo.toml` sets `lto = "fat"`, `codegen-units = 1`,
+`strip = true`, `overflow-checks = true` and keeps `panic = "unwind"` (the server has no
+`catch_unwind`; `abort` would turn any panic reachable from hostile input into an outage of the
+whole resolver). Measured on the release build with the UI embedded:
+
+| | before | after |
+| --- | --- | --- |
+| `dnsy` binary | 28.99 MB | 17.22 MB |
+| clean release build | 80 s | 180 s |
+| `cargo tree --workspace` unique crates | 316 | 279 |
+| `cargo tree -p dnsy` (normal) | 277 | 240 |
+| UI `dist` text assets | 1.11 MB | 0.28 MB brotli (0.32 MB gzip) |
+
+`libsqlite3-sys` at `opt-level = 2` cuts its clean build from about 65 s to 30 s, but writer
+throughput on the shared development host could not be shown within 5 % of the default (the
+numbers varied by more than 2x between identical runs), so it is not enabled. Revisit with a
+quiet machine.
+
+Dependencies are declared once in `[workspace.dependencies]` with only the features the code uses
+(`tokio`, `clap`, `tracing-subscriber`, `proptest`, `insta`). Keep it that way: check
+unused dependencies with `cargo machete` before adding a crate, and do not add `x509-parser`,
+`time` or `tower-http` back for a convenience.
+
+`web/scripts/compress-dist.mjs` runs as `postbuild` after `pnpm build` and writes `.br` and `.gz`
+next to each text asset under `web/dist/dnsy/browser`.
+
 ## End-to-end tests
 
 The crate `tests/e2e` (`dnsy-e2e`) starts the real `dnsy` binary with a temporary configuration

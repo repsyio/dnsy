@@ -81,17 +81,17 @@ fn client(ca: &Ca, serial: u64, expired: bool) -> Client {
 }
 
 fn crl_pem(ca: &Ca, revoked: &[u64]) -> String {
-    let now = time::OffsetDateTime::now_utc();
+    let now = date_time_ymd(2026, 1, 1);
     CertificateRevocationListParams {
-        this_update: now - time::Duration::hours(1),
-        next_update: now + time::Duration::days(30),
+        this_update: date_time_ymd(2020, 1, 1),
+        next_update: date_time_ymd(2200, 1, 1),
         crl_number: SerialNumber::from(1_u64),
         issuing_distribution_point: None,
         revoked_certs: revoked
             .iter()
             .map(|s| RevokedCertParams {
                 serial_number: SerialNumber::from(*s),
-                revocation_time: now - time::Duration::minutes(5),
+                revocation_time: now,
                 reason_code: Some(RevocationReason::KeyCompromise),
                 invalidity_date: None,
             })
