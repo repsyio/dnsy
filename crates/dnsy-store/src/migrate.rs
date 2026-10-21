@@ -85,6 +85,11 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "querylog_rare_index",
         sql: include_str!("../migrations/0011_querylog_rare_index.sql"),
     },
+    Migration {
+        version: 14,
+        name: "client_certs_autoincrement",
+        sql: include_str!("../migrations/0014_client_certs_autoincrement.sql"),
+    },
 ];
 
 /// Applied state of one known migration.

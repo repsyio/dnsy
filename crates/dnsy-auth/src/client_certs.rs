@@ -171,6 +171,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleted_client_cert_id_is_not_reused() {
+        let (s, _d) = svc();
+        let a = s.add([1; 32], "first", None).await.unwrap();
+        assert!(s.remove(a.id).await.unwrap());
+        let b = s.add([2; 32], "second", None).await.unwrap();
+        assert!(b.id > a.id, "id {} reused after deleting {}", b.id, a.id);
+    }
+
+    #[tokio::test]
     async fn active_skips_expired() {
         let (s, _d) = svc();
         s.add([1; 32], "old", Some(unix_now() - 10)).await.unwrap();
