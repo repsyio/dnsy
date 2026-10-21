@@ -71,6 +71,10 @@ Configuration lives in `dist-workspace.toml`; the workflow is `.github/workflows
 5. `host` uploads everything and creates the GitHub Release (the only job with `contents: write`).
    Tags with a suffix such as `v0.2.0-rc.1` are marked as pre-releases.
 
+The `host` and `announce` jobs explicitly require `custom-release-verify` to have succeeded (dist's
+default `always()` condition would otherwise accept skipped build jobs and publish after a failed
+verify); the generator script re-applies this.
+
 All actions are pinned by commit SHA. dist emits floating tags and write permissions, so
 `scripts/generate-release-workflow.sh` runs `dist generate` and then re-applies the pins and the
 `contents: read` default. Never edit `release.yml` by hand; change `dist-workspace.toml` or the

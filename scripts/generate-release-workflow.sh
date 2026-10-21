@@ -36,5 +36,17 @@ assert not re.search(r"uses: [^\n]*@v\d", s), "unpinned action left"
 s = s.replace('permissions:\n  "contents": "write"', 'permissions:\n  contents: read', 1)
 s = s.replace('  host:\n    needs:', '  host:\n    permissions:\n      contents: write\n    needs:', 1)
 s = s.replace("  custom-release-verify:\n", "  custom-release-verify:\n    permissions:\n      contents: read\n", 1)
+# Fail closed: dist's `host` job runs under always() and accepts skipped build jobs, so a failed
+# release-verify would not stop publishing. Make host (and announce) require it explicitly.
+old_needs = "  host:\n    permissions:\n      contents: write\n    needs:\n      - plan\n"
+assert old_needs in s
+s = s.replace(old_needs, old_needs + "      - custom-release-verify\n", 1)
+old_if = "if: ${{ always() && needs.plan.result == 'success' && "
+assert old_if in s
+s = s.replace(old_if, "if: ${{ always() && needs.custom-release-verify.result == 'success' && needs.plan.result == 'success' && ", 1)
+old_ann = "  announce:\n    needs:\n      - plan\n      - host\n"
+assert old_ann in s
+s = s.replace(old_ann, old_ann + "      - custom-release-verify\n", 1)
+s = s.replace("if: ${{ always() && needs.host.result == 'success' }}", "if: ${{ always() && needs.custom-release-verify.result == 'success' && needs.host.result == 'success' }}", 1)
 open(p, "w").write(s)
 PY
