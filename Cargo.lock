@@ -517,6 +517,8 @@ dependencies = [
  "dnsy-server",
  "dnsy-store",
  "dnsy-zone",
+ "futures-util",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "rand",
