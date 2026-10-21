@@ -53,8 +53,9 @@ certificate must be within its validity period. `client_ca` must be set whenever
 
 ### Revocation (CRL)
 
-The embedding code can pass a PEM file of CRLs to `MtlsVerifier::new`. Revoked certificates are
-refused. `MtlsVerifier::reload` (or `spawn_reload(interval)`) re-reads the CA bundle and CRL
+Set `dot.client_crl` to a PEM file of CRLs (it needs `dot.listen` and `dot.mtls` other than
+`off`). Revoked certificates are refused. The file is read at startup (a missing one is a
+startup error) and re-read together with the CA bundle. `MtlsVerifier::reload` (or `spawn_reload(interval)`) re-reads the CA bundle and CRL
 file; if the new files are unreadable, empty or contain no CRL, the previous state is kept and a
 warning is logged. With a CRL configured, a certificate whose issuer is not covered by a CRL is
 refused.

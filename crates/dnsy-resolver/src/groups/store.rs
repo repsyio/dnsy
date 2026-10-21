@@ -56,6 +56,7 @@ impl GroupStore {
                     host: a.ip().to_string(),
                     port: a.port(),
                     sni: None,
+                    spki_pin: None,
                 },
                 weight: 1,
             })

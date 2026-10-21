@@ -719,12 +719,14 @@ name = "dnsy-resolver"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "base64",
  "dnsy-core",
  "dnsy-dnssec",
  "dnsy-proto",
  "dnsy-store",
  "rand",
  "rcgen",
+ "ring",
  "rusqlite",
  "rustls",
  "tempfile",

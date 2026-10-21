@@ -8,8 +8,13 @@
 //! pooled. A response is accepted only if its ID, QR bit, opcode and full question section (the
 //! name compared case-sensitively) match the query; mismatching UDP datagrams (including late
 //! answers to an earlier query on the same socket) are ignored until the attempt times out.
+//!
+//! Optional extras: 0x20 case randomisation of the QNAME ([`UpstreamConfig::case_randomization`]),
+//! with a per-upstream fallback when the upstream does not echo the case; an SPKI pin per `tls://`
+//! upstream; and a loop guard that refuses to send to DNSY's own listen addresses.
 
 mod spec;
+mod spki;
 
 use std::collections::HashMap;
 use std::io;
@@ -17,7 +22,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dnsy_proto::{DecodeError, EncodeError, Message, Opcode};
+use dnsy_proto::{DecodeError, EncodeError, Message, Name, Opcode};
 use rustls::pki_types::{CertificateDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket, lookup_host};
@@ -46,6 +51,9 @@ pub const UDP_IDLE_LIFETIME: Duration = Duration::from_secs(2);
 pub const UDP_POOL_IDLE: usize = 16;
 /// A host-name upstream is resolved again at most this often.
 pub const RESOLVE_TTL: Duration = Duration::from_secs(60);
+/// After an upstream failed to echo a randomised-case QNAME, 0x20 is not tried against it again
+/// for this long.
+pub const CASE_FALLBACK_TTL: Duration = Duration::from_secs(600);
 
 /// Why an upstream query failed.
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +74,10 @@ pub enum UpstreamError {
     Encode(#[from] EncodeError),
     #[error("query has no question")]
     NoQuestion,
+    #[error("upstream does not preserve the case of the query name")]
+    CaseMismatch,
+    #[error("upstream {0} resolves to one of this server's own listen addresses")]
+    Loop(String),
 }
 
 /// Trust anchors used to verify `DoT` server certificates.
@@ -85,6 +97,13 @@ pub struct UpstreamConfig {
     /// A pooled `DoT` connection unused for this long is closed instead of reused.
     pub dot_idle: Duration,
     pub tls_roots: TlsRoots,
+    /// Randomise the case of the QNAME towards UDP and TCP upstreams (0x20). An upstream that
+    /// answers with another case is queried without it from then on, for
+    /// [`CASE_FALLBACK_TTL`].
+    pub case_randomization: bool,
+    /// DNSY's own listen addresses; an upstream resolving to one of them is refused (a wildcard
+    /// address covers every local address on its port).
+    pub own_addrs: Vec<SocketAddr>,
 }
 
 impl Default for UpstreamConfig {
@@ -93,6 +112,8 @@ impl Default for UpstreamConfig {
             timeout: Duration::from_secs(2),
             dot_idle: Duration::from_secs(30),
             tls_roots: TlsRoots::WebPki,
+            case_randomization: false,
+            own_addrs: Vec::new(),
         }
     }
 }
@@ -183,6 +204,8 @@ pub struct UpstreamClient {
     tls: TlsConnector,
     pool: Mutex<HashMap<Upstream, PooledConn>>,
     udp: Mutex<HashMap<Upstream, UdpState>>,
+    /// Upstreams that failed 0x20, and until when it is not tried against them.
+    no_case: Mutex<HashMap<Upstream, Instant>>,
     rotation: Rotation,
 }
 
@@ -214,6 +237,7 @@ impl UpstreamClient {
             tls: TlsConnector::from(Arc::new(tls_config)),
             pool: Mutex::new(HashMap::new()),
             udp: Mutex::new(HashMap::new()),
+            no_case: Mutex::new(HashMap::new()),
             rotation: Rotation {
                 queries: UDP_ROTATE_QUERIES,
                 age: UDP_ROTATE_AGE,
@@ -243,16 +267,65 @@ impl UpstreamClient {
         query.header.qr = false;
         query.edns.get_or_insert_default().udp_payload = ADVERTISED_UDP_PAYLOAD;
 
+        if self.config.case_randomization
+            && upstream.transport != UpstreamTransport::Tls
+            && self.case_allowed(upstream)
+        {
+            let original = query.questions[0].name.clone();
+            query.questions[0].name = randomize_case(&original);
+            match self.dispatch(upstream, &mut query, true).await {
+                Ok(mut resp) => {
+                    restore_case(&mut resp, &original);
+                    return Ok(resp);
+                }
+                Err(UpstreamError::CaseMismatch) => {
+                    self.no_case_state()
+                        .insert(upstream.clone(), Instant::now() + CASE_FALLBACK_TTL);
+                    query.questions[0].name = original;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        self.dispatch(upstream, &mut query, false).await
+    }
+
+    /// 0x20 is tried unless the upstream recently failed it.
+    fn case_allowed(&self, upstream: &Upstream) -> bool {
+        let mut state = self.no_case_state();
+        match state.get(upstream) {
+            Some(until) if Instant::now() < *until => false,
+            Some(_) => {
+                state.remove(upstream);
+                true
+            }
+            None => true,
+        }
+    }
+
+    fn no_case_state(&self) -> std::sync::MutexGuard<'_, HashMap<Upstream, Instant>> {
+        self.no_case
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `probe`: the QNAME case was randomised, so a case-only difference in the answer means the
+    /// upstream does not preserve case.
+    async fn dispatch(
+        &self,
+        upstream: &Upstream,
+        query: &mut Message,
+        probe: bool,
+    ) -> Result<Message, UpstreamError> {
         match upstream.transport {
             UpstreamTransport::Udp => {
-                let resp = self.attempt(upstream, &mut query, Attempt::Udp).await?;
+                let resp = self.attempt(upstream, query, Attempt::Udp, probe).await?;
                 if resp.header.tc {
-                    return self.attempt(upstream, &mut query, Attempt::Tcp).await;
+                    return self.attempt(upstream, query, Attempt::Tcp, probe).await;
                 }
                 Ok(resp)
             }
-            UpstreamTransport::Tcp => self.attempt(upstream, &mut query, Attempt::Tcp).await,
-            UpstreamTransport::Tls => self.query_dot(upstream, &mut query).await,
+            UpstreamTransport::Tcp => self.attempt(upstream, query, Attempt::Tcp, probe).await,
+            UpstreamTransport::Tls => self.query_dot(upstream, query).await,
         }
     }
 
@@ -261,6 +334,7 @@ impl UpstreamClient {
         upstream: &Upstream,
         query: &mut Message,
         kind: Attempt,
+        probe: bool,
     ) -> Result<Message, UpstreamError> {
         query.header.id = random_id();
         let wire = query.encode(usize::from(u16::MAX))?;
@@ -274,13 +348,16 @@ impl UpstreamClient {
                         Some(conn) => conn,
                         None => UdpConn::open(addr).await?,
                     };
-                    let resp = udp_exchange(&mut conn, &wire, query).await?;
+                    let resp = udp_exchange(&mut conn, &wire, query, probe).await?;
                     Ok::<_, UpstreamError>((resp, Some(conn)))
                 }
                 Attempt::Tcp => {
                     let mut stream = TcpStream::connect(addr).await?;
                     stream.set_nodelay(true)?;
-                    Ok((framed_exchange(&mut stream, &wire, query).await?, None))
+                    Ok((
+                        framed_exchange(&mut stream, &wire, query, probe).await?,
+                        None,
+                    ))
                 }
             }
         };
@@ -339,11 +416,25 @@ impl UpstreamClient {
                 until: Some(now + RESOLVE_TTL),
             }
         };
+        if self.is_own(resolved.addr) {
+            return Err(UpstreamError::Loop(upstream.to_string()));
+        }
         self.udp_state()
             .entry(upstream.clone())
             .or_default()
             .resolved = Some(resolved);
         Ok((resolved.addr, None))
+    }
+
+    /// Whether `addr` is one of the configured listen addresses (a wildcard one matches every
+    /// loopback or unspecified address on its port).
+    fn is_own(&self, addr: SocketAddr) -> bool {
+        self.config.own_addrs.iter().any(|own| {
+            own.port() == addr.port()
+                && (own.ip() == addr.ip()
+                    || own.ip().is_unspecified()
+                        && (addr.ip().is_loopback() || addr.ip().is_unspecified()))
+        })
     }
 
     fn udp_state(&self) -> std::sync::MutexGuard<'_, HashMap<Upstream, UdpState>> {
@@ -379,7 +470,7 @@ impl UpstreamClient {
             let mut stream = conn.stream;
             let result = timeout(
                 self.config.timeout,
-                framed_exchange(&mut stream, &wire, query),
+                framed_exchange(&mut stream, &wire, query, false),
             )
             .await;
             match result {
@@ -405,7 +496,17 @@ impl UpstreamClient {
                 .connect(name, tcp)
                 .await
                 .map_err(|e| UpstreamError::Tls(e.to_string()))?;
-            let resp = framed_exchange(&mut stream, &wire, query).await?;
+            if let Some(pin) = upstream.spki_pin {
+                let (_, conn) = stream.get_ref();
+                let key = conn
+                    .peer_certificates()
+                    .and_then(|certs| certs.first())
+                    .and_then(|leaf| spki::spki_sha256(leaf));
+                if key != Some(pin) {
+                    return Err(UpstreamError::Tls("SPKI pin mismatch".to_owned()));
+                }
+            }
+            let resp = framed_exchange(&mut stream, &wire, query, false).await?;
             Ok::<_, UpstreamError>((resp, stream))
         };
         let (resp, stream) = timeout(self.config.timeout, fut)
@@ -447,37 +548,109 @@ enum Attempt {
     Tcp,
 }
 
+/// The name with every ASCII letter's case chosen at random (0x20).
+fn randomize_case(name: &Name) -> Name {
+    let mut bits = [0u8; 32];
+    rand::fill(&mut bits[..]);
+    let mut i = 0usize;
+    let labels: Vec<Vec<u8>> = name
+        .labels()
+        .map(|l| {
+            l.iter()
+                .map(|b| {
+                    let flip = bits[(i / 8) % bits.len()] >> (i % 8) & 1 == 1;
+                    i += 1;
+                    if flip {
+                        b.to_ascii_uppercase()
+                    } else {
+                        b.to_ascii_lowercase()
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    Name::from_labels(labels).unwrap_or_else(|_| name.clone())
+}
+
+/// Puts the caller's original QNAME case back into the response, so the randomisation is not
+/// visible to callers or caches.
+fn restore_case(resp: &mut Message, original: &Name) {
+    for q in &mut resp.questions {
+        if q.name == *original {
+            q.name = original.clone();
+        }
+    }
+    for r in resp
+        .answers
+        .iter_mut()
+        .chain(&mut resp.authority)
+        .chain(&mut resp.additional)
+    {
+        if r.name == *original {
+            r.name = original.clone();
+        }
+    }
+}
+
 fn random_id() -> u16 {
     let mut b = [0u8; 2];
     rand::fill(&mut b[..]);
     u16::from_be_bytes(b)
 }
 
+/// How a response relates to the query.
+#[derive(PartialEq, Eq)]
+enum Match {
+    Yes,
+    /// Everything matches except the case of the QNAME.
+    CaseOnly,
+    No,
+}
+
 /// A response matches when it answers this exact query: ID, QR, opcode and the question section
 /// byte for byte (the name compared case-sensitively, so the QNAME case is part of the match).
-fn matches(query: &Message, resp: &Message) -> bool {
-    resp.header.qr
+fn matches(query: &Message, resp: &Message) -> Match {
+    let same = resp.header.qr
         && resp.header.id == query.header.id
         && resp.header.opcode == Opcode::Query
         && resp.questions.len() == query.questions.len()
-        && resp.questions.iter().zip(&query.questions).all(|(r, q)| {
-            r.qtype == q.qtype && r.qclass == q.qclass && r.name.as_wire() == q.name.as_wire()
-        })
+        && resp
+            .questions
+            .iter()
+            .zip(&query.questions)
+            .all(|(r, q)| r.qtype == q.qtype && r.qclass == q.qclass && r.name == q.name);
+    if !same {
+        Match::No
+    } else if resp
+        .questions
+        .iter()
+        .zip(&query.questions)
+        .all(|(r, q)| r.name.as_wire() == q.name.as_wire())
+    {
+        Match::Yes
+    } else {
+        Match::CaseOnly
+    }
 }
 
 async fn udp_exchange(
     conn: &mut UdpConn,
     wire: &[u8],
     query: &Message,
+    probe: bool,
 ) -> Result<Message, UpstreamError> {
     conn.drain()?;
     conn.socket.send(wire).await?;
     loop {
         let n = conn.socket.recv(&mut conn.buf).await?;
-        match Message::decode(&conn.buf[..n]) {
-            Ok(resp) if matches(query, &resp) => return Ok(resp),
-            // Spoofed, stale or garbled datagram: keep waiting until the attempt times out.
-            _ => {}
+        // Spoofed, stale or garbled datagrams are skipped until the attempt times out.
+        if let Ok(resp) = Message::decode(&conn.buf[..n]) {
+            match matches(query, &resp) {
+                Match::Yes => return Ok(resp),
+                // Only while probing 0x20; otherwise a case-only difference is just a mismatch.
+                Match::CaseOnly if probe => return Err(UpstreamError::CaseMismatch),
+                _ => {}
+            }
         }
     }
 }
@@ -486,6 +659,7 @@ async fn framed_exchange<S>(
     stream: &mut S,
     wire: &[u8],
     query: &Message,
+    probe: bool,
 ) -> Result<Message, UpstreamError>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
@@ -501,10 +675,10 @@ where
     let mut body = vec![0u8; usize::from(u16::from_be_bytes(len_buf))];
     stream.read_exact(&mut body).await?;
     let resp = Message::decode(&body)?;
-    if matches(query, &resp) {
-        Ok(resp)
-    } else {
-        Err(UpstreamError::Mismatch)
+    match matches(query, &resp) {
+        Match::Yes => Ok(resp),
+        Match::CaseOnly if probe => Err(UpstreamError::CaseMismatch),
+        _ => Err(UpstreamError::Mismatch),
     }
 }
 

@@ -16,7 +16,9 @@ dnsy-dnssec = { version = "0.1.0", path = "../dnsy-dnssec" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
 arc-swap = { workspace = true }
+base64 = { workspace = true }
 rand = { workspace = true }
+ring = { workspace = true }
 rusqlite = { workspace = true }
 rustls = { workspace = true }
 thiserror = { workspace = true }

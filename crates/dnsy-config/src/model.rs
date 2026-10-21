@@ -114,6 +114,9 @@ pub struct Dot {
     pub key: Option<PathBuf>,
     /// CA bundle used to verify client certificates.
     pub client_ca: Option<PathBuf>,
+    /// PEM file of CRLs for `client_ca`; revoked client certificates are refused. Re-read with
+    /// the CA bundle.
+    pub client_crl: Option<PathBuf>,
     /// Client certificate policy.
     pub mtls: Mtls,
 }
@@ -255,6 +258,9 @@ pub struct Resolver {
     pub attempts: u32,
     /// Upstreams applied on first start.
     pub upstreams: Vec<SocketAddr>,
+    /// Randomise the case of query names towards plain DNS upstreams (0x20); an upstream that
+    /// does not preserve case is queried without it.
+    pub case_randomization: bool,
 }
 
 impl Default for Resolver {
@@ -263,6 +269,7 @@ impl Default for Resolver {
             timeout_ms: 2000,
             attempts: 2,
             upstreams: Vec::new(),
+            case_randomization: false,
         }
     }
 }

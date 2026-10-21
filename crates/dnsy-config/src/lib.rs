@@ -257,6 +257,13 @@ mod tests {
             ))
             .is_ok()
         );
+        assert!(
+            Config::from_toml(&format!(
+                "{ok}\nmtls = \"required\"\nclient_ca = \"ca.pem\"\nclient_crl = \"crl.pem\""
+            ))
+            .is_ok()
+        );
+        assert!(err(&format!("{ok}\nclient_crl = \"crl.pem\"")).contains("client_crl"));
         assert!(err("[doh]\nlisten = [\"0.0.0.0:443\"]").contains("doh.cert"));
         assert!(err("[doh]\npath = \"dns\"").contains("doh.path"));
         assert!(err("[api]\ntls_cert = \"c.pem\"").contains("together"));

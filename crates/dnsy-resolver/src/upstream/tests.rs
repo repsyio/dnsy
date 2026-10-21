@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use base64::Engine as _;
 use dnsy_proto::{
     Class, Edns, Header, Message, Name, Opcode, Question, RData, Rcode, Record, RecordType,
 };
@@ -66,6 +67,7 @@ fn up(transport: UpstreamTransport, port: u16) -> Upstream {
         host: "127.0.0.1".into(),
         port,
         sni: None,
+        spki_pin: None,
     }
 }
 
@@ -316,6 +318,7 @@ async fn query_without_question_rejected() {
 
 struct TestPki {
     ca_der: CertificateDer<'static>,
+    spki_pin: [u8; 32],
     server_cfg: Arc<rustls::ServerConfig>,
 }
 
@@ -340,8 +343,16 @@ fn pki() -> TestPki {
         PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
     )
     .unwrap();
+    let spki_pin = ring::digest::digest(
+        &ring::digest::SHA256,
+        &rcgen::PublicKeyData::subject_public_key_info(&key),
+    )
+    .as_ref()
+    .try_into()
+    .unwrap();
     TestPki {
         ca_der: ca.der().clone(),
+        spki_pin,
         server_cfg: Arc::new(cfg),
     }
 }
@@ -372,6 +383,7 @@ fn dot_client(pki: &TestPki, idle_ms: u64) -> UpstreamClient {
         timeout: Duration::from_secs(5),
         dot_idle: Duration::from_millis(idle_ms),
         tls_roots: TlsRoots::Custom(vec![pki.ca_der.clone()]),
+        ..UpstreamConfig::default()
     })
     .unwrap()
 }
@@ -781,4 +793,200 @@ async fn datagrams_queued_while_pooled_are_discarded_before_reuse() {
     let mut conn = c.udp_state().get_mut(&u2).unwrap().idle.pop().unwrap();
     assert_eq!(conn.drain().unwrap(), 3);
     assert_eq!(conn.drain().unwrap(), 0);
+}
+
+const LONG: &str = "abcdefghijklmnopqrstuvwxyz.example.";
+
+fn case_client(own_addrs: Vec<std::net::SocketAddr>) -> UpstreamClient {
+    UpstreamClient::new(UpstreamConfig {
+        timeout: Duration::from_millis(400),
+        case_randomization: true,
+        own_addrs,
+        ..UpstreamConfig::default()
+    })
+    .unwrap()
+}
+
+/// A server that records the question bytes it receives; `lower` makes it answer in lower case.
+async fn recording_server(
+    lower: bool,
+) -> (
+    u16,
+    Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let (port, h) = udp_server(move |q| {
+        log.lock()
+            .unwrap()
+            .push(q.questions[0].name.as_wire().to_vec());
+        let mut r = answer(&q);
+        if lower {
+            r.questions[0].name = q.questions[0].name.to_lowercase();
+            r.answers[0].name = q.questions[0].name.to_lowercase();
+        }
+        vec![enc(&r)]
+    })
+    .await;
+    (port, seen, h)
+}
+
+#[tokio::test]
+async fn case_randomization_sends_mixed_case_and_restores_it() {
+    let (port, seen, _h) = recording_server(false).await;
+    let c = case_client(vec![]);
+    let u = up(UpstreamTransport::Udp, port);
+    for _ in 0..4 {
+        let resp = c.query(&u, &query(LONG)).await.unwrap();
+        assert_eq!(
+            resp.questions[0].name.as_wire(),
+            query(LONG).questions[0].name.as_wire()
+        );
+        assert_eq!(
+            resp.answers[0].name.as_wire(),
+            query(LONG).questions[0].name.as_wire()
+        );
+    }
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 4);
+    assert!(seen.iter().any(|w| w.iter().any(u8::is_ascii_uppercase)));
+}
+
+#[tokio::test]
+async fn case_randomization_off_by_default() {
+    let (port, seen, _h) = recording_server(false).await;
+    client(400)
+        .query(&up(UpstreamTransport::Udp, port), &query(LONG))
+        .await
+        .unwrap();
+    assert!(!seen.lock().unwrap()[0].iter().any(u8::is_ascii_uppercase));
+}
+
+#[tokio::test]
+async fn case_randomization_falls_back_for_lowercasing_upstream() {
+    let (port, seen, _h) = recording_server(true).await;
+    let c = case_client(vec![]);
+    let u = up(UpstreamTransport::Udp, port);
+    let resp = c.query(&u, &query(LONG)).await.unwrap();
+    assert_eq!(resp.answers.len(), 1);
+    // Probe, then the plain retry.
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    // Remembered: the next query goes out once, in the caller's case.
+    c.query(&u, &query(LONG)).await.unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    assert_eq!(seen[2], query(LONG).questions[0].name.as_wire());
+}
+
+#[tokio::test]
+async fn case_randomization_falls_back_over_tcp() {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (mut s, _) = l.accept().await.unwrap();
+            tokio::spawn(async move {
+                serve_framed(&mut s, &|q| {
+                    let mut r = answer(&q);
+                    r.questions[0].name = q.questions[0].name.to_lowercase();
+                    r
+                })
+                .await;
+            });
+        }
+    });
+    let resp = case_client(vec![])
+        .query(&up(UpstreamTransport::Tcp, port), &query(LONG))
+        .await
+        .unwrap();
+    assert_eq!(resp.answers.len(), 1);
+}
+
+#[tokio::test]
+async fn case_fallback_expires() {
+    let (port, seen, _h) = recording_server(true).await;
+    let c = case_client(vec![]);
+    let u = up(UpstreamTransport::Udp, port);
+    c.query(&u, &query(LONG)).await.unwrap();
+    c.no_case_state().insert(u.clone(), Instant::now());
+    c.query(&u, &query(LONG)).await.unwrap();
+    // Probed again (and fell back again): 2 + 2 datagrams.
+    assert_eq!(seen.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn dot_spki_pin_match_and_mismatch() {
+    let pki = pki();
+    let (port, _) = dot_server(pki.server_cfg.clone()).await;
+    let mut u = dot_up(port);
+    u.spki_pin = Some(pki.spki_pin);
+    dot_client(&pki, 1000)
+        .query(&u, &query("example.com."))
+        .await
+        .unwrap();
+    u.spki_pin = Some([7; 32]);
+    let err = dot_client(&pki, 1000)
+        .query(&u, &query("example.com."))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, UpstreamError::Tls(m) if m.contains("pin")),
+        "{err}"
+    );
+}
+
+#[test]
+fn spki_pin_parses_and_round_trips() {
+    let pin = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
+    let s = format!("tls://1.1.1.1:853?pin-sha256={pin}#cloudflare-dns.com");
+    let u: Upstream = s.parse().unwrap();
+    assert_eq!(u.spki_pin, Some([9; 32]));
+    assert_eq!(u.to_string(), s);
+    for bad in [
+        "tls://h?pin-sha256=AAAA",
+        "tls://h?other=1",
+        "udp://h?pin-sha256=x",
+    ] {
+        assert!(bad.parse::<Upstream>().is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn spki_hash_ignores_garbage() {
+    assert_eq!(spki::spki_sha256(&[]), None);
+    assert_eq!(spki::spki_sha256(&[0x30, 0x03, 1, 2, 3]), None);
+}
+
+#[tokio::test]
+async fn loop_guard_refuses_own_addresses() {
+    let (port, seen, _h) = recording_server(false).await;
+    let up_local = up(UpstreamTransport::Udp, port);
+    for own in [
+        vec![([127, 0, 0, 1], port).into()],
+        vec![([0, 0, 0, 0], port).into()],
+    ] {
+        let err = case_client(own)
+            .query(&up_local, &query(LONG))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UpstreamError::Loop(_)), "{err}");
+    }
+    // A host name that resolves to our own address is refused too.
+    let named = Upstream {
+        host: "localhost".into(),
+        ..up_local.clone()
+    };
+    let own = vec![([0, 0, 0, 0], port).into()];
+    let err = case_client(own)
+        .query(&named, &query(LONG))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, UpstreamError::Loop(_)), "{err}");
+    assert!(seen.lock().unwrap().is_empty());
+    // Another port is fine.
+    case_client(vec![([127, 0, 0, 1], 1).into()])
+        .query(&up_local, &query(LONG))
+        .await
+        .unwrap();
 }

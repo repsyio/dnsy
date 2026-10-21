@@ -244,7 +244,12 @@ fn server_config(
             background.push(
                 allowlist.spawn_refresh(ClientCertService::new(store.clone()), ALLOWLIST_REFRESH),
             );
-            let v = MtlsVerifier::new(mode, ca, None, Some(allowlist.clone()))?;
+            let v = MtlsVerifier::new(
+                mode,
+                ca,
+                config.dot.client_crl.as_deref(),
+                Some(allowlist.clone()),
+            )?;
             list = Some(allowlist);
             background.push(v.spawn_reload(CA_REFRESH));
             dot = dot.with_mtls(Arc::clone(&v));

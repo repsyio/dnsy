@@ -1,7 +1,11 @@
-//! Upstream addressing: `udp://host[:port]`, `tcp://host[:port]`, `tls://host[:port][#sni]`.
+//! Upstream addressing: `udp://host[:port]`, `tcp://host[:port]`,
+//! `tls://host[:port][?pin-sha256=BASE64][#sni]`.
 
 use std::fmt;
 use std::str::FromStr;
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 
 use crate::upstream::UpstreamError;
 
@@ -23,6 +27,9 @@ pub struct Upstream {
     pub port: u16,
     /// TLS server name to verify; defaults to `host`.
     pub sni: Option<String>,
+    /// SHA-256 of the server certificate's `SubjectPublicKeyInfo` (`tls://` only). When set, a
+    /// handshake whose certificate has another key fails, on top of the normal verification.
+    pub spki_pin: Option<[u8; 32]>,
 }
 
 impl Upstream {
@@ -45,9 +52,22 @@ impl FromStr for Upstream {
             "tls" => (UpstreamTransport::Tls, 853),
             _ => return Err(bad()),
         };
-        let (authority, sni) = match rest.split_once('#') {
+        let (rest, sni) = match rest.split_once('#') {
             Some((a, f)) if transport == UpstreamTransport::Tls && !f.is_empty() => {
                 (a, Some(f.to_owned()))
+            }
+            Some(_) => return Err(bad()),
+            None => (rest, None),
+        };
+        let (authority, spki_pin) = match rest.split_once('?') {
+            Some((a, q)) if transport == UpstreamTransport::Tls => {
+                let pin = q.strip_prefix("pin-sha256=").ok_or_else(bad)?;
+                let pin = STANDARD
+                    .decode(pin)
+                    .ok()
+                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                    .ok_or_else(bad)?;
+                (a, Some(pin))
             }
             Some(_) => return Err(bad()),
             None => (rest, None),
@@ -76,6 +96,7 @@ impl FromStr for Upstream {
             host: host.to_owned(),
             port,
             sni,
+            spki_pin,
         })
     }
 }
@@ -91,6 +112,9 @@ impl fmt::Display for Upstream {
             write!(f, "{scheme}://[{}]:{}", self.host, self.port)?;
         } else {
             write!(f, "{scheme}://{}:{}", self.host, self.port)?;
+        }
+        if let Some(pin) = &self.spki_pin {
+            write!(f, "?pin-sha256={}", STANDARD.encode(pin))?;
         }
         if let Some(sni) = &self.sni {
             write!(f, "#{sni}")?;

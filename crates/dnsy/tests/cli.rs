@@ -916,6 +916,27 @@ fn serve_fails_fast_on_missing_certificate() {
     assert!(!out.status.success());
 }
 
+#[test]
+fn serve_wires_dot_client_crl() {
+    let env = Env::new(false);
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let tls = env.dir.path();
+    std::fs::write(tls.join("cert.pem"), cert.cert.pem()).unwrap();
+    std::fs::write(tls.join("key.pem"), cert.signing_key.serialize_pem()).unwrap();
+    let dot = |crl: &str| {
+        format!(
+            "[dot]\nlisten = [\"127.0.0.1:0\"]\ncert = {c}\nkey = {c_key}\nmtls = \"required\"\n\
+             client_ca = {c}\nclient_crl = {crl}\n",
+            c = q(&tls.join("cert.pem")),
+            c_key = q(&tls.join("key.pem")),
+        )
+    };
+    // The CRL file is read at startup: a missing one proves the setting reaches the verifier.
+    env.append_config(&dot("\"/nonexistent/crl.pem\""));
+    let out = env.run(&["serve"]);
+    assert!(!out.status.success());
+}
+
 /// Opens a TLS connection to `addr` trusting `cert_pem` (server name `localhost`).
 fn tls_connect(
     addr: SocketAddr,

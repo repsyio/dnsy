@@ -150,6 +150,14 @@ impl EngineBuilder<UpstreamClient> {
     ) -> Result<Self, EngineError> {
         let client = UpstreamClient::new(UpstreamConfig {
             timeout: Duration::from_millis(config.resolver.timeout_ms),
+            case_randomization: config.resolver.case_randomization,
+            own_addrs: config
+                .dns
+                .udp
+                .iter()
+                .chain(&config.dns.tcp)
+                .copied()
+                .collect(),
             ..UpstreamConfig::default()
         })?;
         let mut builder = Self::new(config, client).services(services);
