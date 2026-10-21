@@ -116,14 +116,16 @@ impl EngineBuilder<UpstreamClient> {
         builder.dnssec = DnssecPolicy::from_config(&config.dnssec)?;
 
         let rules = RuleStore::new(store.clone());
-        builder.acl = Acl::new(
-            AclAction::Allow,
-            rules
-                .list()
-                .await?
-                .into_iter()
-                .map(|r| (r.matcher, r.action)),
-        );
+        let stored = rules
+            .list()
+            .await?
+            .into_iter()
+            .map(|r| (r.matcher, r.action));
+        builder.acl = if config.limits.open_resolver {
+            Acl::new(AclAction::Allow, stored)
+        } else {
+            Acl::private_only(stored)
+        };
         if let Some(qps) = rules.rate_limit_qps().await? {
             builder.rate_qps = qps;
         }
@@ -181,7 +183,8 @@ impl EngineBuilder<UpstreamClient> {
 }
 
 impl<E: Exchange> EngineBuilder<E> {
-    /// Config-derived defaults: allow-all ACL, `[limits] per_client_qps`, empty blocklists in
+    /// Config-derived defaults: allow-all ACL (`from_config` applies the private-only base unless
+    /// `[limits] open_resolver`), `[limits] per_client_qps`, empty blocklists in
     /// `[filter] block_mode`, cache from `[cache]`, deadline `timeout_ms * attempts`; no zones,
     /// upstream groups, event sink or DNSSEC validation.
     #[must_use]

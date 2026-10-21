@@ -249,6 +249,7 @@ async fn slow_refresh_answers_stale_after_client_timeout() {
 
 fn prefetching() -> Config {
     let mut c = Config::default();
+    c.limits.per_client_qps = 0;
     c.cache.prefetch.min_hits = 2;
     c.cache.prefetch.remaining_ttl_pct = 10;
     c

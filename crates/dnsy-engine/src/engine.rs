@@ -240,6 +240,12 @@ impl<E: Exchange> Engine<E> {
         self.groups.load_full()
     }
 
+    /// The current ACL snapshot.
+    #[must_use]
+    pub fn acl(&self) -> Arc<Acl> {
+        self.acl.load_full()
+    }
+
     pub fn set_acl(&self, acl: Acl) {
         self.acl.store(Arc::new(acl));
     }

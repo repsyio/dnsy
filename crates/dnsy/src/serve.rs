@@ -48,6 +48,7 @@ fn spawn_prefetch(engine: &Arc<Engine>, config: &Config) -> Option<JoinHandle<()
 }
 
 pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -> Result<()> {
+    warn_unsafe_config(&config);
     let store = open_store(&config)?;
     let mut builder = EngineBuilder::from_config(&config, &store)
         .await?
@@ -397,6 +398,13 @@ impl Signals {
     async fn next(&mut self) -> Event {
         let _ = tokio::signal::ctrl_c().await;
         Event::Stop
+    }
+}
+
+/// Logs every non-fatal configuration warning (an open, unlimited resolver on a public listener).
+fn warn_unsafe_config(config: &Config) {
+    for warning in config.warnings() {
+        tracing::warn!("{warning}");
     }
 }
 

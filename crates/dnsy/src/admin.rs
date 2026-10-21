@@ -76,6 +76,9 @@ pub(crate) fn config_check(path: &Path, out: &mut impl Write) -> Result<()> {
             problems.join("\n  ")
         )));
     }
+    for warning in config.warnings() {
+        writeln!(out, "warning: {warning}")?;
+    }
     writeln!(out, "{}: ok", path.display())?;
     Ok(())
 }

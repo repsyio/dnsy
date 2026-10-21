@@ -196,7 +196,7 @@ fn config(dir: &Path, o: &Opts, upstream: Option<SocketAddr>) -> String {
          [cache]\nmin_ttl = {minttl}\nmax_ttl = {maxttl}\n\
          [cache.prefetch]\n{prefetch}\
          [filter]\nblock_mode = \"{bm}\"\nblocklists = [{lists}]\n\
-         [limits]\nper_client_qps = {qps}\ntcp_idle_ms = {idle}\n\
+         [limits]\nopen_resolver = true\nper_client_qps = {qps}\ntcp_idle_ms = {idle}\n\
          [logging]\nlevel = \"{lvl}\"\n",
         data = qp(&dir.join("data")),
         zones = qp(&dir.join("zones")),

@@ -4,7 +4,7 @@ This page covers client ACLs, rate limits and blocklists (`dnsy-filter`). In the
 
 ## Client ACL
 
-An ACL is an ordered-by-specificity set of rules plus a configurable default action (default `allow`). Each rule maps a match to an action:
+An ACL is an ordered-by-specificity set of rules plus a configurable default action (default `allow` for an `Acl` built directly; the server builds it private-only unless `[limits] open_resolver = true`: loopback, RFC 1918, 100.64/10, ULA and link-local are allowed and everything else is refused, with stored rules still winning by longest prefix). Each rule maps a match to an action:
 
 | Action | Effect |
 | --- | --- |

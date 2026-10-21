@@ -12,7 +12,7 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
 
 | Threat | Controls |
 | --- | --- |
-| Open resolver and amplification | the client ACL, per-client rate limiting, REFUSED for RD=0 queries, minimal FORMERR responses, UDP responses capped at the client's EDNS size (max 1232), DoH tokens ([Filtering](filtering.md), [Architecture](architecture.md)) |
+| Open resolver and amplification | the private-only default ACL (`open_resolver`), per-client rate limiting, REFUSED for RD=0 queries, minimal FORMERR responses, UDP responses capped at the client's EDNS size (max 1232), DoH tokens ([Filtering](filtering.md), [Architecture](architecture.md)) |
 | Cache poisoning | responses are scrubbed to in-bailiwick data, a mismatched question is discarded, cache keys include DO and CD, DNSSEC validation in `strict` mode by default ([Architecture](architecture.md), [DNSSEC](dnssec.md)) |
 | DNSSEC attacks | work limits against KeyTrap-style and NSEC3 cost attacks, algorithm checks, signature validity windows, a clock-safety guard ([DNSSEC](dnssec.md)) |
 | DNS rebinding | response-IP policy replaces answers pointing into listed networks |
@@ -31,8 +31,12 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
   `api.tls_key` to serve TLS directly.
 - Set a DNSSEC key passphrase before enabling signing.
 - Leave `doh.require_token = true` on public listeners.
-- Restrict clients with ACL rules and set `limits.per_client_qps` on resolvers reachable from
-  the internet.
+- DNSY is private-only by default: `limits.open_resolver = false` serves only loopback, RFC 1918,
+  100.64.0.0/10, ULA and link-local clients, and `limits.per_client_qps` defaults to 50. Setting
+  `open_resolver = true` makes the server answer the whole internet; do that only with ACL rules
+  and a non-zero `per_client_qps`. `dnsy serve` and `dnsy config check` warn about an open,
+  unlimited non-loopback listener. This was an open, unlimited forwarder before; see the
+  changelog.
 - Protect backups: they contain password hashes and DNSSEC keys ([Backup and restore](backup-restore.md)).
 - Keep the binary current ([Upgrade](upgrade.md)).
 

@@ -1073,14 +1073,14 @@ async fn settings_patch_validates() {
         "/settings",
         Some(json!({
         "filter": {"block_mode": "refused"}, "querylog": {"retention_days": 7},
-        "limits": {"per_client_qps": 50}})),
+        "limits": {"per_client_qps": 60}})),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["filter"]["block_mode"], "refused");
     assert_eq!(v["querylog"]["retention_days"], 7);
-    assert_eq!(v["limits"]["per_client_qps"], 50);
-    assert_eq!(f.state.rules.rate_limit_qps().await.unwrap(), Some(50));
+    assert_eq!(v["limits"]["per_client_qps"], 60);
+    assert_eq!(f.state.rules.rate_limit_qps().await.unwrap(), Some(60));
     assert_eq!(
         *f.state.settings.retention_updates().borrow(),
         std::time::Duration::from_hours(7 * 24)

@@ -372,6 +372,9 @@ impl Default for Filter {
 pub struct Limits {
     /// Queries per second per client; 0 disables the limit.
     pub per_client_qps: u32,
+    /// Answer clients from any address. When false (the default) only loopback, RFC 1918,
+    /// 100.64/10, ULA and link-local clients are served, plus whatever ACL rules allow.
+    pub open_resolver: bool,
     /// Idle timeout for TCP connections.
     pub tcp_idle_ms: u64,
     /// Maximum concurrent TCP connections.
@@ -381,7 +384,8 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            per_client_qps: 0,
+            per_client_qps: 50,
+            open_resolver: false,
             tcp_idle_ms: 10_000,
             max_tcp_conns: 1024,
         }

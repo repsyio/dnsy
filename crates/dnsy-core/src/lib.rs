@@ -75,6 +75,71 @@ pub enum DnssecStatus {
     Indeterminate,
 }
 
+/// Network vocabulary shared by every per-client limit.
+pub mod net {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    /// Key under which per-client state is held: an IPv4 address as `/32`, an IPv6 address as its
+    /// `/64` (one subscriber owns a whole `/64`, so per-address keys would be trivially bypassed).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct ClientKey(IpAddr);
+
+    impl ClientKey {
+        /// The canonical address (IPv6 with the low 64 bits zeroed).
+        #[must_use]
+        pub fn ip(self) -> IpAddr {
+            self.0
+        }
+    }
+
+    impl std::fmt::Display for ClientKey {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+
+    /// Client key of `ip`. IPv4-mapped IPv6 addresses count as IPv4.
+    #[must_use]
+    pub fn client_key(ip: IpAddr) -> ClientKey {
+        ClientKey(match ip.to_canonical() {
+            IpAddr::V4(v4) => IpAddr::V4(v4),
+            IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & (!0u128 << 64))),
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn ip(s: &str) -> IpAddr {
+            s.parse().unwrap()
+        }
+
+        #[test]
+        fn client_key_groups_ipv6_by_64() {
+            assert_eq!(
+                client_key(ip("2001:db8:0:1:ffff::3")).ip(),
+                ip("2001:db8:0:1::")
+            );
+            assert_eq!(
+                client_key(ip("2001:db8:0:1::1")),
+                client_key(ip("2001:db8:0:1:aaaa::2"))
+            );
+            assert_ne!(
+                client_key(ip("2001:db8:0:1::1")),
+                client_key(ip("2001:db8:0:2::1"))
+            );
+        }
+
+        #[test]
+        fn client_key_keeps_ipv4_and_unmaps_mapped() {
+            assert_eq!(client_key(ip("192.0.2.9")).ip(), ip("192.0.2.9"));
+            assert_eq!(client_key(ip("::ffff:192.0.2.9")).ip(), ip("192.0.2.9"));
+            assert_eq!(client_key(ip("192.0.2.9")).to_string(), "192.0.2.9");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

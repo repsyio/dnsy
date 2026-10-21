@@ -76,7 +76,11 @@ blocklists = []
 refresh_interval = 86400 # seconds
 
 [limits]
-per_client_qps = 0 # 0 = unlimited
+per_client_qps = 50 # 0 = unlimited
+# Default false: only loopback, RFC 1918, 100.64/10, ULA and link-local clients are answered
+# (ACL rules from the API still apply). true restores the old allow-all behaviour; use it only
+# with a non-zero per_client_qps and ACL rules.
+open_resolver = false
 tcp_idle_ms = 10000
 max_tcp_conns = 1024
 
