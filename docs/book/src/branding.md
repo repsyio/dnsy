@@ -84,7 +84,7 @@ chevron beak and a dashed inner outline, with nothing on the lower face. Lines a
 the files keep `viewBox="0 0 64 64"` and scale it with one group transform, and every stroke uses
 `vector-effect: non-scaling-stroke` so the hairlines stay 0.5px at any size.
 
-```
+```text
 outline   M100 34 L146 20 L162 70 L152 140 L100 178 L48 140 L38 70 L54 20 Z   (0.5px)
 inner     M100 46 L138 34 L150 72 L141 133 L100 163 L59 133 L50 72 L62 34 Z   (0.5px, dash 2 4, 45%)
 brow      M44 80 L100 98 L156 80                                               (0.5px)
