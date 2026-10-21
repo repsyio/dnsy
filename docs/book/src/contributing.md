@@ -175,6 +175,41 @@ Keep each image to a few hundred KB at most, write outputs outside the repositor
 logs. `just docs` checks the book (`mdbook test`), and the `config_reference_lists_all_keys` test in
 `dnsy-config` fails when the configuration reference and the schema disagree.
 
+## Fuzzing
+
+Two targets cover untrusted input. Neither is part of `just ci`.
+
+| Target | Crate | What it feeds |
+| --- | --- | --- |
+| `fuzz_decode` | `crates/dnsy-proto/fuzz` | `Message::formerr_for`, `decode`, `encode` at five limits, `encode_padded`, `set_ede`, canonical RDATA, presentation form and the decode-encode-decode round trip |
+| `fuzz_validate` | `crates/dnsy-dnssec/fuzz` | `Validator::validate` on a mutated response with mutated DS and DNSKEY answers from the fetcher, against a trust anchor that signs the seeds |
+
+```sh
+just fuzz                          # fuzz_decode, one hour, libFuzzer (nightly + cargo-fuzz)
+just fuzz fuzz_validate 600        # the validator target for ten minutes
+just fuzz-stable fuzz_decode 600   # pinned stable toolchain: std-only mutation fuzzer
+```
+
+`just fuzz` needs `rustup toolchain install nightly` and `cargo install cargo-fuzz`; nothing else
+in the repository needs nightly. `just fuzz-stable` runs the same functions through a small
+mutation engine (bit flips, interesting values, splices, truncation, 16-bit field nudges, random
+buffers) with `overflow-checks` on and no coverage feedback; it is what runs where nightly is not
+installed. The fuzz crates are not workspace members (their `Cargo.lock` stays out of the main
+one) and `dnsy-proto` itself keeps zero dependencies. A crashing input is written to the fuzz
+directory's `crashes/` (stable) or `artifacts/` (libFuzzer); fix it, and add the input as a unit
+test next to the code it broke. The committed starting corpora are in `fuzz/corpus/<target>/`.
+
+### Recorded runs
+
+| Date | Toolchain | Target | Iterations | Panics |
+| --- | --- | --- | --- | --- |
+| 2026-10-21 | stable 1.99.1, `fuzz-stable`, 3 processes x 25 min | `fuzz_decode` | 2 658 869 248 | 0 |
+| 2026-10-21 | stable 1.99.1, `fuzz-stable`, 2 processes x 25 min | `fuzz_validate` | 315 691 008 | 0 |
+
+The libFuzzer one-hour runs need a nightly toolchain, which the build machines do not have; the
+rows above are the stable mutation runs, shorter and without coverage guidance. Add a row here
+after each `just fuzz` run.
+
 ## Code coverage
 
 Coverage is a merge gate. `just ci` runs `just cov-rust` and the web gate (inside `just web`).

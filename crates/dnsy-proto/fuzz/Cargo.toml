@@ -15,9 +15,21 @@ members = ["."]
 libfuzzer-sys = "0.4"
 dnsy-proto = { path = ".." }
 
+[lib]
+name = "dnsy_proto_fuzz"
+path = "src/lib.rs"
+
 [[bin]]
 name = "fuzz_decode"
 path = "fuzz_targets/fuzz_decode.rs"
+test = false
+doc = false
+bench = false
+
+# Stable-toolchain mutation fuzzer over the same target function (no coverage feedback).
+[[bin]]
+name = "mutate"
+path = "src/bin/mutate.rs"
 test = false
 doc = false
 bench = false

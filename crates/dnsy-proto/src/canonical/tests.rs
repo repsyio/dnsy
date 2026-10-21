@@ -192,3 +192,41 @@ fn canonical_lowercases_rdata_names() {
     let out = rrset_signing_input(&sig(RecordType::Ns, 3, 3600), &[]);
     assert_eq!(out, prefix(2, 3));
 }
+
+#[test]
+fn canonical_lowercases_dname_rdata() {
+    let dname = RData::Opaque {
+        rtype: 39,
+        data: n("Example.COM.").as_wire().to_vec(),
+    };
+    assert_eq!(rdata_wire(&dname), n("example.com.").as_wire());
+
+    let mut naptr = vec![0, 10, 0, 20, 1, b'S', 3, b'S', b'I', b'P', 2, b'A', b'B'];
+    naptr.extend_from_slice(n("Sip.Example.COM.").as_wire());
+    let mut want = naptr.clone();
+    want.truncate(13);
+    want.extend_from_slice(n("sip.example.com.").as_wire());
+    let naptr = RData::Opaque {
+        rtype: 35,
+        data: naptr,
+    };
+    assert_eq!(rdata_wire(&naptr), want);
+}
+
+#[test]
+fn malformed_opaque_dname_and_naptr_are_left_alone() {
+    for (rtype, data) in [
+        (39, vec![3, b'A', b'B']),
+        (39, vec![0xC0, 0x0C]),
+        (39, vec![]),
+        (35, vec![0, 1, 0, 2, 5]),
+        (35, vec![0, 1, 0, 2, 0, 0, 0, 1, b'A']),
+        (35, vec![0, 1, 0, 2]),
+    ] {
+        let r = RData::Opaque {
+            rtype,
+            data: data.clone(),
+        };
+        assert_eq!(rdata_wire(&r), data);
+    }
+}

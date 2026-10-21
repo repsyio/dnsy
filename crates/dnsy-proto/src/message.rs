@@ -189,6 +189,8 @@ impl Message {
             let ext = u8::try_from(rcode >> 4).map_err(|_| EncodeError::BadRcode)?;
             edns.encode(ext, &mut opt)?;
             opt_count = 1;
+        } else if rcode > 0xF {
+            return Err(EncodeError::BadRcode);
         }
         let opt = opt.finish();
         let full = w.finish();
@@ -364,8 +366,8 @@ fn read_record(r: &mut WireReader<'_>, lift_opt: bool) -> Result<Parsed, DecodeE
     let class = Class::from(raw_class);
     let ttl = r.read_u32()?;
     let len = usize::from(r.read_u16()?);
-    if lift_opt && rtype == RecordType::Opt {
-        if !name.is_root() {
+    if rtype == RecordType::Opt {
+        if !lift_opt || !name.is_root() {
             return Err(DecodeError::BadOpt);
         }
         return Ok(Parsed::Opt(Edns::decode(
