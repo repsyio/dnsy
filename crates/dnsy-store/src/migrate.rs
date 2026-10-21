@@ -130,7 +130,7 @@ pub(crate) fn run(conn: &mut Connection, known: &[Migration]) -> Result<(), Stor
         .collect();
     pending.sort_by_key(|m| m.version);
     for m in pending {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(m.sql)
             .map_err(|source| StoreError::Migration {
                 version: m.version,
