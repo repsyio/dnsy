@@ -286,6 +286,14 @@ mod tests {
             ),
             (16, 4096, 64, 256)
         );
+        assert_eq!(d.limits.rate_limit_slip, 2);
+        assert_eq!(
+            Config::from_toml("[limits]\nrate_limit_slip = 0")
+                .unwrap()
+                .limits
+                .rate_limit_slip,
+            0
+        );
         assert!(d.server.udp_sockets_per_address >= 1);
         let c = Config::from_toml(
             "[server]\nudp_sockets_per_address = 2\n[limits]\nudp_in_flight = 8\n[api]\nmax_conns = 9",

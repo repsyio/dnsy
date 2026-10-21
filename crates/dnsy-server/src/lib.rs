@@ -30,7 +30,7 @@ use dnsy_engine::Handler;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-pub use admission::{Slot, SlotLimit};
+pub use admission::{Activity, Busy, Slot, SlotLimit};
 pub use doh::{DohAuthenticator, DohConfig, DohDenied, TokenAuth};
 pub use dot::DotConfig;
 pub use dot::mtls::{AllowedCert, Allowlist, Clock as MtlsClock, MtlsMode, MtlsVerifier};
@@ -48,7 +48,9 @@ pub struct ServerConfig {
     /// Close a TCP connection that sends no complete frame for this long.
     pub tcp_idle: Duration,
     /// Maximum concurrent connections per transport (TCP, `DoT`, `DoH` each have one pool shared
-    /// by all their listen addresses); further connections are closed immediately.
+    /// by all their listen addresses). When a pool is full the oldest idle connection is closed to
+    /// make room, unless every connection is serving a request or the client holds its whole
+    /// share; then the new connection is closed immediately.
     pub max_tcp_conns: usize,
     /// Maximum concurrent connections per client (`client_key`: IPv4 address, IPv6 `/64`) within
     /// each transport's pool.
@@ -106,7 +108,7 @@ impl Server {
             idle: config.tcp_idle,
             drain: config.drain,
         };
-        let pool = || SlotLimit::new(config.max_tcp_conns, config.max_conns_per_client);
+        let pool = || SlotLimit::new_connections(config.max_tcp_conns, config.max_conns_per_client);
         let (tcp_conns, dot_conns, https_conns) = (pool(), pool(), pool());
         let udp_slots = SlotLimit::new(config.udp_in_flight, config.udp_in_flight_per_client);
         let mut tasks = Vec::new();

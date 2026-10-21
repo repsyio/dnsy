@@ -67,7 +67,7 @@ async fn error_replies_consume_rate_limit() {
     let h = harness_with(
         Fake::a_record(Ipv4Addr::LOCALHOST),
         &Config::default(),
-        |b| b.rate_limit(1),
+        |b| b.rate_limit(1).rate_limit_slip(0),
     );
     let mut notify = query("home.test.", RecordType::Soa);
     notify.header.opcode = Opcode::Notify;
@@ -337,4 +337,46 @@ async fn uncacheable_miss_is_served_as_received() {
     c.cache.min_ttl = 600;
     let rig = Rig::new(&c, Duration::ZERO);
     assert_eq!(rig.ask("www.example.").await.answers[0].ttl, 300);
+}
+
+#[tokio::test]
+async fn rate_limited_udp_slips_a_truncated_reply_one_in_n() {
+    let h = harness_with(
+        Fake::a_record(Ipv4Addr::LOCALHOST),
+        &Config::default(),
+        |b| b.rate_limit(1).rate_limit_slip(2),
+    );
+    let q = query("nas.home.test.", RecordType::A);
+    for _ in 0..2 {
+        assert!(!h.engine.process(&ctx(), &q).await.unwrap().header.tc);
+    }
+    // Over the limit: every second query gets a minimal TC reply, the others nothing.
+    let replies: Vec<_> = {
+        let mut out = Vec::new();
+        for _ in 0..6 {
+            out.push(h.engine.process(&ctx(), &q).await);
+        }
+        out
+    };
+    assert_eq!(replies.iter().filter(|r| r.is_some()).count(), 3);
+    for r in replies.into_iter().flatten() {
+        assert!(r.header.tc && r.header.qr);
+        assert_eq!(r.header.rcode, Rcode::NoError);
+        assert!(r.answers.is_empty() && r.authority.is_empty() && r.additional.is_empty());
+        assert_eq!(r.questions, q.questions);
+    }
+    // The listener's own FORMERR stays silent, and a changed limit keeps the slip interval.
+    assert_eq!(
+        h.engine.admit(ctx().client, Transport::Udp),
+        Admission::Drop
+    );
+    h.engine.set_rate_limit(1);
+    for _ in 0..2 {
+        let _ = h.engine.process(&ctx(), &q).await;
+    }
+    let slipped = [
+        h.engine.process(&ctx(), &q).await,
+        h.engine.process(&ctx(), &q).await,
+    ];
+    assert_eq!(slipped.iter().flatten().count(), 1);
 }

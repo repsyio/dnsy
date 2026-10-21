@@ -43,7 +43,8 @@ dnsy cache flush example.com --subtree --token "$DNSY_TOKEN"
 ```
 
 Dropped queries (ACL `drop`, UDP rate limiting) get no reply on UDP and TCP; over DoH they
-become `403`.
+become `403`. The exception is the UDP slip: one over-limit UDP query in `limits.rate_limit_slip`
+(default 2) gets an empty reply with TC=1 so that a real client retries over TCP.
 
 ## Database and file modes
 

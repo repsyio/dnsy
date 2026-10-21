@@ -46,7 +46,19 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
 - Connection and in-flight caps are on by default: each of TCP, DoT and DoH has one pool of
   `limits.max_tcp_conns` (1024) shared by all its listen addresses, and one client (IPv4 address
   or IPv6 `/64`) may hold `limits.max_conns_per_client` (16) of them, so a single source cannot
-  take every slot; excess connections are closed at accept. UDP is bounded by
+  take every slot. When a pool is full, the connection that has been idle longest (no request in
+  flight) is closed to make room for the new one, as BIND does with `tcp-clients`. Only
+  connections that finished their TLS handshake (DoT, DoH) or sent a complete query (plain TCP)
+  can be chosen, and never one that proved an identity (an mTLS client certificate, a DoH token),
+  so a flood of connections that never get that far cannot push out working or authenticated ones.
+  A connection that is still not established 5 seconds after accept is recycled ahead of
+  established ones (younger ones may be mid-handshake and are left alone), so silent connections
+  cannot pin slots; they are also closed by the idle timeout. A client that already holds its whole
+  share never evicts anyone, one client (IPv4 address or IPv6 `/56`) recycles at most one
+  connection per second, all clients together at most 64 per second, and at most 32 newcomers
+  wait for a recycled slot at once. The recycled connection is dropped immediately, abandoning any unflushed
+  output, so a peer that stopped reading cannot hold the slot. If nothing can be recycled the new
+  connection is closed at accept. The accept loop never waits for any of this. UDP is bounded by
   `limits.udp_in_flight` (4096) requests in flight with `limits.udp_in_flight_per_client` (64)
   per client; excess datagrams are dropped. The API listener closes connections that send nothing
   or an incomplete request head within 30 s, closes connections (HTTP/1.1 or HTTP/2, pings notwithstanding) that have had no request in progress for 30 s, serves at most `api.max_conns` (256) connections (and `api.max_conns_per_client` (64) per client address, so one address cannot lock out the admin API) and
@@ -54,10 +66,46 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
   UDP slots are keyed on the unauthenticated source address, so a spoofed source can occupy that
   address's share for the milliseconds a request is in flight; spoofed floods stay bounded by the
   global pool, the rate limiter and the private-only default ACL.
+  The rate limiter drops over-limit UDP queries, but a spoofed flood from a victim's address would
+  then silence the victim too. So one over-limit UDP query in `limits.rate_limit_slip` (2; 0
+  disables) is answered with a minimal reply (the question, TC=1, no records, no larger than the
+  query), and a real client falls back to TCP, where it is limited per connection rather than
+  starved. Per-client buckets live in sharded tables of bounded size; when a shard is full the least
+  recently used of 8 randomly sampled buckets is evicted, so a flood of new spoofed addresses costs
+  constant work per packet instead of a scan of the shard.
   Behind a NAT or proxy many users share one address: raise `max_conns_per_client` for DoT/DoH
   front-ends that multiplex many users.
 - Protect backups: they contain password hashes and DNSSEC keys ([Backup and restore](backup-restore.md)).
 - Keep the binary current ([Upgrade](upgrade.md)).
+
+## Connection recycling model
+
+When the TCP, DoT or DoH pool is full, a newcomer may ask one existing connection to close.
+
+| Connection state | Can be chosen? |
+| --- | --- |
+| handshaking, younger than 5 s | no (it may be mid-handshake) |
+| handshaking or silent, older than 5 s | yes, first |
+| established (handshake done, or first query sent on plain TCP) and idle | yes, longest idle first |
+| authenticated (mTLS certificate, DoH token) | never |
+| busy (a request in flight) | never |
+| already asked to close | no |
+
+Choosing a victim and the moves to established, authenticated or busy happen under one lock, and
+each of those moves withdraws a pending request, so a stale request never closes a connection that
+has since proved itself or started work. The handshake itself listens for the request, and a
+recycled connection is dropped at once (unflushed output is abandoned).
+
+Budgets: a client that already holds its whole share never recycles; one client (IPv4 address or
+IPv6 `/56`) recycles at most once per second; all clients together at most 64 per second, of which
+the last 32 are reserved for clients that have not recycled in the last 10 seconds. The order is fixed:
+candidates are ranked without waking anyone, the budget is reserved, and only then is a victim asked
+to close, so a refused reservation never disturbs a connection. The budget is given back only when
+the recycle certainly freed nothing: no candidate was left after reserving, or the 500 ms wait for
+the slot ended and the victim never saw the request (which is then withdrawn). Once the victim saw
+the request, or its slot went to anyone, the budget stays spent. At most 32 newcomers wait at once and the accept loop never
+waits. The invariants (protected connections are never asked to close, each recycle frees exactly
+one slot, nothing leaks) are tested in `crates/dnsy-server/src/admission.rs`.
 
 ## Third-party crates
 

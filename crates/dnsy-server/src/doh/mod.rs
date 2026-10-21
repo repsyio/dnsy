@@ -40,7 +40,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
-use crate::admission::SlotLimit;
+use crate::admission::{Activity, SlotLimit};
 use crate::query::{Incoming as Parsed, encode_response, pad_response, parse};
 use crate::tcp::Limits;
 use wire::{MAX_MESSAGE, MAX_TOKEN, MEDIA_TYPE};
@@ -193,21 +193,33 @@ pub(crate) async fn serve<H: Handler>(
                 }
             },
         };
-        let Some(permit) = slots.try_acquire(client.ip()) else {
-            tracing::debug!(%client, "doh connection limit reached; closing");
-            continue;
-        };
         if let Err(e) = stream.set_nodelay(true) {
             tracing::debug!(%client, error = %e, "doh set_nodelay failed");
         }
         let acceptor = acceptor.clone();
         let state = Arc::clone(&state);
         let shutdown = shutdown.clone();
+        let slots = Arc::clone(&slots);
+        // The slot is taken in the connection task so that recycling an idle connection never
+        // stalls the accept loop.
         conns.spawn(async move {
-            match timeout(limits.idle, acceptor.accept(stream)).await {
-                Ok(Ok(tls)) => connection(tls, client, state, shutdown, limits).await,
-                Ok(Err(e)) => tracing::debug!(error = %e, "doh handshake failed"),
-                Err(_) => tracing::debug!("doh handshake timed out"),
+            let Some(permit) = slots.acquire_or_recycle(client.ip()).await else {
+                tracing::debug!(%client, "doh connection limit reached; closing");
+                return;
+            };
+            let activity = permit.activity();
+            let handshake = tokio::select! {
+                () = activity.recycled() => None,
+                result = timeout(limits.idle, acceptor.accept(stream)) => Some(result),
+            };
+            match handshake {
+                None => tracing::debug!(%client, "doh connection recycled during the handshake"),
+                Some(Ok(Ok(tls))) => {
+                    activity.establish();
+                    connection(tls, client, state, shutdown, limits, activity).await;
+                }
+                Some(Ok(Err(e))) => tracing::debug!(error = %e, "doh handshake failed"),
+                Some(Err(_)) => tracing::debug!("doh handshake timed out"),
             }
             drop(permit);
         });
@@ -224,6 +236,7 @@ async fn connection<H: Handler, S>(
     state: Arc<State<H>>,
     mut shutdown: watch::Receiver<bool>,
     limits: Limits,
+    activity: Arc<Activity>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
@@ -238,9 +251,18 @@ async fn connection<H: Handler, S>(
         .max_concurrent_streams(100)
         .keep_alive_interval(limits.idle)
         .keep_alive_timeout(limits.idle);
-    let service = service_fn(move |req| {
-        let state = Arc::clone(&state);
-        async move { Ok::<_, Infallible>(respond(&state, client, req).await) }
+    let service = service_fn({
+        let activity = Arc::clone(&activity);
+        move |req| {
+            let activity = Arc::clone(&activity);
+            let state = Arc::clone(&state);
+            let busy = activity.begin();
+            async move {
+                let response = respond(&state, client, &activity, req).await;
+                drop(busy);
+                Ok::<_, Infallible>(response)
+            }
+        }
     });
     let conn = builder.serve_connection(TokioIo::new(stream), service);
     tokio::pin!(conn);
@@ -254,6 +276,8 @@ async fn connection<H: Handler, S>(
             conn.as_mut().graceful_shutdown();
             let _ = timeout(limits.drain, conn.as_mut()).await;
         }
+        // Recycled to make room: drop the connection now rather than draining it.
+        () = activity.recycled() => {}
     }
 }
 
@@ -283,9 +307,10 @@ fn unauthorized() -> Response<Full<Bytes>> {
 async fn respond<H: Handler>(
     state: &State<H>,
     client: SocketAddr,
+    activity: &Activity,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    let response = route(state, client, req).await;
+    let response = route(state, client, activity, req).await;
     tracing::debug!(%client, status = response.status().as_u16(), "doh request");
     response
 }
@@ -293,6 +318,7 @@ async fn respond<H: Handler>(
 async fn route<H: Handler>(
     state: &State<H>,
     client: SocketAddr,
+    activity: &Activity,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     let Ok(path_token) = wire::path_token(&state.path, req.uri().path()) else {
@@ -309,6 +335,10 @@ async fn route<H: Handler>(
         Ok(p) => p,
         Err(rejection) => return *rejection,
     };
+    if principal.is_some() {
+        // A connection that proved an identity is never recycled for a newcomer.
+        activity.mark_authenticated();
+    }
     let bytes = if req.method() == Method::GET {
         match wire::decode_get(req.uri().query()) {
             Ok(b) => b,

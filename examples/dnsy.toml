@@ -97,6 +97,7 @@ max_tcp_conns = 1024 # per transport (TCP, DoT, DoH), shared by all its listen a
 max_conns_per_client = 16 # per client (IPv4 address or IPv6 /64) within each pool
 udp_in_flight = 4096 # UDP requests in flight, all sockets; excess datagrams are dropped
 udp_in_flight_per_client = 64
+rate_limit_slip = 2 # one over-limit UDP query in N gets a minimal TC=1 reply (clients retry over TCP); 0 = never
 
 [querylog]
 enabled = true

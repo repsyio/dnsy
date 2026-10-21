@@ -208,15 +208,16 @@ async fn tcp_connection_limit_and_garbage() {
     let mut c = config();
     c.max_tcp_conns = 1;
     let server = Server::start(c, Arc::new(RefusedHandler)).await.unwrap();
+    let mut idle = TcpStream::connect(server.tcp_addrs()[0]).await.unwrap();
+    establish(&mut idle).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The pool is full: the idle connection is recycled for the new one.
     let mut first = TcpStream::connect(server.tcp_addrs()[0]).await.unwrap();
-    let mut second = TcpStream::connect(server.tcp_addrs()[0]).await.unwrap();
-    let mut buf = [0; 1];
-    let n = tokio::time::timeout(Duration::from_secs(2), second.read(&mut buf))
-        .await
-        .unwrap()
-        .unwrap_or(0);
-    assert_eq!(n, 0, "excess connection closed");
-    // The first one still works, and a garbage frame gets FORMERR then a close.
+    assert!(
+        closed_within(&mut idle, Duration::from_secs(2)).await,
+        "idle connection recycled"
+    );
+    // The new one works, and a garbage frame gets FORMERR then a close.
     send_frame(&mut first, &query(1, "a.example.", None)).await;
     assert_eq!(
         read_frame(&mut first).await.unwrap().header.rcode,
@@ -307,6 +308,11 @@ async fn connect_from(from: &str, to: std::net::SocketAddr) -> TcpStream {
 }
 
 /// True when the server closed `s` (EOF or reset) within `wait`.
+async fn establish(s: &mut TcpStream) {
+    send_frame(s, &query(99, "warm.example.", None)).await;
+    assert_eq!(read_frame(s).await.unwrap().header.id, 99);
+}
+
 async fn closed_within(s: &mut TcpStream, wait: Duration) -> bool {
     let mut buf = [0; 1];
     match tokio::time::timeout(wait, s.read(&mut buf)).await {
@@ -325,9 +331,37 @@ async fn tcp_cap_is_shared_across_listen_addresses() {
     let addrs = server.tcp_addrs().to_vec();
     assert_eq!(addrs.len(), 2);
     let mut first = TcpStream::connect(addrs[0]).await.unwrap();
+    establish(&mut first).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let mut second = TcpStream::connect(addrs[1]).await.unwrap();
-    assert!(closed_within(&mut second, Duration::from_secs(2)).await);
-    assert!(!closed_within(&mut first, Duration::from_millis(200)).await);
+    // One pool: the second listener's connection recycles the first listener's idle one.
+    assert!(closed_within(&mut first, Duration::from_secs(2)).await);
+    assert!(!closed_within(&mut second, Duration::from_millis(200)).await);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn tcp_cap_recycles_oldest_idle_connection() {
+    let mut c = config();
+    c.tcp_idle = Duration::from_secs(10);
+    c.max_tcp_conns = 2;
+    let server = Server::start(c, Arc::new(RefusedHandler)).await.unwrap();
+    let addr = server.tcp_addrs()[0];
+    let mut oldest = TcpStream::connect(addr).await.unwrap();
+    establish(&mut oldest).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut newer = TcpStream::connect(addr).await.unwrap();
+    establish(&mut newer).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Using the older connection makes the other one the longest idle.
+    send_frame(&mut oldest, &query(1, "a.example.", None)).await;
+    assert_eq!(read_frame(&mut oldest).await.unwrap().header.id, 1);
+    let mut third = TcpStream::connect(addr).await.unwrap();
+    assert!(closed_within(&mut newer, Duration::from_secs(2)).await);
+    for (id, s) in [(2, &mut oldest), (3, &mut third)] {
+        send_frame(s, &query(id, "b.example.", None)).await;
+        assert_eq!(read_frame(s).await.unwrap().header.id, id);
+    }
     server.shutdown().await;
 }
 

@@ -20,7 +20,7 @@ as TOML (numbers, booleans, arrays) and fall back to plain strings.
 | `cache.prefetch` | `enabled` (true), `min_hits` (5), `remaining_ttl_pct` (10) |
 | `dnssec` | `validation` = `off`/`permissive`/`strict` (`strict`), `trust_anchors` (root KSK-2017 and KSK-2024 DS), `trust_anchor_file`, `negative_trust_anchors`, `clock_skew_s` (300), `key_passphrase_file` |
 | `filter` | `block_mode` = `null_ip`/`nxdomain`/`refused`, `blocklists`, `refresh_interval` (seconds, 86400) |
-| `limits` | `per_client_qps` (50; 0 = unlimited), `open_resolver` (false), `tcp_idle_ms` (10000), `max_tcp_conns` (1024), `max_conns_per_client` (16), `udp_in_flight` (4096), `udp_in_flight_per_client` (64; see [Security](security.md)) |
+| `limits` | `per_client_qps` (50; 0 = unlimited), `open_resolver` (false), `tcp_idle_ms` (10000), `max_tcp_conns` (1024), `max_conns_per_client` (16), `udp_in_flight` (4096), `udp_in_flight_per_client` (64), `rate_limit_slip` (2; 0 = never; see [Security](security.md)) |
 | `querylog` | `enabled` (true), `retention_days` (30), `redact_client_ip` (false) |
 
 | `limits` | `per_client_qps` (50; 0 = unlimited), `open_resolver` (false), `tcp_idle_ms` (10000), `max_tcp_conns` (1024) |

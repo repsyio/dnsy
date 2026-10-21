@@ -92,6 +92,7 @@ pub fn cache_options(cfg: &dnsy_config::Cache) -> CacheOptions {
 pub struct EngineBuilder<E = UpstreamClient> {
     acl: Acl,
     rate_qps: u32,
+    rate_slip: u32,
     filter: Filters,
     block_mode: BlockMode,
     response_ip: ResponseIpPolicy,
@@ -184,6 +185,7 @@ impl<E: Exchange> EngineBuilder<E> {
         Self {
             acl: Acl::new(AclAction::Allow, []),
             rate_qps: config.limits.per_client_qps,
+            rate_slip: config.limits.rate_limit_slip,
             filter: Filters::Fixed(Arc::new(
                 FilterSetBuilder::new(mode, FilterLimits::default()).build(),
             )),
@@ -212,6 +214,13 @@ impl<E: Exchange> EngineBuilder<E> {
     #[must_use]
     pub fn rate_limit(mut self, qps: u32) -> Self {
         self.rate_qps = qps;
+        self
+    }
+
+    /// Answers one over-limit UDP query in `slip` with a truncated reply (0 never does).
+    #[must_use]
+    pub fn rate_limit_slip(mut self, slip: u32) -> Self {
+        self.rate_slip = slip;
         self
     }
 
@@ -315,7 +324,9 @@ impl<E: Exchange> EngineBuilder<E> {
             prefetch_tx,
             prefetch_rx: tokio::sync::Mutex::new(prefetch_rx),
             acl: ArcSwap::from_pointee(self.acl),
-            rate: ArcSwap::from_pointee(RateLimiter::new(self.rate_qps, RATE_LIMIT_KEYS)),
+            rate: ArcSwap::from_pointee(
+                RateLimiter::new(self.rate_qps, RATE_LIMIT_KEYS).with_slip(self.rate_slip),
+            ),
             filter: self.filter,
             response_ip: ArcSwap::from_pointee(self.response_ip),
             groups: self.groups,
