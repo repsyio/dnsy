@@ -11,11 +11,16 @@ use dnsy_filter::{
     SourceStore,
 };
 use dnsy_observe::{QueryEventSink, QueryLogWriter, WriterConfig};
-use dnsy_resolver::forward::{DnssecConfigError, DnssecPolicy, MAX_CONCURRENT_FETCHES, unix_now};
+use dnsy_resolver::forward::{
+    DnssecConfigError, DnssecOptions, DnssecPolicy, MAX_CONCURRENT_FETCHES, unix_now,
+};
 use dnsy_resolver::groups::{
     Exchange, GroupError, GroupSet, GroupStore, GroupStoreError, SystemClock, ThreadRng,
 };
-use dnsy_resolver::{Cache, Refreshes, UpstreamClient, UpstreamConfig, UpstreamError};
+use dnsy_resolver::{
+    Cache, CacheOptions, PrefetchOptions, Refreshes, ServeStaleOptions, UpstreamClient,
+    UpstreamConfig, UpstreamError,
+};
 use dnsy_store::Store;
 use dnsy_zone::{
     KeyStore, KeyStoreError, ZoneError, ZoneSigning, ZoneStore, passphrase_from_environment,
@@ -48,11 +53,40 @@ pub enum EngineError {
     Dnssec(#[from] DnssecConfigError),
 }
 
-fn block_mode(mode: dnsy_config::BlockMode) -> BlockMode {
-    match mode {
-        dnsy_config::BlockMode::NullIp => BlockMode::NullIp,
-        dnsy_config::BlockMode::Nxdomain => BlockMode::NxDomain,
-        dnsy_config::BlockMode::Refused => BlockMode::Refused,
+/// The resolver's DNSSEC settings from `[dnssec]`.
+#[must_use]
+pub fn dnssec_options(cfg: &dnsy_config::Dnssec) -> DnssecOptions {
+    DnssecOptions {
+        validation: cfg.validation,
+        trust_anchors: cfg.trust_anchors.clone(),
+        trust_anchor_file: cfg.trust_anchor_file.clone(),
+        negative_trust_anchors: cfg.negative_trust_anchors.clone(),
+        clock_skew_s: cfg.clock_skew_s,
+    }
+}
+
+/// The cache tuning from `[cache]`.
+#[must_use]
+pub fn cache_options(cfg: &dnsy_config::Cache) -> CacheOptions {
+    CacheOptions {
+        enabled: cfg.enabled,
+        max_entries: cfg.max_entries,
+        min_ttl: cfg.min_ttl,
+        max_ttl: cfg.max_ttl,
+        negative_max_ttl: cfg.negative_max_ttl,
+        servfail_ttl: cfg.servfail_ttl,
+        bogus_ttl: cfg.bogus_ttl,
+        serve_stale: ServeStaleOptions {
+            enabled: cfg.serve_stale.enabled,
+            max_stale: cfg.serve_stale.max_stale,
+            answer_ttl: cfg.serve_stale.answer_ttl,
+            client_timeout_ms: cfg.serve_stale.client_timeout_ms,
+        },
+        prefetch: PrefetchOptions {
+            enabled: cfg.prefetch.enabled,
+            min_hits: cfg.prefetch.min_hits,
+            remaining_ttl_pct: cfg.prefetch.remaining_ttl_pct,
+        },
     }
 }
 
@@ -113,7 +147,7 @@ impl EngineBuilder<UpstreamClient> {
             ..UpstreamConfig::default()
         })?;
         let mut builder = Self::new(config, client);
-        builder.dnssec = DnssecPolicy::from_config(&config.dnssec)?;
+        builder.dnssec = DnssecPolicy::from_options(&dnssec_options(&config.dnssec))?;
 
         let rules = RuleStore::new(store.clone());
         let stored = rules
@@ -145,7 +179,10 @@ impl EngineBuilder<UpstreamClient> {
         builder.filter = Filters::Lists(lists);
 
         let zones = ZoneStore::open(&config.zones.dir)?;
-        let passphrase = passphrase_from_environment(config.dnssec.key_passphrase_file.as_deref())?;
+        let passphrase = passphrase_from_environment(
+            dnsy_config::PASSPHRASE_ENV,
+            config.dnssec.key_passphrase_file.as_deref(),
+        )?;
         let keys = KeyStore::open(
             store.clone(),
             passphrase,
@@ -189,7 +226,7 @@ impl<E: Exchange> EngineBuilder<E> {
     /// upstream groups, event sink or DNSSEC validation.
     #[must_use]
     pub fn new(config: &Config, exchange: E) -> Self {
-        let mode = block_mode(config.filter.block_mode);
+        let mode = config.filter.block_mode;
         let attempts = config.resolver.attempts.max(1);
         Self {
             acl: Acl::new(AclAction::Allow, []),
@@ -201,7 +238,7 @@ impl<E: Exchange> EngineBuilder<E> {
             response_ip: ResponseIpPolicy::default(),
             zones: None,
             zone_signing: None,
-            cache: Arc::new(Cache::new(&config.cache)),
+            cache: Arc::new(Cache::new(cache_options(&config.cache))),
             groups: None,
             exchange,
             sink: None,

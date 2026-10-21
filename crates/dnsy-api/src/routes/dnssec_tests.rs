@@ -67,7 +67,9 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
     let cfg = Config::default();
     let engine = Arc::new(
         EngineBuilder::new(&cfg, NoUp)
-            .dnssec(ResolverPolicy::from_config(&cfg.dnssec).unwrap())
+            .dnssec(
+                ResolverPolicy::from_options(&dnsy_engine::dnssec_options(&cfg.dnssec)).unwrap(),
+            )
             .build(),
     );
     let clock = ManualClock::new(SystemClock.now());

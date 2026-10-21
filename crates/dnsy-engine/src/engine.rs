@@ -23,8 +23,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use dnsy_config::Validation;
-use dnsy_core::{DnssecStatus, Principal, Transport};
+use dnsy_core::{DnssecStatus, Principal, Transport, Validation};
 use dnsy_filter::{
     Acl, AclAction, BlockMode, FilterSet, ListManager, RateLimiter, RateVerdict, Verdict,
     block_response,
@@ -348,9 +347,9 @@ impl<E: Exchange> Engine<E> {
     /// A malformed anchor or an unreadable anchor file.
     pub fn reload_trust_anchors(
         &self,
-        cfg: &dnsy_config::Dnssec,
+        cfg: &dnsy_resolver::forward::DnssecOptions,
     ) -> Result<(), dnsy_resolver::forward::DnssecConfigError> {
-        let fresh = DnssecPolicy::from_config(cfg)?;
+        let fresh = DnssecPolicy::from_options(cfg)?;
         let current = self.dnssec.load_full();
         let policy = DnssecPolicy {
             mode: current.mode,

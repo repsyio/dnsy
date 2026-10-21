@@ -50,6 +50,11 @@ pub(crate) fn config_check(path: &Path, out: &mut impl Write) -> Result<()> {
             config.zones.dir.display()
         )),
     }
+    if let Err(e) = dnsy_resolver::forward::DnssecPolicy::from_options(
+        &dnsy_engine::dnssec_options(&config.dnssec),
+    ) {
+        problems.push(format!("dnssec: {e}"));
+    }
     for (what, file) in [
         ("dot.cert", &config.dot.cert),
         ("dot.key", &config.dot.key),
@@ -227,7 +232,10 @@ fn zone_name(s: &str) -> Result<Name> {
 }
 
 fn key_store(config: &Config) -> Result<KeyStore> {
-    let passphrase = passphrase_from_environment(config.dnssec.key_passphrase_file.as_deref())?;
+    let passphrase = passphrase_from_environment(
+        dnsy_config::PASSPHRASE_ENV,
+        config.dnssec.key_passphrase_file.as_deref(),
+    )?;
     Ok(KeyStore::open(
         open_store(config)?,
         passphrase,

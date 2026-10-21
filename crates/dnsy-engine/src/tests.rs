@@ -846,14 +846,20 @@ async fn reload_trust_anchors_swaps_anchors_and_keeps_mode_and_ntas() {
         trust_anchor_file: Some(file.clone()),
         ..dnsy_config::Dnssec::default()
     };
-    engine.reload_trust_anchors(&cfg).unwrap();
+    engine
+        .reload_trust_anchors(&crate::dnssec_options(&cfg))
+        .unwrap();
     let policy = engine.dnssec_policy();
     assert_eq!(policy.validator.anchors().ds_anchors().len(), 1);
     assert_eq!(policy.validator.anchors().negative_anchors().len(), 1);
     assert_eq!(policy.mode, engine.dnssec_mode());
 
     std::fs::write(&file, "not an anchor\n").unwrap();
-    assert!(engine.reload_trust_anchors(&cfg).is_err());
+    assert!(
+        engine
+            .reload_trust_anchors(&crate::dnssec_options(&cfg))
+            .is_err()
+    );
     assert_eq!(
         engine
             .dnssec_policy()

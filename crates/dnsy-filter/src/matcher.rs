@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 use dnsy_proto::Name;
 
@@ -17,19 +16,7 @@ pub const DEFAULT_MAX_ENTRIES: usize = 5_000_000;
 /// Default cap on the bytes read from one list source.
 pub const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// How a blocked query is answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockMode {
-    NxDomain,
-    /// `0.0.0.0` for A and `::` for AAAA.
-    NullIp,
-    Refused,
-    /// Operator chosen sinkhole addresses; a family without an address answers NODATA.
-    CustomIp {
-        v4: Option<Ipv4Addr>,
-        v6: Option<Ipv6Addr>,
-    },
-}
+pub use dnsy_core::BlockMode;
 
 /// The filter decision for a name.
 #[derive(Debug, Clone, PartialEq, Eq)]

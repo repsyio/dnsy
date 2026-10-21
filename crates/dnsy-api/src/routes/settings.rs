@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
-use dnsy_config::{BlockMode, Config, ConfigError};
+use dnsy_config::{Config, ConfigError};
+use dnsy_core::BlockMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::watch;
@@ -93,8 +94,9 @@ pub enum BlockModeView {
 impl From<BlockMode> for BlockModeView {
     fn from(m: BlockMode) -> Self {
         match m {
-            BlockMode::NullIp => BlockModeView::NullIp,
-            BlockMode::Nxdomain => BlockModeView::Nxdomain,
+            // `CustomIp` is never produced by configuration, the only source of this value.
+            BlockMode::NullIp | BlockMode::CustomIp { .. } => BlockModeView::NullIp,
+            BlockMode::NxDomain => BlockModeView::Nxdomain,
             BlockMode::Refused => BlockModeView::Refused,
         }
     }
@@ -104,17 +106,9 @@ impl From<BlockModeView> for BlockMode {
     fn from(m: BlockModeView) -> Self {
         match m {
             BlockModeView::NullIp => BlockMode::NullIp,
-            BlockModeView::Nxdomain => BlockMode::Nxdomain,
+            BlockModeView::Nxdomain => BlockMode::NxDomain,
             BlockModeView::Refused => BlockMode::Refused,
         }
-    }
-}
-
-fn filter_mode(m: BlockMode) -> dnsy_filter::BlockMode {
-    match m {
-        BlockMode::NullIp => dnsy_filter::BlockMode::NullIp,
-        BlockMode::Nxdomain => dnsy_filter::BlockMode::NxDomain,
-        BlockMode::Refused => dnsy_filter::BlockMode::Refused,
     }
 }
 
@@ -333,13 +327,13 @@ async fn apply(state: &ApiState, old: &Config, new: &Config) -> Result<(), ApiEr
         && let Some(engine) = &state.engine
     {
         if let Some(manager) = engine.list_manager() {
-            manager.set_block_mode(filter_mode(new.filter.block_mode));
+            manager.set_block_mode(new.filter.block_mode);
             if let Err(e) = manager.reload().await {
-                manager.set_block_mode(filter_mode(old.filter.block_mode));
+                manager.set_block_mode(old.filter.block_mode);
                 return Err(internal(e));
             }
         }
-        engine.set_block_mode(filter_mode(new.filter.block_mode));
+        engine.set_block_mode(new.filter.block_mode);
     }
     if new.limits.per_client_qps != old.limits.per_client_qps {
         state

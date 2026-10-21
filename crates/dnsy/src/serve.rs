@@ -364,7 +364,7 @@ fn reload_trust_anchors(engine: &dnsy_engine::Engine, config_path: &Path) {
             return;
         }
     };
-    match engine.reload_trust_anchors(&config.dnssec) {
+    match engine.reload_trust_anchors(&dnsy_engine::dnssec_options(&config.dnssec)) {
         Ok(()) => tracing::info!("trust anchors reloaded"),
         Err(e) => tracing::warn!(error = %e, "trust anchor reload failed; keeping previous"),
     }

@@ -363,7 +363,7 @@ async fn invalid_range_400() {
 }
 
 fn cache_with(names: &[&str]) -> Arc<Cache> {
-    let cache = Arc::new(Cache::new(&dnsy_config::Cache::default()));
+    let cache = Arc::new(Cache::new(dnsy_resolver::CacheOptions::default()));
     for n in names {
         let name = Name::from_ascii(n).unwrap();
         let msg = Message {

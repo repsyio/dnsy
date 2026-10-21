@@ -10,15 +10,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use dnsy_config::Cache as CacheConfig;
 use dnsy_core::DnssecStatus;
 use dnsy_proto::{
     Class, Edns, EdnsOption, Header, Message, Name, Question, RData, Rcode, Record, RecordType,
 };
 
+mod options;
 mod prefetch;
 mod stale;
 
+pub use options::{CacheOptions, PrefetchOptions, ServeStaleOptions};
 pub use stale::{Joined, RefreshGuard, RefreshWait, Refreshes};
 
 #[cfg(test)]
@@ -128,7 +129,7 @@ struct Shard {
 pub struct Cache {
     shards: Vec<Mutex<Shard>>,
     hasher: RandomState,
-    cfg: ArcSwap<CacheConfig>,
+    cfg: ArcSwap<CacheOptions>,
     tick: AtomicU64,
     /// Live entries across all shards: the bound applies to this, not to each shard.
     len: AtomicUsize,
@@ -152,7 +153,7 @@ fn secs(d: Duration) -> u32 {
 impl Cache {
     /// A cache sized and tuned by `[cache]`.
     #[must_use]
-    pub fn new(cfg: &CacheConfig) -> Cache {
+    pub fn new(cfg: CacheOptions) -> Cache {
         let count = cfg.max_entries.clamp(1, MAX_SHARDS);
         let shards = (0..count)
             .map(|_| {
@@ -164,7 +165,7 @@ impl Cache {
         Cache {
             shards,
             hasher: RandomState::new(),
-            cfg: ArcSwap::from_pointee(cfg.clone()),
+            cfg: ArcSwap::from_pointee(cfg),
             tick: AtomicU64::new(0),
             len: AtomicUsize::new(0),
             hits: AtomicU64::new(0),
@@ -177,14 +178,14 @@ impl Cache {
         }
     }
 
-    fn cfg(&self) -> arc_swap::Guard<Arc<CacheConfig>> {
+    fn cfg(&self) -> arc_swap::Guard<Arc<CacheOptions>> {
         self.cfg.load()
     }
 
     /// Changes the live configuration. Applies to later lookups and inserts; `max_entries` is
     /// not meant to change at runtime (the shard count is fixed at construction).
-    pub fn reconfigure(&self, update: impl FnOnce(&mut CacheConfig)) {
-        let mut next = CacheConfig::clone(&self.cfg.load());
+    pub fn reconfigure(&self, update: impl FnOnce(&mut CacheOptions)) {
+        let mut next = CacheOptions::clone(&self.cfg.load());
         update(&mut next);
         self.cfg.store(Arc::new(next));
     }

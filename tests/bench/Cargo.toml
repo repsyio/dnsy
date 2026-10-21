@@ -12,7 +12,6 @@ description = "Benchmark tools: fake upstream, load generator, scenario runner a
 workspace = true
 
 [dependencies]
-dnsy-config = { version = "0.1.0", path = "../../crates/dnsy-config" }
 dnsy-core = { version = "0.1.0", path = "../../crates/dnsy-core" }
 dnsy-e2e = { version = "0.1.0", path = "../e2e" }
 dnsy-proto = { version = "0.1.0", path = "../../crates/dnsy-proto" }

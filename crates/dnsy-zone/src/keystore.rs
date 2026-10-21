@@ -122,14 +122,16 @@ pub fn resolve_passphrase(
     Ok(Some(Passphrase::new(line)))
 }
 
-/// [`resolve_passphrase`] reading the real `DNSY_DNSSEC_PASSPHRASE` environment variable.
+/// [`resolve_passphrase`] reading the environment variable named `env_name`
+/// (`DNSY_DNSSEC_PASSPHRASE` in the binary).
 ///
 /// # Errors
 /// See [`resolve_passphrase`].
 pub fn passphrase_from_environment(
+    env_name: &str,
     file: Option<&Path>,
 ) -> Result<Option<Passphrase>, KeyStoreError> {
-    resolve_passphrase(std::env::var(dnsy_config::PASSPHRASE_ENV).ok(), file)
+    resolve_passphrase(std::env::var(env_name).ok(), file)
 }
 
 /// Argon2id cost for deriving the key-encryption key.
@@ -2068,6 +2070,6 @@ mod tests {
             assert!(matches!(err, KeyStoreError::PassphraseFile { .. }));
         }
         // The process environment is not set in tests, so this only checks the wiring.
-        assert!(passphrase_from_environment(None).is_ok());
+        assert!(passphrase_from_environment("DNSY_TEST_UNSET_PASSPHRASE", None).is_ok());
     }
 }

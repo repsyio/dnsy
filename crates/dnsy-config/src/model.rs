@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use dnsy_core::{BlockMode, Validation};
 use serde::Deserialize;
 
 /// Root KSK-2017 (key tag 20326) as a DS record.
@@ -338,19 +339,6 @@ impl Default for Prefetch {
     }
 }
 
-/// DNSSEC validation mode.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Validation {
-    /// No validation.
-    Off,
-    /// Validate; Bogus answers are returned without AD.
-    Permissive,
-    /// Validate; Bogus answers become SERVFAIL.
-    #[default]
-    Strict,
-}
-
 /// `[dnssec]`. The key passphrase may also come from `DNSY_DNSSEC_PASSPHRASE`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -380,19 +368,6 @@ impl Default for Dnssec {
             key_passphrase_file: None,
         }
     }
-}
-
-/// How blocked names are answered.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BlockMode {
-    /// `0.0.0.0` / `::`.
-    #[default]
-    NullIp,
-    /// NXDOMAIN.
-    Nxdomain,
-    /// REFUSED.
-    Refused,
 }
 
 /// `[filter]`
