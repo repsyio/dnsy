@@ -14,6 +14,16 @@ pub struct User {
     pub role: Role,
     /// Unix seconds.
     pub created_at: i64,
+    /// Unix seconds when the account was disabled; `None` while it is active.
+    pub disabled_at: Option<i64>,
+}
+
+impl User {
+    /// True while the account may log in and use its tokens.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.disabled_at.is_none()
+    }
 }
 
 fn role_str(role: Role) -> &'static str {
@@ -37,7 +47,7 @@ fn parse_role(s: &str) -> Result<Role, rusqlite::Error> {
     }
 }
 
-const COLUMNS: &str = "id, username, role, created_at";
+const COLUMNS: &str = "id, username, role, created_at, disabled_at";
 
 fn row_to_user(r: &rusqlite::Row<'_>) -> Result<User, rusqlite::Error> {
     Ok(User {
@@ -45,6 +55,7 @@ fn row_to_user(r: &rusqlite::Row<'_>) -> Result<User, rusqlite::Error> {
         username: r.get(1)?,
         role: parse_role(&r.get::<_, String>(2)?)?,
         created_at: r.get(3)?,
+        disabled_at: r.get(4)?,
     })
 }
 
@@ -58,9 +69,11 @@ fn find(tx: &Transaction<'_>, id: UserId) -> Result<Option<User>, StoreError> {
         .optional()?)
 }
 
+/// Active admins other than `id`.
 fn admin_count_excluding(tx: &Transaction<'_>, id: UserId) -> Result<i64, StoreError> {
     Ok(tx.query_row(
-        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND id != ?1",
+        "SELECT COUNT(*) FROM users
+         WHERE role = 'admin' AND disabled_at IS NULL AND id != ?1",
         [id.0],
         |r| r.get(0),
     )?)
@@ -174,6 +187,7 @@ impl UserService {
                     return Ok(Err(UserError::NotFound));
                 };
                 if user.role == Role::Admin
+                    && user.is_active()
                     && role != Role::Admin
                     && admin_count_excluding(tx, id)? == 0
                 {
@@ -214,7 +228,42 @@ impl UserService {
             .await?
     }
 
-    /// Delete a user. The last admin cannot be deleted.
+    /// Disable or re-enable an account. Disabling ends the user's sessions at once, and
+    /// the user's tokens are refused until the account is enabled again. The last active
+    /// admin cannot be disabled. Repeating the current state changes nothing.
+    ///
+    /// # Errors
+    /// [`UserError::NotFound`], [`UserError::LastAdmin`], or a store failure.
+    pub async fn set_disabled(&self, id: UserId, disabled: bool) -> Result<User, UserError> {
+        self.store
+            .write(move |tx| {
+                let Some(user) = find(tx, id)? else {
+                    return Ok(Err(UserError::NotFound));
+                };
+                if user.is_active() == !disabled {
+                    return Ok(Ok(user));
+                }
+                if disabled && user.role == Role::Admin && admin_count_excluding(tx, id)? == 0 {
+                    return Ok(Err(UserError::LastAdmin));
+                }
+                tx.execute(
+                    "UPDATE users SET disabled_at = CASE WHEN ?1 THEN unixepoch() END,
+                     updated_at = unixepoch() WHERE id = ?2",
+                    params![disabled, id.0],
+                )?;
+                if disabled {
+                    tx.execute("DELETE FROM sessions WHERE user_id = ?1", [id.0])?;
+                }
+                Ok(Ok(tx.query_row(
+                    &format!("SELECT {COLUMNS} FROM users WHERE id = ?1"),
+                    [id.0],
+                    row_to_user,
+                )?))
+            })
+            .await?
+    }
+
+    /// Delete a user. The last active admin cannot be deleted.
     ///
     /// # Errors
     /// [`UserError::NotFound`], [`UserError::LastAdmin`], or a store failure.
@@ -224,7 +273,10 @@ impl UserService {
                 let Some(user) = find(tx, id)? else {
                     return Ok(Err(UserError::NotFound));
                 };
-                if user.role == Role::Admin && admin_count_excluding(tx, id)? == 0 {
+                if user.role == Role::Admin
+                    && user.is_active()
+                    && admin_count_excluding(tx, id)? == 0
+                {
                     return Ok(Err(UserError::LastAdmin));
                 }
                 tx.execute("DELETE FROM users WHERE id = ?1", [id.0])?;
@@ -247,7 +299,7 @@ impl UserService {
                 Ok(c.query_row(
                     &format!("SELECT {COLUMNS}, password_hash FROM users WHERE username = ?1"),
                     [name],
-                    |r| Ok((row_to_user(r)?, r.get::<_, String>(4)?)),
+                    |r| Ok((row_to_user(r)?, r.get::<_, String>(5)?)),
                 )
                 .optional()?)
             })
@@ -264,7 +316,8 @@ impl UserService {
         })
         .await?;
         match (user, ok) {
-            (Some(user), true) => Ok(user),
+            // A disabled account answers like a wrong password.
+            (Some(user), true) if user.is_active() => Ok(user),
             _ => Err(UserError::InvalidCredentials),
         }
     }
@@ -438,6 +491,62 @@ mod tests {
             s.set_password(a.id, "x").await,
             Err(UserError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn disabled_users_cannot_log_in_and_can_be_enabled() {
+        let (s, _d) = svc();
+        s.create("root", "pw", Role::Admin).await.unwrap();
+        let u = s.create("alice", "pw", Role::Viewer).await.unwrap();
+        assert!(u.is_active());
+        let off = s.set_disabled(u.id, true).await.unwrap();
+        assert!(!off.is_active());
+        assert!(off.disabled_at.is_some());
+        assert_eq!(s.get(u.id).await.unwrap(), off);
+        assert!(matches!(
+            s.verify_password("alice", "pw").await,
+            Err(UserError::InvalidCredentials)
+        ));
+        // Repeating changes nothing, including the timestamp.
+        assert_eq!(s.set_disabled(u.id, true).await.unwrap(), off);
+        let on = s.set_disabled(u.id, false).await.unwrap();
+        assert!(on.is_active());
+        s.verify_password("alice", "pw").await.unwrap();
+        assert!(matches!(
+            s.set_disabled(UserId(999), true).await,
+            Err(UserError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn last_active_admin_cannot_be_disabled_or_deleted() {
+        let (s, _d) = svc();
+        let a = s.create("a", "pw", Role::Admin).await.unwrap();
+        assert!(matches!(
+            s.set_disabled(a.id, true).await,
+            Err(UserError::LastAdmin)
+        ));
+        let b = s.create("b", "pw", Role::Admin).await.unwrap();
+        s.set_disabled(a.id, true).await.unwrap();
+        // `b` is now the last active admin, although a disabled admin exists.
+        assert!(matches!(
+            s.set_disabled(b.id, true).await,
+            Err(UserError::LastAdmin)
+        ));
+        assert!(matches!(s.delete(b.id).await, Err(UserError::LastAdmin)));
+        assert!(matches!(
+            s.update_role(b.id, Role::Viewer).await,
+            Err(UserError::LastAdmin)
+        ));
+        // A disabled admin is not protected, and re-enabling restores the second admin.
+        s.set_disabled(a.id, false).await.unwrap();
+        s.set_disabled(b.id, true).await.unwrap();
+        s.set_disabled(b.id, false).await.unwrap();
+        s.set_disabled(a.id, true).await.unwrap();
+        s.delete(a.id).await.unwrap();
+        // A viewer can always be disabled.
+        let v = s.create("v", "pw", Role::Viewer).await.unwrap();
+        s.set_disabled(v.id, true).await.unwrap();
     }
 
     #[tokio::test]

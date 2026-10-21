@@ -125,6 +125,18 @@ impl DnssecPolicy {
         }
     }
 
+    /// The same policy with its negative trust anchors replaced by `entries`: names with an
+    /// optional expiry (Unix seconds).
+    #[must_use]
+    pub fn with_negative_entries(&self, entries: Vec<(Name, Option<u32>)>) -> Self {
+        let mut anchors = self.validator.anchors().clone();
+        anchors.set_negative_entries(entries);
+        Self {
+            validator: Validator::with_limits(anchors, *self.validator.limits()),
+            ..self.clone()
+        }
+    }
+
     /// Whether `now_unix` is a plausible wall-clock time (not before the floor).
     #[must_use]
     pub fn clock_trusted(&self, now_unix: u64) -> bool {

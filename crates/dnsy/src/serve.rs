@@ -26,8 +26,6 @@ use crate::{Error, Result, open_store};
 
 /// How often due zones are re-signed and key states advanced.
 const SIGN_INTERVAL: Duration = Duration::from_secs(60);
-/// Assumed time for a new DNSKEY to reach every resolver, on top of its TTL (rollovers).
-const KEY_PROPAGATION_S: u32 = 3600;
 /// How often the client-certificate allowlist is reloaded from the database.
 const ALLOWLIST_REFRESH: Duration = Duration::from_secs(30);
 /// How often the client CA bundle and CRL are re-read.
@@ -196,11 +194,7 @@ fn rollover_timings(zones: &dnsy_zone::ZoneStore, zone: &str) -> Option<Rollover
     let name = Name::from_ascii(zone).ok()?.to_lowercase();
     let snapshot = zones.snapshot();
     let policy = snapshot.get(&name)?.dnssec.as_ref()?;
-    Some(RolloverTimings {
-        dnskey_ttl: policy.dnskey_ttl,
-        propagation: KEY_PROPAGATION_S,
-        max_signature_validity: policy.signature_validity_days.saturating_mul(86_400),
-    })
+    Some(policy.rollover_timings())
 }
 
 /// Listener settings from the configuration, plus the mTLS verifier (for SIGHUP reloads).

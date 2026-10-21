@@ -309,6 +309,15 @@ impl<E: Exchange> Engine<E> {
         self.cache.flush_all();
     }
 
+    /// Replaces the negative trust anchors with `entries`: names with an optional expiry (Unix
+    /// seconds, after which the anchor no longer applies). Flushes the cache.
+    pub fn set_negative_trust_anchor_entries(&self, entries: Vec<(Name, Option<u32>)>) {
+        let current = self.dnssec.load_full();
+        self.dnssec
+            .store(Arc::new(current.with_negative_entries(entries)));
+        self.cache.flush_all();
+    }
+
     /// Re-reads the trust anchors (`[dnssec] trust_anchors` and `trust_anchor_file`) and swaps
     /// them in, keeping the current mode, negative trust anchors and clock floor; flushes the
     /// cache. On error the previous anchors stay in effect.
@@ -326,7 +335,7 @@ impl<E: Exchange> Engine<E> {
             validator: fresh.validator,
             not_before_unix: current.not_before_unix,
         }
-        .with_negative_trust_anchors(current.validator.anchors().negative_anchors().to_vec());
+        .with_negative_entries(current.validator.anchors().negative_entries().to_vec());
         self.dnssec.store(Arc::new(policy));
         self.cache.flush_all();
         Ok(())

@@ -1115,6 +1115,127 @@
         ]
       }
     },
+    "/api/v1/dnssec/keys/export": {
+      "post": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Export the zone keys as a bundle encrypted under the given passphrase, for backup. The\nresponse holds ciphertext only; the passphrase and the keys are never logged.",
+        "operationId": "export_keys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportKeysInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyBackup"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/dnssec/passphrase": {
+      "post": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Change the key passphrase: every stored private key is re-encrypted under the new one in a\nsingle transaction (all or none). Keys stored unencrypted become encrypted. The running\nserver uses the new passphrase at once; update `DNSY_DNSSEC_PASSPHRASE` or the passphrase\nfile before the next start, or the keys cannot be read.",
+        "operationId": "change_passphrase",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePassphraseInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PassphraseChanged"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/dnssec/status": {
       "get": {
         "tags": [
@@ -2927,7 +3048,7 @@
         "tags": [
           "users"
         ],
-        "summary": "Delete a user. Their tokens and sessions go with them.",
+        "summary": "Delete a user. Their tokens and sessions go with them. The last active admin cannot be\ndeleted.",
         "operationId": "delete_user",
         "parameters": [
           {
@@ -2987,7 +3108,7 @@
         "tags": [
           "users"
         ],
-        "summary": "Change a user's role and/or reset the password.",
+        "summary": "Change a user's role, reset the password, and/or disable or enable the user.",
         "operationId": "update_user",
         "parameters": [
           {
@@ -3049,7 +3170,7 @@
             }
           },
           "409": {
-            "description": "Would demote the last admin",
+            "description": "Would demote or disable the last active admin",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3911,6 +4032,84 @@
         ]
       }
     },
+    "/api/v1/zones/{name}/dnssec/rollover/abort": {
+      "post": {
+        "tags": [
+          "dnssec"
+        ],
+        "summary": "Abort the rollover of one role (or of every role): the incoming key is withdrawn and its\nprivate key destroyed, and the active key keeps signing. A rollover whose new key already\nbecame active cannot be aborted. If the incoming KSK or CSK's DS was already published at\nthe parent, remove it there.",
+        "operationId": "abort_rollover",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbortRolloverInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The zone's DNSSEC state after the abort",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnssecView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/zones/{name}/export": {
       "get": {
         "tags": [
@@ -4433,6 +4632,24 @@
   },
   "components": {
     "schemas": {
+      "AbortRolloverInput": {
+        "type": "object",
+        "description": "Which rollover to abort.",
+        "properties": {
+          "role": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/KeyRoleBody",
+                "description": "Abort only this role's rollover; omitted aborts every rollover of the zone."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "AclOverview": {
         "type": "object",
         "description": "Rules and the rate limit.",
@@ -4738,6 +4955,20 @@
             "minimum": 0
           }
         }
+      },
+      "ChangePassphraseInput": {
+        "type": "object",
+        "description": "Key passphrase change.",
+        "required": [
+          "new_passphrase"
+        ],
+        "properties": {
+          "new_passphrase": {
+            "type": "string",
+            "description": "The new key passphrase (at least 8 characters)."
+          }
+        },
+        "additionalProperties": false
       },
       "ChangePassword": {
         "type": "object",
@@ -5144,6 +5375,15 @@
               }
             ]
           },
+          "propagation_delay": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Seconds added to the DNSKEY TTL before a published key may sign (default 3600,\nat most 604800).",
+            "minimum": 0
+          },
           "refresh_days": {
             "type": [
               "integer",
@@ -5236,6 +5476,7 @@
           "signature_validity_days",
           "refresh_days",
           "dnskey_ttl",
+          "propagation_delay",
           "keys",
           "rollover",
           "keys_encrypted"
@@ -5281,6 +5522,11 @@
           },
           "nsec3": {
             "$ref": "#/components/schemas/Nsec3Body"
+          },
+          "propagation_delay": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           },
           "refresh_days": {
             "type": "integer",
@@ -5365,6 +5611,27 @@
             "description": "The record in presentation format."
           }
         }
+      },
+      "ExportKeysInput": {
+        "type": "object",
+        "description": "Key export request.",
+        "required": [
+          "passphrase"
+        ],
+        "properties": {
+          "passphrase": {
+            "type": "string",
+            "description": "Passphrase the bundle is encrypted under (at least 8 characters). It may differ from\nthe key passphrase; keep it apart from the bundle."
+          },
+          "zone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Export only this zone's keys; omitted exports every zone's."
+          }
+        },
+        "additionalProperties": false
       },
       "FilterPatch": {
         "type": "object",
@@ -5544,6 +5811,19 @@
           },
           "upstream": {
             "type": "string"
+          }
+        }
+      },
+      "KeyBackup": {
+        "type": "object",
+        "description": "An encrypted key backup.",
+        "required": [
+          "bundle"
+        ],
+        "properties": {
+          "bundle": {
+            "type": "string",
+            "description": "Base64 of the bundle: every non-removed key, sealed with AES-256-GCM under a key\nderived from the request's passphrase. `dnsy dnssec keys import` restores it."
           }
         }
       },
@@ -5867,6 +6147,72 @@
         },
         "additionalProperties": false
       },
+      "NtaEntryInput": {
+        "type": "object",
+        "description": "A negative trust anchor with an optional expiry.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix time (in the future) at which the anchor stops applying; omitted keeps it until\nremoved."
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NtaInput": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/components/schemas/NtaEntryInput"
+          }
+        ],
+        "description": "A negative trust anchor to set: a bare name, or a name with an optional expiry."
+      },
+      "NtaView": {
+        "type": "object",
+        "description": "A negative trust anchor in force.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix time at which the anchor stops applying; `None` until it is removed."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "PassphraseChanged": {
+        "type": "object",
+        "description": "Result of a key passphrase change.",
+        "required": [
+          "keys_reencrypted"
+        ],
+        "properties": {
+          "keys_reencrypted": {
+            "type": "integer",
+            "description": "Keys re-encrypted under the new passphrase.",
+            "minimum": 0
+          }
+        }
+      },
       "PatchBlocklist": {
         "type": "object",
         "description": "Fields of a source that can change.",
@@ -6132,11 +6478,36 @@
         },
         "additionalProperties": false
       },
+      "RolloverRoleView": {
+        "type": "object",
+        "description": "One rollover under way: a role with an incoming key.",
+        "required": [
+          "role",
+          "state",
+          "new_key_id"
+        ],
+        "properties": {
+          "new_key_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The incoming key."
+          },
+          "role": {
+            "type": "string",
+            "description": "`csk`, `ksk` or `zsk`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`in_progress` or `awaiting_ds_confirmation`."
+          }
+        }
+      },
       "RolloverView": {
         "type": "object",
         "description": "Where the key rollover stands.",
         "required": [
-          "state"
+          "state",
+          "rollovers"
         ],
         "properties": {
           "new_key_id": {
@@ -6145,18 +6516,25 @@
               "null"
             ],
             "format": "int64",
-            "description": "The incoming key."
+            "description": "The incoming key of the first rollover in `rollovers`."
           },
           "role": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Role being rolled over."
+            "description": "Role of the first rollover in `rollovers`; use `rollovers` to see them all."
+          },
+          "rollovers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RolloverRoleView"
+            },
+            "description": "Every rollover under way (a KSK and a ZSK rollover can run at the same time)."
           },
           "state": {
             "type": "string",
-            "description": "`idle`, `in_progress` or `awaiting_ds_confirmation`."
+            "description": "`idle`, `in_progress`, or `awaiting_ds_confirmation` when any rollover waits for the\nregistrar's DS."
           }
         }
       },
@@ -6636,6 +7014,13 @@
         "type": "object",
         "description": "Fields to change; absent fields stay as they are.",
         "properties": {
+          "disabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` disables the user (sessions end at once, tokens are refused, login fails);\n`false` enables them again. The last active admin cannot be disabled."
+          },
           "password": {
             "type": [
               "string",
@@ -6660,13 +7045,26 @@
           "id",
           "username",
           "role",
-          "created_at"
+          "created_at",
+          "disabled"
         ],
         "properties": {
           "created_at": {
             "type": "integer",
             "format": "int64",
             "description": "Unix seconds."
+          },
+          "disabled": {
+            "type": "boolean",
+            "description": "A disabled user cannot log in and their tokens are refused."
+          },
+          "disabled_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds when the user was disabled."
           },
           "id": {
             "type": "integer",
@@ -6701,9 +7099,9 @@
               "null"
             ],
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/NtaInput"
             },
-            "description": "Replaces the whole list; `[]` clears it."
+            "description": "Replaces the whole list; `[]` clears it. An entry is a name, or `{name, expires_at}`\nfor an anchor that stops applying at `expires_at` (Unix time)."
           },
           "validation": {
             "oneOf": [
@@ -6724,15 +7122,23 @@
         "required": [
           "validation",
           "negative_trust_anchors",
+          "negative_trust_anchor_entries",
           "trust_anchors"
         ],
         "properties": {
+          "negative_trust_anchor_entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NtaView"
+            },
+            "description": "The same anchors with their expiry."
+          },
           "negative_trust_anchors": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Names at or below which validation is skipped (RFC 7646)."
+            "description": "Names at or below which validation is skipped (RFC 7646); expired entries are left out."
           },
           "trust_anchors": {
             "type": "array",

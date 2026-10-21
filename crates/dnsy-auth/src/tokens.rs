@@ -113,6 +113,7 @@ type Row = (
     Option<i64>,
     Option<i64>,
     Option<i64>,
+    Option<i64>,
 );
 
 fn sha256(bytes: &[u8]) -> Vec<u8> {
@@ -273,7 +274,7 @@ impl TokenService {
             .read(move |c| {
                 Ok(c.query_row(
                     "SELECT t.user_id, t.secret_sha256, t.scopes, u.role, t.expires_at,
-                            t.revoked_at, t.last_used_at
+                            t.revoked_at, t.last_used_at, u.disabled_at
                      FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.id = ?1",
                     [id],
                     |r| {
@@ -285,19 +286,22 @@ impl TokenService {
                             r.get(4)?,
                             r.get(5)?,
                             r.get(6)?,
+                            r.get(7)?,
                         ))
                     },
                 )
                 .optional()?)
             })
             .await?;
-        let Some((user, stored, scopes, role, expires_at, revoked_at, last_used)) = row else {
+        let Some((user, stored, scopes, role, expires_at, revoked_at, last_used, disabled_at)) =
+            row
+        else {
             return Err(AuthError::InvalidToken);
         };
         if !bool::from(stored.as_slice().ct_eq(&sha256(&secret))) {
             return Err(AuthError::InvalidToken);
         }
-        if revoked_at.is_some() || expires_at.is_some_and(|e| e <= now) {
+        if revoked_at.is_some() || disabled_at.is_some() || expires_at.is_some_and(|e| e <= now) {
             return Err(AuthError::InvalidToken);
         }
         // Scope check also honours a role that was demoted after issuing.
@@ -496,6 +500,25 @@ mod tests {
             svc.verify(&token, Scope::Admin).await,
             Err(AuthError::MissingScope)
         ));
+    }
+
+    #[tokio::test]
+    async fn tokens_of_a_disabled_owner_stop_working_until_enabled() {
+        let (svc, user, _d) = setup(Role::Admin).await;
+        let (token, _) = svc
+            .create(user, "t", &[Scope::ApiRead], None)
+            .await
+            .unwrap();
+        let users = UserService::new(svc.store.clone());
+        users.create("bob", "pw", Role::Admin).await.unwrap();
+        svc.verify(&token, Scope::ApiRead).await.unwrap();
+        users.set_disabled(user, true).await.unwrap();
+        assert!(matches!(
+            svc.verify(&token, Scope::ApiRead).await,
+            Err(AuthError::InvalidToken)
+        ));
+        users.set_disabled(user, false).await.unwrap();
+        svc.verify(&token, Scope::ApiRead).await.unwrap();
     }
 
     #[test]

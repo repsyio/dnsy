@@ -792,6 +792,22 @@ fn sha1_ds_ignored_when_sha256_present() {
 }
 
 #[test]
+fn expired_nta_no_longer_short_circuits() {
+    let w = world();
+    let mut answers = w.signed_a("www.example.");
+    corrupt(&mut answers);
+    let resp = positive("www.example.", answers);
+    let check = |expires: u32| {
+        let mut ta = anchors(&w.root);
+        ta.add_negative_until(n("example."), expires);
+        block_on(Validator::new(ta).validate(&w.net, &resp.questions[0], &resp, NOW)).status
+    };
+    assert_eq!(check(NOW + 1), DnssecStatus::Insecure, "still in force");
+    assert_eq!(check(NOW), DnssecStatus::Bogus, "expired: validated again");
+    assert_eq!(check(NOW - 1000), DnssecStatus::Bogus);
+}
+
+#[test]
 fn nta_short_circuits() {
     let w = world();
     let mut ta = anchors(&w.root);

@@ -693,6 +693,152 @@ async fn deleted_users_token_and_session_stop_working() {
 }
 
 #[tokio::test]
+async fn disabled_users_lose_sessions_tokens_and_login_until_enabled() {
+    let f = fixture();
+    let admin = session_for(&f, "root", Role::Admin).await;
+    let bob = session_for(&f, "bob", Role::Operator).await;
+    let bob_user = f
+        .state
+        .users
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|u| u.username == "bob")
+        .unwrap();
+    let (secret, _) = f
+        .state
+        .tokens
+        .create(bob_user.id, "t", &[Scope::ApiRead], None)
+        .await
+        .unwrap();
+    let bearer = Cred::Bearer(secret);
+    let me = "/api/v1/auth/me";
+    assert_eq!(
+        status(&f, Method::GET, me, &bearer, None).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(&f, Method::GET, me, &bob, None).await,
+        StatusCode::OK
+    );
+
+    let uri = format!("/api/v1/users/{}", bob_user.id.0);
+    let res = call(
+        &f,
+        req(
+            Method::PATCH,
+            &uri,
+            Some(&admin),
+            Some(json!({"disabled": true})),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = json_of(res).await;
+    assert_eq!(body["disabled"], true);
+    assert!(body["disabled_at"].as_i64().is_some());
+
+    // Effective at once: session, token and login are all refused.
+    assert_eq!(
+        status(&f, Method::GET, me, &bearer, None).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        status(&f, Method::GET, me, &bob, None).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        login(&f, "bob", PW).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let listed = call(&f, req(Method::GET, "/api/v1/users", Some(&admin), None)).await;
+    let listed = json_of(listed).await;
+    let entry = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == "bob")
+        .unwrap();
+    assert_eq!(entry["disabled"], true);
+
+    // Enabling restores the token and login, not the old session.
+    let res = call(
+        &f,
+        req(
+            Method::PATCH,
+            &uri,
+            Some(&admin),
+            Some(json!({"disabled": false})),
+        ),
+    )
+    .await;
+    assert_eq!(json_of(res).await["disabled"], false);
+    assert_eq!(
+        status(&f, Method::GET, me, &bearer, None).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(&f, Method::GET, me, &bob, None).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(login(&f, "bob", PW).await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn last_active_admin_cannot_be_disabled_over_the_api() {
+    let f = fixture();
+    let root = session_for(&f, "root", Role::Admin).await;
+    let other = session_for(&f, "other", Role::Admin).await;
+    let users = f.state.users.list().await.unwrap();
+    let id = |name: &str| users.iter().find(|u| u.username == name).unwrap().id.0;
+    let (root_uri, other_uri) = (
+        format!("/api/v1/users/{}", id("root")),
+        format!("/api/v1/users/{}", id("other")),
+    );
+    let off = || Some(json!({"disabled": true}));
+
+    assert_eq!(
+        status(&f, Method::PATCH, &other_uri, &root, off()).await,
+        StatusCode::OK
+    );
+    // `root` is the only active admin now.
+    assert_eq!(
+        status(&f, Method::PATCH, &root_uri, &root, off()).await,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        status(&f, Method::DELETE, &root_uri, &root, None).await,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        status(
+            &f,
+            Method::PATCH,
+            &root_uri,
+            &root,
+            Some(json!({"role": "viewer"}))
+        )
+        .await,
+        StatusCode::CONFLICT
+    );
+    // The disabled admin's session is gone; non-admins cannot disable anyone.
+    assert_eq!(
+        status(&f, Method::GET, "/api/v1/users", &other, None).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let viewer = session_for(&f, "view", Role::Viewer).await;
+    assert_eq!(
+        status(&f, Method::PATCH, &root_uri, &viewer, off()).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(&f, Method::PATCH, "/api/v1/users/9999", &root, off()).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
 async fn secure_cookie_flag_follows_tls_config() {
     let dir = tempfile::tempdir().unwrap();
     let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();

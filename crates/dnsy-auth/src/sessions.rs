@@ -172,7 +172,9 @@ impl SessionService {
             .write(move |tx| {
                 let row: Option<(i64, i64, i64)> = tx
                     .query_row(
-                        "SELECT user_id, created_at, last_seen_at FROM sessions WHERE id_sha256 = ?1",
+                        "SELECT s.user_id, s.created_at, s.last_seen_at FROM sessions s
+                         JOIN users u ON u.id = s.user_id
+                         WHERE s.id_sha256 = ?1 AND u.disabled_at IS NULL",
                         [&hash],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
@@ -256,6 +258,28 @@ mod tests {
         assert!(s.validate(&a1).await.is_err());
         assert!(s.validate(&a2).await.is_err());
         s.validate(&b1).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn disabling_a_user_ends_sessions_and_blocks_login() {
+        let (s, users, alice, _d) = setup().await;
+        let bob = users.create("bob", "pw", Role::Admin).await.unwrap().id;
+        let a1 = s.create_at(alice, unix_now()).await.unwrap();
+        let b1 = s.create_at(bob, unix_now()).await.unwrap();
+        users.set_disabled(alice, true).await.unwrap();
+        assert!(matches!(
+            s.validate(&a1).await,
+            Err(AuthError::InvalidSession)
+        ));
+        s.validate(&b1).await.unwrap();
+        let login = s.login(&users, "alice", "pw", IP, None).await;
+        assert!(matches!(
+            login,
+            Err(AuthError::User(UserError::InvalidCredentials))
+        ));
+        users.set_disabled(alice, false).await.unwrap();
+        assert!(s.validate(&a1).await.is_err(), "old sessions stay gone");
+        s.login(&users, "alice", "pw", IP, None).await.unwrap();
     }
 
     #[tokio::test]

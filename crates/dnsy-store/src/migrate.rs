@@ -70,6 +70,11 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "client_certs",
         sql: include_str!("../migrations/0008_client_certs.sql"),
     },
+    Migration {
+        version: 9,
+        name: "user_disabled",
+        sql: include_str!("../migrations/0009_user_disabled.sql"),
+    },
 ];
 
 /// Applied state of one known migration.

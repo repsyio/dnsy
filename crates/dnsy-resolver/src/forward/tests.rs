@@ -200,13 +200,13 @@ fn policy_from_config_reads_anchors_file_and_ntas() {
         p.validator.anchors().closest(&n("a.example.")),
         Some(&Name::root())
     );
-    assert!(p.validator.anchors().is_negative(&n("www.broken.example.")));
-    assert!(p.validator.anchors().is_negative(&n("lab.test.")));
-    assert!(!p.validator.anchors().is_negative(&n("example.")));
+    assert!(p.validator.anchors().is_negative(&n("www.broken.example."), 0));
+    assert!(p.validator.anchors().is_negative(&n("lab.test."), 0));
+    assert!(!p.validator.anchors().is_negative(&n("example."), 0));
 
     let p = p.with_negative_trust_anchors(vec![n("other.test.")]);
-    assert!(!p.validator.anchors().is_negative(&n("lab.test.")));
-    assert!(p.validator.anchors().is_negative(&n("x.other.test.")));
+    assert!(!p.validator.anchors().is_negative(&n("lab.test."), 0));
+    assert!(p.validator.anchors().is_negative(&n("x.other.test."), 0));
     assert_eq!(p.validator.limits().clock_skew, 60);
 
     let bad = |c: Dnssec| DnssecPolicy::from_config(&c).unwrap_err().to_string();

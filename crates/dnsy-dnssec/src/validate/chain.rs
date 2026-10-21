@@ -95,7 +95,7 @@ impl<'a, F: DnssecFetcher> Ctx<'a, F> {
         section: &[Record],
     ) -> Res<(Verdict, Option<Name>)> {
         let owner = &rrset[0].name;
-        if self.validator.anchors.is_negative(owner) {
+        if self.validator.anchors.is_negative(owner, self.now) {
             return Ok((Verdict::Insecure(None), None));
         }
         let anchor = self.closest_anchor(owner)?;

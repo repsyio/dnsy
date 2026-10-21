@@ -18,7 +18,7 @@ use dnsy_config::Validation;
 use dnsy_dnssec::{Algorithm, DigestType, KeyRecord, KeyRole, KeyState, ds_for};
 use dnsy_observe::{StatsService, TimeRange};
 use dnsy_proto::Name;
-use dnsy_zone::{Denial, DnssecPolicy, KeyLayout, KeyStoreError, Zone, ZoneSigning};
+use dnsy_zone::{Denial, DnssecPolicy, KeyLayout, KeyStoreError, Passphrase, Zone, ZoneSigning};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use utoipa::ToSchema;
@@ -44,6 +44,9 @@ pub fn router() -> OpenApiRouter<ApiState> {
         .routes(routes!(list_keys, generate_key))
         .routes(routes!(start_rollover))
         .routes(routes!(confirm_ds))
+        .routes(routes!(abort_rollover))
+        .routes(routes!(export_keys))
+        .routes(routes!(change_passphrase))
         .routes(routes!(ds_export))
         .routes(routes!(get_validation, patch_validation))
         .routes(routes!(dnssec_status))
@@ -107,6 +110,10 @@ pub struct DnssecPolicyInput {
     pub refresh_days: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dnskey_ttl: Option<u32>,
+    /// Seconds added to the DNSKEY TTL before a published key may sign (default 3600,
+    /// at most 604800).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub propagation_delay: Option<u32>,
 }
 
 /// Public metadata of a key. There is no private key field.
@@ -128,15 +135,29 @@ pub struct KeyView {
     pub ds_confirmed_at: Option<i64>,
 }
 
+/// One rollover under way: a role with an incoming key.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RolloverRoleView {
+    /// `csk`, `ksk` or `zsk`.
+    pub role: String,
+    /// `in_progress` or `awaiting_ds_confirmation`.
+    pub state: String,
+    /// The incoming key.
+    pub new_key_id: i64,
+}
+
 /// Where the key rollover stands.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RolloverView {
-    /// `idle`, `in_progress` or `awaiting_ds_confirmation`.
+    /// `idle`, `in_progress`, or `awaiting_ds_confirmation` when any rollover waits for the
+    /// registrar's DS.
     pub state: String,
-    /// Role being rolled over.
+    /// Role of the first rollover in `rollovers`; use `rollovers` to see them all.
     pub role: Option<String>,
-    /// The incoming key.
+    /// The incoming key of the first rollover in `rollovers`.
     pub new_key_id: Option<i64>,
+    /// Every rollover under way (a KSK and a ZSK rollover can run at the same time).
+    pub rollovers: Vec<RolloverRoleView>,
 }
 
 /// A zone's DNSSEC state.
@@ -150,6 +171,7 @@ pub struct DnssecView {
     pub signature_validity_days: u32,
     pub refresh_days: u32,
     pub dnskey_ttl: u32,
+    pub propagation_delay: u32,
     /// Keys that are not removed.
     pub keys: Vec<KeyView>,
     /// Unix time from which signatures are refreshed; `None` while the zone is unsigned.
@@ -194,6 +216,63 @@ impl From<KeyRoleBody> for KeyRole {
 pub struct RolloverInput {
     /// Algorithm of the new key (13 or 15); defaults to the rolled key's algorithm.
     pub algorithm: Option<u8>,
+}
+
+/// Which rollover to abort.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AbortRolloverInput {
+    /// Abort only this role's rollover; omitted aborts every rollover of the zone.
+    pub role: Option<KeyRoleBody>,
+}
+
+/// Key export request.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportKeysInput {
+    /// Passphrase the bundle is encrypted under (at least 8 characters). It may differ from
+    /// the key passphrase; keep it apart from the bundle.
+    pub passphrase: String,
+    /// Export only this zone's keys; omitted exports every zone's.
+    pub zone: Option<String>,
+}
+
+impl std::fmt::Debug for ExportKeysInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExportKeysInput")
+            .field("zone", &self.zone)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An encrypted key backup.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct KeyBackup {
+    /// Base64 of the bundle: every non-removed key, sealed with AES-256-GCM under a key
+    /// derived from the request's passphrase. `dnsy dnssec keys import` restores it.
+    pub bundle: String,
+}
+
+/// Key passphrase change.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChangePassphraseInput {
+    /// The new key passphrase (at least 8 characters).
+    pub new_passphrase: String,
+}
+
+impl std::fmt::Debug for ChangePassphraseInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChangePassphraseInput")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Result of a key passphrase change.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PassphraseChanged {
+    /// Keys re-encrypted under the new passphrase.
+    pub keys_reencrypted: usize,
 }
 
 /// A DS record to publish at the parent.
@@ -282,9 +361,37 @@ pub struct TrustAnchorView {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ValidationSettings {
     pub validation: ValidationMode,
-    /// Names at or below which validation is skipped (RFC 7646).
+    /// Names at or below which validation is skipped (RFC 7646); expired entries are left out.
     pub negative_trust_anchors: Vec<String>,
+    /// The same anchors with their expiry.
+    pub negative_trust_anchor_entries: Vec<NtaView>,
     pub trust_anchors: Vec<TrustAnchorView>,
+}
+
+/// A negative trust anchor in force.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NtaView {
+    pub name: String,
+    /// Unix time at which the anchor stops applying; `None` until it is removed.
+    pub expires_at: Option<i64>,
+}
+
+/// A negative trust anchor to set: a bare name, or a name with an optional expiry.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum NtaInput {
+    Name(String),
+    Entry(NtaEntryInput),
+}
+
+/// A negative trust anchor with an optional expiry.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NtaEntryInput {
+    pub name: String,
+    /// Unix time (in the future) at which the anchor stops applying; omitted keeps it until
+    /// removed.
+    pub expires_at: Option<i64>,
 }
 
 /// Validation settings changes. Applied at once; not persisted across restarts (the
@@ -294,8 +401,9 @@ pub struct ValidationSettings {
 #[serde(deny_unknown_fields)]
 pub struct ValidationPatch {
     pub validation: Option<ValidationMode>,
-    /// Replaces the whole list; `[]` clears it.
-    pub negative_trust_anchors: Option<Vec<String>>,
+    /// Replaces the whole list; `[]` clears it. An entry is a name, or `{name, expires_at}`
+    /// for an anchor that stops applying at `expires_at` (Unix time).
+    pub negative_trust_anchors: Option<Vec<NtaInput>>,
 }
 
 /// Validation counters and clock trust.
@@ -340,6 +448,7 @@ fn key_error(e: &KeyStoreError) -> ApiError {
     match e {
         KeyStoreError::NotFound(_) => ApiError::NotFound(e.to_string()),
         KeyStoreError::RolloverInProgress(_)
+        | KeyStoreError::NoRollover(_)
         | KeyStoreError::NoActiveKey(_)
         | KeyStoreError::InvalidState(_) => ApiError::Conflict(e.to_string()),
         // Details (which may name files or crypto failures) stay in the log.
@@ -373,16 +482,11 @@ fn key_view(k: &KeyRecord) -> KeyView {
 }
 
 fn rollover_view(keys: &[KeyRecord]) -> RolloverView {
-    let incoming = keys
+    let rollovers: Vec<RolloverRoleView> = keys
         .iter()
-        .find(|k| matches!(k.state, KeyState::Generated | KeyState::Published));
-    match incoming {
-        None => RolloverView {
-            state: "idle".to_owned(),
-            role: None,
-            new_key_id: None,
-        },
-        Some(k) => RolloverView {
+        .filter(|k| matches!(k.state, KeyState::Generated | KeyState::Published))
+        .map(|k| RolloverRoleView {
+            role: k.role.to_string(),
             state: if k.role.is_sep()
                 && k.state == KeyState::Published
                 && k.ds_confirmed_at.is_none()
@@ -392,9 +496,24 @@ fn rollover_view(keys: &[KeyRecord]) -> RolloverView {
                 "in_progress"
             }
             .to_owned(),
-            role: Some(k.role.to_string()),
-            new_key_id: Some(k.id),
-        },
+            new_key_id: k.id,
+        })
+        .collect();
+    let state = if rollovers.is_empty() {
+        "idle"
+    } else if rollovers
+        .iter()
+        .any(|r| r.state == "awaiting_ds_confirmation")
+    {
+        "awaiting_ds_confirmation"
+    } else {
+        "in_progress"
+    };
+    RolloverView {
+        state: state.to_owned(),
+        role: rollovers.first().map(|r| r.role.clone()),
+        new_key_id: rollovers.first().map(|r| r.new_key_id),
+        rollovers,
     }
 }
 
@@ -443,6 +562,7 @@ async fn view_of(
         signature_validity_days: policy.signature_validity_days,
         refresh_days: policy.refresh_days,
         dnskey_ttl: policy.dnskey_ttl,
+        propagation_delay: policy.propagation_delay,
         rollover: rollover_view(&keys),
         keys: keys.iter().map(key_view).collect(),
         next_resign,
@@ -653,6 +773,113 @@ async fn confirm_ds(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Abort the rollover of one role (or of every role): the incoming key is withdrawn and its
+/// private key destroyed, and the active key keeps signing. A rollover whose new key already
+/// became active cannot be aborted. If the incoming KSK or CSK's DS was already published at
+/// the parent, remove it there.
+#[utoipa::path(post, path = "/zones/{name}/dnssec/rollover/abort", tag = "dnssec", security(("bearer" = []), ("session" = [])),
+    params(("name" = String, Path, description = "Zone name")),
+    request_body(content = AbortRolloverInput, description = "Optional"),
+    responses(
+        (status = 200, description = "The zone's DNSSEC state after the abort", body = DnssecView),
+        (status = 404, body = Problem, content_type = "application/problem+json"),
+        (status = 409, body = Problem, content_type = "application/problem+json"),
+        (status = 503, body = Problem, content_type = "application/problem+json"),
+    ))]
+async fn abort_rollover(
+    _scope: RequireScope<AdminScope>,
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    body: Option<Json<AbortRolloverInput>>,
+) -> Result<Json<DnssecView>, ApiError> {
+    let signing = signing(&state)?;
+    let (_, zone) = existing(&state, &name)?;
+    let role = body.and_then(|Json(b)| b.role).map(KeyRole::from);
+    signing
+        .keys()
+        .abort_rollover(&zone.origin, role)
+        .await
+        .map_err(|e| key_error(&e))?;
+    // Drop the withdrawn DNSKEY from the signed zone now instead of at the next refresh.
+    signing.sign_due().await;
+    tracing::info!(zone = %zone.origin, "dnssec rollover aborted");
+    Ok(Json(view_of(&state, signing, &zone).await?))
+}
+
+// ---------------------------------------------------------------------------------------
+// key backup and passphrase
+
+/// Shortest passphrase accepted for a bundle or the key store.
+const MIN_PASSPHRASE_LEN: usize = 8;
+
+fn passphrase(text: &str) -> Result<Passphrase, ApiError> {
+    if text.chars().count() < MIN_PASSPHRASE_LEN {
+        return Err(ApiError::Unprocessable(format!(
+            "the passphrase needs at least {MIN_PASSPHRASE_LEN} characters"
+        )));
+    }
+    Ok(Passphrase::new(text))
+}
+
+/// Export the zone keys as a bundle encrypted under the given passphrase, for backup. The
+/// response holds ciphertext only; the passphrase and the keys are never logged.
+#[utoipa::path(post, path = "/dnssec/keys/export", tag = "dnssec", security(("bearer" = []), ("session" = [])),
+    request_body = ExportKeysInput,
+    responses(
+        (status = 200, body = KeyBackup),
+        (status = 404, body = Problem, content_type = "application/problem+json"),
+        (status = 422, body = Problem, content_type = "application/problem+json"),
+        (status = 503, body = Problem, content_type = "application/problem+json"),
+    ))]
+async fn export_keys(
+    _scope: RequireScope<AdminScope>,
+    State(state): State<ApiState>,
+    Json(body): Json<ExportKeysInput>,
+) -> Result<Json<KeyBackup>, ApiError> {
+    let signing = signing(&state)?;
+    let bundle_pass = passphrase(&body.passphrase)?;
+    let origin = match &body.zone {
+        Some(z) => Some(existing(&state, z)?.1.origin.clone()),
+        None => None,
+    };
+    let bundle = signing
+        .keys()
+        .export_bundle(origin.as_ref(), &bundle_pass)
+        .await
+        .map_err(|e| key_error(&e))?;
+    tracing::info!(zone = ?body.zone, "dnssec keys exported");
+    Ok(Json(KeyBackup {
+        bundle: STANDARD.encode(bundle),
+    }))
+}
+
+/// Change the key passphrase: every stored private key is re-encrypted under the new one in a
+/// single transaction (all or none). Keys stored unencrypted become encrypted. The running
+/// server uses the new passphrase at once; update `DNSY_DNSSEC_PASSPHRASE` or the passphrase
+/// file before the next start, or the keys cannot be read.
+#[utoipa::path(post, path = "/dnssec/passphrase", tag = "dnssec", security(("bearer" = []), ("session" = [])),
+    request_body = ChangePassphraseInput,
+    responses(
+        (status = 200, body = PassphraseChanged),
+        (status = 422, body = Problem, content_type = "application/problem+json"),
+        (status = 503, body = Problem, content_type = "application/problem+json"),
+    ))]
+async fn change_passphrase(
+    _scope: RequireScope<AdminScope>,
+    State(state): State<ApiState>,
+    Json(body): Json<ChangePassphraseInput>,
+) -> Result<Json<PassphraseChanged>, ApiError> {
+    let signing = signing(&state)?;
+    let new = passphrase(&body.new_passphrase)?;
+    let keys_reencrypted = signing
+        .keys()
+        .change_passphrase(new)
+        .await
+        .map_err(|e| key_error(&e))?;
+    tracing::info!(keys = keys_reencrypted, "dnssec key passphrase changed");
+    Ok(Json(PassphraseChanged { keys_reencrypted }))
+}
+
 // ---------------------------------------------------------------------------------------
 // DS export
 
@@ -741,14 +968,20 @@ async fn ds_export(
 // ---------------------------------------------------------------------------------------
 // validation settings
 
-fn settings_of(control: &dyn ValidationControl) -> ValidationSettings {
+fn settings_of(control: &dyn ValidationControl, now: i64) -> ValidationSettings {
+    let entries: Vec<NtaView> = control
+        .negative_trust_anchors()
+        .into_iter()
+        .filter(|(_, expires)| expires.is_none_or(|e| i64::from(e) > now))
+        .map(|(name, expires)| NtaView {
+            name: name.to_string(),
+            expires_at: expires.map(i64::from),
+        })
+        .collect();
     ValidationSettings {
         validation: control.mode().into(),
-        negative_trust_anchors: control
-            .negative_trust_anchors()
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
+        negative_trust_anchors: entries.iter().map(|e| e.name.clone()).collect(),
+        negative_trust_anchor_entries: entries,
         trust_anchors: control
             .trust_anchors()
             .into_iter()
@@ -769,14 +1002,18 @@ fn settings_of(control: &dyn ValidationControl) -> ValidationSettings {
     }
 }
 
-fn parse_ntas(names: &[String]) -> Result<Vec<Name>, ApiError> {
-    if names.len() > MAX_NTAS {
+fn parse_ntas(inputs: &[NtaInput], now: i64) -> Result<Vec<(Name, Option<u32>)>, ApiError> {
+    if inputs.len() > MAX_NTAS {
         return Err(ApiError::Unprocessable(format!(
             "at most {MAX_NTAS} negative trust anchors"
         )));
     }
-    let mut out: Vec<Name> = Vec::new();
-    for text in names {
+    let mut out: Vec<(Name, Option<u32>)> = Vec::new();
+    for input in inputs {
+        let (text, expires_at) = match input {
+            NtaInput::Name(n) => (n, None),
+            NtaInput::Entry(e) => (&e.name, e.expires_at),
+        };
         let name = Name::from_ascii(text)
             .map_err(|e| ApiError::Unprocessable(format!("invalid name {text:?}: {e}")))?
             .to_lowercase();
@@ -786,8 +1023,19 @@ fn parse_ntas(names: &[String]) -> Result<Vec<Name>, ApiError> {
                     .to_owned(),
             ));
         }
-        if !out.contains(&name) {
-            out.push(name);
+        let expires = match expires_at {
+            None => None,
+            Some(t) if t <= now => {
+                return Err(ApiError::Unprocessable(format!(
+                    "expires_at of {text:?} is not in the future"
+                )));
+            }
+            Some(t) => Some(u32::try_from(t).map_err(|_| {
+                ApiError::Unprocessable(format!("expires_at of {text:?} is too far ahead"))
+            })?),
+        };
+        if !out.iter().any(|(n, _)| *n == name) {
+            out.push((name, expires));
         }
     }
     Ok(out)
@@ -803,7 +1051,10 @@ async fn get_validation(
     _scope: RequireScope<Read>,
     State(state): State<ApiState>,
 ) -> Result<Json<ValidationSettings>, ApiError> {
-    Ok(Json(settings_of(validation(&state)?.as_ref())))
+    Ok(Json(settings_of(
+        validation(&state)?.as_ref(),
+        state.clock.now(),
+    )))
 }
 
 /// Change the validation mode or the negative trust anchors at run time. A change flushes the
@@ -829,7 +1080,7 @@ async fn patch_validation(
     let ntas = patch
         .negative_trust_anchors
         .as_deref()
-        .map(parse_ntas)
+        .map(|n| parse_ntas(n, state.clock.now()))
         .transpose()?;
     if let Some(mode) = patch.validation {
         control.set_mode(mode.into());
@@ -837,7 +1088,7 @@ async fn patch_validation(
     if let Some(ntas) = ntas {
         control.set_negative_trust_anchors(ntas);
     }
-    Ok(Json(settings_of(control.as_ref())))
+    Ok(Json(settings_of(control.as_ref(), state.clock.now())))
 }
 
 // ---------------------------------------------------------------------------------------
