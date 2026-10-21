@@ -103,6 +103,7 @@ enabled = false
 [filter]
 block_mode = "null_ip"
 [limits]
+open_resolver = true
 per_client_qps = 0
 [logging]
 level = "info"
