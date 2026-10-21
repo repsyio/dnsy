@@ -352,19 +352,16 @@ impl SlotLimit {
             victim.cancel_close();
             return None;
         };
-        let permit =
-            match tokio::time::timeout(RECYCLE_WAIT, Arc::clone(&self.total).acquire_owned()).await
-            {
-                Ok(Ok(permit)) => permit,
-                _ => {
-                    victim.cancel_close();
-                    self.refund(ticket);
-                    return None;
-                }
-            };
+        let waited =
+            tokio::time::timeout(RECYCLE_WAIT, Arc::clone(&self.total).acquire_owned()).await;
+        let Ok(Ok(permit)) = waited else {
+            victim.cancel_close();
+            self.refund(&ticket);
+            return None;
+        };
         let slot = self.claim(ip, permit).ok();
         if slot.is_none() {
-            self.refund(ticket);
+            self.refund(&ticket);
         }
         slot
     }
@@ -416,7 +413,7 @@ impl SlotLimit {
     }
 
     /// Gives back what [`SlotLimit::reserve`] spent.
-    fn refund(&self, ticket: Ticket) {
+    fn refund(&self, ticket: &Ticket) {
         let mut limits = self
             .recycles
             .lock()
@@ -831,9 +828,10 @@ mod tests {
         {
             let mut limits = limit.recycles.lock().unwrap();
             for n in 0..100 {
-                limits
-                    .per_client
-                    .insert(recycle_key(recent(n)), now - Duration::from_secs(5));
+                limits.per_client.insert(
+                    recycle_key(recent(n)),
+                    now.checked_sub(Duration::from_secs(5)).unwrap(),
+                );
             }
         }
         let granted = (0..100)
@@ -930,6 +928,10 @@ mod tests {
     /// connections in every state: nothing protected is ever asked to close, every recycle frees
     /// exactly one slot, and nothing leaks.
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario reads best top to bottom"
+    )]
     async fn recycling_invariants_hold_under_random_actors() {
         use std::sync::atomic::{AtomicBool, AtomicUsize};
         const CAP: usize = 24;
