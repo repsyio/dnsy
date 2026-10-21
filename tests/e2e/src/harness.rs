@@ -68,6 +68,8 @@ pub struct Opts {
     pub no_users: bool,
     /// `(min_hits, remaining_ttl_pct)` enables cache prefetch; `None` keeps it off.
     pub prefetch: Option<(u32, u8)>,
+    /// Runs this `dnsy` executable instead of the one built with the workspace.
+    pub binary: Option<PathBuf>,
 }
 
 impl Default for Opts {
@@ -94,6 +96,7 @@ impl Default for Opts {
             same_udp_tcp_port: false,
             no_users: false,
             prefetch: None,
+            binary: None,
         }
     }
 }
@@ -127,7 +130,8 @@ pub struct Harness {
     http: reqwest::Client,
 }
 
-fn binary() -> &'static Path {
+/// The `dnsy` executable the harness runs (`DNSY_BIN`, or the workspace build next to the tests).
+pub fn binary() -> &'static Path {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
         if let Some(p) = std::env::var_os("DNSY_BIN") {
@@ -324,7 +328,7 @@ impl Harness {
     /// only upstream and `opts.upstream` is ignored).
     pub async fn start_with(opts: Opts, upstream: Option<FakeUpstream>) -> Harness {
         crate::pki::install_provider();
-        let bin = binary();
+        let bin = opts.binary.as_deref().unwrap_or_else(|| binary());
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         std::fs::create_dir_all(root.join("zones")).expect("zones dir");
