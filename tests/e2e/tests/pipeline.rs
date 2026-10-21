@@ -2,7 +2,7 @@
 //! upstream exchange, and a flood of queries for a slow name cannot take every UDP slot from
 //! other names.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dnsy_e2e::clients::wire;
 use dnsy_e2e::upstream::a;
@@ -11,6 +11,9 @@ use dnsy_e2e::{Harness, Opts, Reply, query, udp_exchange, udp_raw};
 use dnsy_proto::{Message, RData, Rcode, RecordType};
 use tokio::net::UdpSocket;
 use tokio::task::JoinSet;
+
+/// How long the upstream takes to answer the slow name.
+const SLOW: Duration = Duration::from_secs(4);
 
 fn opts() -> Opts {
     Opts {
@@ -55,7 +58,7 @@ async fn slow_name_flood_does_not_starve_other_names() {
         "slow.test.",
         RecordType::A,
         Reply::Delay(
-            Duration::from_secs(3),
+            SLOW,
             Box::new(Reply::Answer(vec![a("slow.test.", 300, "203.0.113.10")])),
         ),
     );
@@ -64,26 +67,43 @@ async fn slow_name_flood_does_not_starve_other_names() {
         RecordType::A,
         Reply::Answer(vec![a("fast.test.", 300, "203.0.113.11")]),
     );
-    // More identical slow queries than the listener has in-flight slots (1024).
+    // More identical slow queries than the listener has in-flight slots (1024), paced so the
+    // kernel receive buffer never overflows (that would drop the probes below, not test us).
+    let started = Instant::now();
     let flood = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    for _ in 0..1500 {
-        flood
-            .send_to(&wire(&query("slow.test.", RecordType::A)), h.udp)
-            .await
-            .unwrap();
+    for batch in 0..30 {
+        for _ in 0..50 {
+            flood
+                .send_to(&wire(&query("slow.test.", RecordType::A)), h.udp)
+                .await
+                .unwrap();
+        }
+        if batch % 5 == 4 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
-    // While the slow exchange is still pending, other names are answered at once.
+    // While the slow exchange is still pending, other names are answered.
     for name in ["www.example.test.", "fast.test."] {
-        let reply = udp_raw(
-            h.udp,
-            &wire(&query(name, RecordType::A)),
-            Duration::from_secs(1),
-        )
-        .await
-        .unwrap_or_else(|| panic!("{name} starved by the slow flood"));
-        let r = Message::decode(&reply).unwrap();
+        let mut answered = None;
+        for _ in 0..3 {
+            if let Some(reply) = udp_raw(
+                h.udp,
+                &wire(&query(name, RecordType::A)),
+                Duration::from_millis(500),
+            )
+            .await
+            {
+                answered = Some(Message::decode(&reply).unwrap());
+                break;
+            }
+        }
+        let r = answered.unwrap_or_else(|| panic!("{name} starved by the slow flood"));
         assert_eq!(r.header.rcode, Rcode::NoError, "{name}");
     }
+    assert!(
+        started.elapsed() < SLOW,
+        "answered while the slow exchange was pending"
+    );
     assert_eq!(
         up(&h).count("slow.test.", RecordType::A),
         1,
