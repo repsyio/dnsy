@@ -16,11 +16,13 @@ fn structs() -> BTreeMap<String, Vec<(String, String)>> {
             out.insert(name.to_owned(), Vec::new());
         } else if line == "}" {
             current = None;
-        } else if let (Some(name), Some(field)) = (&current, line.strip_prefix("    pub ")) {
-            if let Some((key, ty)) = field.split_once(':') {
-                let ty = ty.trim().trim_end_matches(',').to_owned();
-                out.get_mut(name).unwrap().push((key.to_owned(), ty));
-            }
+        } else if let (Some(name), Some((key, ty))) = (
+            &current,
+            line.strip_prefix("    pub ")
+                .and_then(|f| f.split_once(':')),
+        ) {
+            let ty = ty.trim().trim_end_matches(',').to_owned();
+            out.get_mut(name).unwrap().push((key.to_owned(), ty));
         }
     }
     out
