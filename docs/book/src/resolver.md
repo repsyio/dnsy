@@ -73,8 +73,10 @@ only ever returned to a CD=0 query as SERVFAIL, and never replaces a live Secure
 
 **Bounded size.** The cache is split into up to 16 shards, each with its own lock, so concurrent
 readers do not contend on a global lock. `max_entries` bounds the total number of entries across
-shards; when it is exceeded the least recently used entry (among a small per-shard sample) is
-evicted and counted.
+shards. When an insert takes it over, the inserting shard evicts the least recently used of 8
+entries sampled at random positions, as long as it holds more than its share (`max_entries /
+shards`); otherwise the first other shard over its share (visited one lock at a time from a random
+start) does. No insert ever locks all shards. Evictions are counted.
 
 **Flush and statistics.** The cache can be flushed entirely or by name (optionally the whole
 subtree below it). Statistics report entries, capacity, hits, misses, inserts, evictions and
@@ -123,11 +125,24 @@ IPv6 literals use brackets, for example `tcp://[2001:db8::1]:53`.
 
 Behaviour:
 
-- Every attempt uses a fresh random query ID. UDP queries use a new socket on an OS-chosen random
-  source port, connected to the upstream so datagrams from other sources are dropped.
-- A response is accepted only when the ID, the QR bit, the opcode and the question match the query.
-  Mismatching UDP datagrams are ignored until the attempt times out; a mismatch on a stream
-  transport is an error.
+- Every attempt uses a fresh query ID from the CSPRNG.
+- UDP queries go over a small pool of connected sockets per upstream. The pool keeps these
+  anti-spoofing invariants:
+  - each socket is bound to an OS-chosen random source port and connected to the upstream, so
+    the kernel drops datagrams from any other source;
+  - a socket serves one query at a time; concurrent queries take other sockets, and a query
+    finding no idle socket opens a new one;
+  - a socket is closed after 128 queries or 60 s, whichever comes first, so a source port stays
+    in use only briefly; at most 64 idle sockets are kept per upstream;
+  - a socket whose attempt timed out or failed is closed, never reused;
+  - the receive buffer (4096 bytes, above the advertised 1232) belongs to the socket and is
+    reused, so a query allocates no receive buffer.
+- A response is accepted only when the ID, the QR bit, the opcode and the full question section
+  match the query. Mismatching UDP datagrams, including a late answer to an earlier query on the
+  same pooled socket, are ignored until the attempt times out; a mismatch on a stream transport is
+  an error.
+- The upstream address is cached: an IP literal is parsed once, a host name is resolved again at
+  most every 60 s (a pooled socket connected to an old address is closed).
 - Each attempt has a timeout (default 2 s). The TCP retry after TC is a new attempt.
 - Queries advertise an EDNS UDP payload of 1232. The caller's DO bit, CD bit and EDNS options are
   forwarded unchanged.

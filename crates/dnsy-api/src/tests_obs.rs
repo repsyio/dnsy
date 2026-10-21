@@ -406,7 +406,7 @@ fn cache_with(names: &[&str]) -> Arc<Cache> {
         };
         cache.insert(
             key,
-            &msg,
+            msg.clone(),
             DnssecStatus::Unchecked,
             std::time::Instant::now(),
         );

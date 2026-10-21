@@ -4,7 +4,7 @@
 //! Time is injected: every operation takes the current [`Instant`], so tests control the clock.
 
 use std::collections::HashMap;
-use std::hash::{BuildHasher, RandomState};
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher, RandomState};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -26,7 +26,8 @@ pub use stale::{Joined, RefreshGuard, RefreshWait, Refreshes};
 mod tests;
 
 const MAX_SHARDS: usize = 16;
-/// Entries examined per shard when an eviction is needed; the oldest of all samples goes.
+/// Random positions examined in a shard when an eviction is needed; the least recently used of
+/// them goes.
 const EVICTION_SAMPLE: usize = 8;
 /// QTYPE 0 is reserved and never cached.
 const RESERVED_TYPE: RecordType = RecordType::Unknown(0);
@@ -80,29 +81,78 @@ pub struct CacheStats {
 }
 
 /// How an entry is stored. A name-level NXDOMAIN answers every type; the flag keeps it apart from
-/// per-type entries whatever the wire QTYPE is.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// per-type entries whatever the wire QTYPE is (stored as ANY). `hash` is the cache's keyed
+/// (`RandomState`) hash of the rest, computed once: it picks the shard and indexes the entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StoreKey {
     key: CacheKey,
     by_name: bool,
+    hash: u64,
 }
 
 impl StoreKey {
-    fn exact(key: &CacheKey) -> Self {
-        Self {
-            key: key.clone(),
-            by_name: false,
+    fn probe(&self) -> Probe<'_> {
+        Probe {
+            key: &self.key,
+            by_name: self.by_name,
+            hash: self.hash,
+        }
+    }
+}
+
+/// A lookup for a [`StoreKey`] that borrows the asked key instead of copying it.
+#[derive(Clone, Copy)]
+struct Probe<'a> {
+    key: &'a CacheKey,
+    by_name: bool,
+    hash: u64,
+}
+
+impl Probe<'_> {
+    fn matches(&self, stored: &StoreKey) -> bool {
+        let (a, b) = (self.key, &stored.key);
+        stored.hash == self.hash
+            && stored.by_name == self.by_name
+            && (self.by_name || a.qtype == b.qtype)
+            && a.qclass == b.qclass
+            && a.do_bit == b.do_bit
+            && a.cd_bit == b.cd_bit
+            && a.name == b.name
+    }
+
+    fn to_store_key(self) -> StoreKey {
+        StoreKey {
+            key: CacheKey {
+                qtype: if self.by_name {
+                    RecordType::Any
+                } else {
+                    self.key.qtype
+                },
+                ..self.key.clone()
+            },
+            by_name: self.by_name,
+            hash: self.hash,
+        }
+    }
+}
+
+/// Passes a precomputed [`StoreKey::hash`] through.
+#[derive(Default)]
+struct PassThrough(u64);
+
+impl Hasher for PassThrough {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
         }
     }
 
-    fn by_name(key: &CacheKey) -> Self {
-        Self {
-            key: CacheKey {
-                qtype: RecordType::Any,
-                ..key.clone()
-            },
-            by_name: true,
-        }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
     }
 }
 
@@ -121,8 +171,103 @@ struct Entry {
     prefetch_started: bool,
 }
 
+struct Slot {
+    key: StoreKey,
+    entry: Entry,
+}
+
+/// Entries in a dense vector (so eviction can sample random positions), indexed by key hash. The
+/// hash is keyed, so two live keys sharing one is an accident (about 1 in 2^64 per pair) that
+/// costs a cache entry, never a wrong answer: the later key replaces the earlier one, and every
+/// lookup compares the full key.
+#[derive(Default)]
 struct Shard {
-    map: HashMap<StoreKey, Entry>,
+    index: HashMap<u64, usize, BuildHasherDefault<PassThrough>>,
+    slots: Vec<Slot>,
+}
+
+impl Shard {
+    fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn position(&self, probe: &Probe<'_>) -> Option<usize> {
+        self.index
+            .get(&probe.hash)
+            .copied()
+            .filter(|&i| probe.matches(&self.slots[i].key))
+    }
+
+    fn get(&self, probe: &Probe<'_>) -> Option<&Entry> {
+        self.position(probe).map(|i| &self.slots[i].entry)
+    }
+
+    fn get_mut(&mut self, probe: &Probe<'_>) -> Option<&mut Entry> {
+        self.position(probe).map(|i| &mut self.slots[i].entry)
+    }
+
+    /// Stores `entry`; true when the shard grew (false when it replaced an entry).
+    fn insert(&mut self, key: StoreKey, entry: Entry) -> bool {
+        if let Some(&i) = self.index.get(&key.hash) {
+            self.slots[i] = Slot { key, entry };
+            return false;
+        }
+        self.index.insert(key.hash, self.slots.len());
+        self.slots.push(Slot { key, entry });
+        true
+    }
+
+    fn remove(&mut self, probe: &Probe<'_>) -> bool {
+        match self.position(probe) {
+            Some(i) => {
+                self.remove_at(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn remove_at(&mut self, i: usize) {
+        let gone = self.slots.swap_remove(i);
+        self.index.remove(&gone.key.hash);
+        if let Some(moved) = self.slots.get(i) {
+            self.index.insert(moved.key.hash, i);
+        }
+    }
+
+    /// Keeps the entries whose key satisfies `keep`; returns how many were removed.
+    fn retain(&mut self, keep: impl Fn(&StoreKey) -> bool) -> usize {
+        let before = self.slots.len();
+        self.slots.retain(|s| keep(&s.key));
+        if self.slots.len() != before {
+            self.index = self
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.key.hash, i))
+                .collect();
+        }
+        before - self.slots.len()
+    }
+
+    /// Position of the least recently used entry among [`EVICTION_SAMPLE`] random positions (all
+    /// of them in a shard that small), never position `keep`.
+    fn sample_victim(&self, keep: Option<usize>) -> Option<usize> {
+        let candidates = self.slots.len().checked_sub(usize::from(keep.is_some()))?;
+        let skip = |i: usize| match keep {
+            Some(k) if i >= k => i + 1,
+            _ => i,
+        };
+        let oldest = |i: &usize| self.slots[*i].entry.last_used;
+        if candidates <= EVICTION_SAMPLE {
+            // A small shard is examined whole.
+            (0..candidates).map(skip).min_by_key(oldest)
+        } else {
+            (0..EVICTION_SAMPLE)
+                .map(|_| skip(rand::random_range(0..candidates)))
+                .min_by_key(oldest)
+        }
+    }
 }
 
 /// A sharded, bounded DNS cache.
@@ -155,13 +300,7 @@ impl Cache {
     #[must_use]
     pub fn new(cfg: CacheOptions) -> Cache {
         let count = cfg.max_entries.clamp(1, MAX_SHARDS);
-        let shards = (0..count)
-            .map(|_| {
-                Mutex::new(Shard {
-                    map: HashMap::new(),
-                })
-            })
-            .collect();
+        let shards = (0..count).map(|_| Mutex::new(Shard::default())).collect();
         Cache {
             shards,
             hasher: RandomState::new(),
@@ -190,10 +329,31 @@ impl Cache {
         self.cfg.store(Arc::new(next));
     }
 
-    fn shard_for(&self, key: &StoreKey) -> &Mutex<Shard> {
-        let h = self.hasher.hash_one(key);
-        let idx = usize::try_from(h % self.shards.len() as u64).unwrap_or(0);
-        &self.shards[idx]
+    /// The per-type entry for `key`.
+    fn exact_key<'a>(&self, key: &'a CacheKey) -> Probe<'a> {
+        self.probe(key, false)
+    }
+
+    /// The name-level NXDOMAIN entry for `key`'s name.
+    fn name_key<'a>(&self, key: &'a CacheKey) -> Probe<'a> {
+        self.probe(key, true)
+    }
+
+    fn probe<'a>(&self, key: &'a CacheKey, by_name: bool) -> Probe<'a> {
+        let qtype = if by_name { RecordType::Any } else { key.qtype };
+        let hash = self.hasher.hash_one((
+            &key.name, qtype, key.qclass, key.do_bit, key.cd_bit, by_name,
+        ));
+        Probe { key, by_name, hash }
+    }
+
+    /// The shard for `hash`, from its high half (the shard index uses the low bits).
+    fn shard_index(&self, hash: u64) -> usize {
+        usize::try_from((hash >> 32) % self.shards.len() as u64).unwrap_or(0)
+    }
+
+    fn shard_for(&self, probe: &Probe<'_>) -> &Mutex<Shard> {
+        &self.shards[self.shard_index(probe.hash)]
     }
 
     fn next_tick(&self) -> u64 {
@@ -211,7 +371,7 @@ impl Cache {
     pub fn get_for(&self, key: &CacheKey, now: Instant, serve_bogus: bool) -> CacheLookup {
         if self.cfg().enabled && key.qtype != RESERVED_TYPE {
             let mut stale = None;
-            for k in [StoreKey::exact(key), StoreKey::by_name(key)] {
+            for k in [self.exact_key(key), self.name_key(key)] {
                 match self.get_exact(&k, key, now, serve_bogus) {
                     Some(found @ CacheLookup::Fresh { .. }) => {
                         self.hits.fetch_add(1, Ordering::Relaxed);
@@ -232,20 +392,20 @@ impl Cache {
 
     fn get_exact(
         &self,
-        stored_key: &StoreKey,
+        stored_key: &Probe<'_>,
         asked: &CacheKey,
         now: Instant,
         serve_bogus: bool,
     ) -> Option<CacheLookup> {
         let tick = self.next_tick();
         let mut shard = lock(self.shard_for(stored_key));
-        let entry = shard.map.get_mut(stored_key)?;
+        let entry = shard.get_mut(stored_key)?;
         if now >= entry.expires_at {
             if let Some(stale) = self.stale_view(entry, stored_key.by_name, asked, now) {
                 entry.last_used = tick;
                 return Some(stale);
             }
-            shard.map.remove(stored_key);
+            shard.remove(stored_key);
             self.len.fetch_sub(1, Ordering::Relaxed);
             self.expired.fetch_add(1, Ordering::Relaxed);
             return None;
@@ -275,7 +435,8 @@ impl Cache {
         })
     }
 
-    /// Stores `msg` (a response to `key`) with its validation outcome, if cacheable.
+    /// Stores `msg` (a response to `key`) with its validation outcome, if cacheable. The message
+    /// is moved into the cache, not copied.
     ///
     /// Not cached: truncated or authoritative messages, rcodes other than NOERROR, NXDOMAIN and
     /// SERVFAIL, negative answers without an SOA, and anything whose lifetime works out to zero.
@@ -284,8 +445,10 @@ impl Cache {
         clippy::needless_pass_by_value,
         reason = "signature pinned by the plan"
     )]
-    pub fn insert(&self, key: CacheKey, msg: &Message, dnssec: DnssecStatus, now: Instant) {
-        self.store(&key, msg.clone(), dnssec, now);
+    pub fn insert(&self, key: CacheKey, msg: Message, dnssec: DnssecStatus, now: Instant) {
+        if let Ok((key, entry)) = self.entry_for(&key, msg, dnssec, now) {
+            self.put(key, entry, now);
+        }
     }
 
     /// Like [`Cache::insert`], and returns the message to serve for this answer: the stored
@@ -298,61 +461,127 @@ impl Cache {
         dnssec: DnssecStatus,
         now: Instant,
     ) -> Message {
+        match self.entry_for(key, msg, dnssec, now) {
+            Ok((key, entry)) => {
+                let served = entry.msg.clone();
+                self.put(key, entry, now);
+                served
+            }
+            Err(msg) => msg,
+        }
+    }
+
+    /// The entry to store for `msg` (TTL clamps applied), or `msg` back when it is not cacheable.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands the uncacheable message back; boxing it would allocate per answer"
+    )]
+    fn entry_for(
+        &self,
+        key: &CacheKey,
+        msg: Message,
+        dnssec: DnssecStatus,
+        now: Instant,
+    ) -> Result<(StoreKey, Entry), Message> {
         if !self.cfg().enabled || msg.header.tc || msg.header.aa || key.qtype == RESERVED_TYPE {
-            return msg;
+            return Err(msg);
         }
         let mut stored = msg;
         let Some(ttl) = self.prepare(&mut stored, dnssec) else {
-            return stored;
+            return Err(stored);
         };
         for r in section_records_mut(&mut stored) {
             r.ttl = r.ttl.min(ttl);
         }
         if ttl == 0 {
-            return stored;
+            return Err(stored);
         }
         let key = if stored.header.rcode == Rcode::NxDomain && stored.answers.is_empty() {
-            StoreKey::by_name(key)
+            self.name_key(key)
         } else {
-            StoreKey::exact(key)
-        };
+            self.exact_key(key)
+        }
+        .to_store_key();
         let lifetime = Duration::from_secs(u64::from(ttl));
         let stale = if self.cfg().serve_stale.enabled {
             Duration::from_secs(u64::from(self.cfg().serve_stale.max_stale))
         } else {
             Duration::ZERO
         };
-        let entry = Entry {
-            msg: stored.clone(),
-            dnssec,
-            stored_at: now,
-            expires_at: now + lifetime,
-            stale_until: now + lifetime + stale,
-            last_used: self.next_tick(),
-            hits: 0,
-            prefetch_started: false,
-        };
-        let mut shard = lock(self.shard_for(&key));
-        if dnssec == DnssecStatus::Bogus
+        Ok((
+            key,
+            Entry {
+                msg: stored,
+                dnssec,
+                stored_at: now,
+                expires_at: now + lifetime,
+                stale_until: now + lifetime + stale,
+                last_used: self.next_tick(),
+                hits: 0,
+                prefetch_started: false,
+            },
+        ))
+    }
+
+    /// Stores a prepared entry and evicts down to the bound.
+    fn put(&self, key: StoreKey, entry: Entry, now: Instant) {
+        let (hash, idx) = (key.hash, self.shard_index(key.hash));
+        let mut shard = lock(&self.shards[idx]);
+        if entry.dnssec == DnssecStatus::Bogus
             && shard
-                .map
-                .get(&key)
+                .get(&key.probe())
                 .is_some_and(|e| e.dnssec == DnssecStatus::Secure && now < e.expires_at)
         {
-            return stored;
+            return;
         }
-        let added = shard.map.insert(key.clone(), entry).is_none();
-        drop(shard);
+        let added = shard.insert(key, entry);
         self.inserts.fetch_add(1, Ordering::Relaxed);
-        if added {
-            self.len.fetch_add(1, Ordering::Relaxed);
-            while self.len.load(Ordering::Relaxed) > self.cfg().max_entries {
-                if !self.evict_one(&key) {
-                    break;
-                }
+        if !added {
+            return;
+        }
+        let max = self.cfg().max_entries;
+        if self.len.fetch_add(1, Ordering::Relaxed) < max {
+            return;
+        }
+        // Over the bound: evict in the inserting shard while it holds more than its share.
+        let fair_share = (max / self.shards.len()).max(1);
+        while shard.len() > fair_share && self.len.load(Ordering::Relaxed) > max {
+            let Some(victim) = shard.sample_victim(shard.index.get(&hash).copied()) else {
+                break;
+            };
+            shard.remove_at(victim);
+            self.evicted();
+        }
+        drop(shard);
+        // The bound is global: when this shard is within its share, another one is over it.
+        while self.len.load(Ordering::Relaxed) > max {
+            if !self.evict_elsewhere(idx, fair_share) {
+                break;
             }
         }
-        stored
+    }
+
+    fn evicted(&self) {
+        self.len.fetch_sub(1, Ordering::Relaxed);
+        self.evictions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Evicts one sampled entry from the first shard over its `fair_share`, visiting the shards other
+    /// than `skip` one at a time from a random start (never holding more than one lock).
+    fn evict_elsewhere(&self, skip: usize, fair_share: usize) -> bool {
+        let n = self.shards.len();
+        let start = rand::random_range(0..n);
+        for i in (0..n).map(|o| (start + o) % n).filter(|&i| i != skip) {
+            let mut shard = lock(&self.shards[i]);
+            if shard.len() > fair_share
+                && let Some(victim) = shard.sample_victim(None)
+            {
+                shard.remove_at(victim);
+                self.evicted();
+                return true;
+            }
+        }
+        false
     }
 
     /// Works out the entry lifetime, clamping the record TTLs of `msg` in place; `None` (and
@@ -383,43 +612,14 @@ impl Cache {
         })
     }
 
-    /// Evicts the least recently used entry among a per-shard sample, never `keep` (the entry
-    /// just inserted). The bound is global, so the victim may live in any shard.
-    fn evict_one(&self, keep: &StoreKey) -> bool {
-        let mut best: Option<(u64, usize, StoreKey)> = None;
-        for (i, s) in self.shards.iter().enumerate() {
-            let shard = lock(s);
-            let local = shard
-                .map
-                .iter()
-                .filter(|(k, _)| *k != keep)
-                .take(EVICTION_SAMPLE)
-                .min_by_key(|(_, e)| e.last_used);
-            if let Some((k, e)) = local
-                && best.as_ref().is_none_or(|(t, _, _)| e.last_used < *t)
-            {
-                best = Some((e.last_used, i, k.clone()));
-            }
-        }
-        let Some((_, i, k)) = best else {
-            return false;
-        };
-        // Another thread may have removed it meanwhile; the caller's loop re-checks the length.
-        if lock(&self.shards[i]).map.remove(&k).is_some() {
-            self.len.fetch_sub(1, Ordering::Relaxed);
-            self.evictions.fetch_add(1, Ordering::Relaxed);
-        }
-        true
-    }
-
     /// Removes everything; returns the number of entries dropped.
     pub fn flush_all(&self) -> usize {
         self.shards
             .iter()
             .map(|s| {
                 let mut shard = lock(s);
-                let n = shard.map.len();
-                shard.map.clear();
+                let n = shard.len();
+                *shard = Shard::default();
                 self.len.fetch_sub(n, Ordering::Relaxed);
                 n
             })
@@ -431,9 +631,7 @@ impl Cache {
         self.shards
             .iter()
             .map(|s| {
-                let mut shard = lock(s);
-                let before = shard.map.len();
-                shard.map.retain(|k, _| {
+                let removed = lock(s).retain(|k| {
                     let hit = if subtree {
                         k.key.name.is_subdomain_of(name)
                     } else {
@@ -441,7 +639,6 @@ impl Cache {
                     };
                     !hit
                 });
-                let removed = before - shard.map.len();
                 self.len.fetch_sub(removed, Ordering::Relaxed);
                 removed
             })

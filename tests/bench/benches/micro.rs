@@ -44,7 +44,7 @@ fn cache(c: &mut Criterion) {
         do_bit: false,
         cd_bit: false,
     };
-    cache.insert(key.clone(), &response(), DnssecStatus::Insecure, now);
+    cache.insert(key.clone(), response(), DnssecStatus::Insecure, now);
     c.bench_function("cache/hit", |b| b.iter(|| cache.get(black_box(&key), now)));
 }
 

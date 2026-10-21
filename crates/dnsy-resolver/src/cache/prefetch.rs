@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use dnsy_core::DnssecStatus;
 
-use super::{Cache, CacheKey, StoreKey, lock};
+use super::{Cache, CacheKey, lock};
 
 impl Cache {
     /// True once, when the live entry for `key` qualifies for a prefetch at `now`.
@@ -18,9 +18,9 @@ impl Cache {
         if !live.enabled || !cfg.enabled {
             return false;
         }
-        for k in [StoreKey::exact(key), StoreKey::by_name(key)] {
+        for k in [self.exact_key(key), self.name_key(key)] {
             let mut shard = lock(self.shard_for(&k));
-            let Some(e) = shard.map.get_mut(&k) else {
+            let Some(e) = shard.get_mut(&k) else {
                 continue;
             };
             if now >= e.expires_at {

@@ -124,7 +124,7 @@ fn ttl_decrements_on_serve() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 300),
+        positive("www.example.com", 300),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -147,13 +147,13 @@ fn ttl_clamped_to_min_and_max() {
     );
     c.insert(
         lo.clone(),
-        &positive("lo.example.com", 5),
+        positive("lo.example.com", 5),
         DnssecStatus::Unchecked,
         t0,
     );
     c.insert(
         hi.clone(),
-        &positive("hi.example.com", 99_999),
+        positive("hi.example.com", 99_999),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -169,7 +169,7 @@ fn lifetime_is_minimum_across_rrsets() {
     let k = key("www.example.com", RecordType::A);
     let mut m = positive("www.example.com", 300);
     m.answers.push(a_record("other.example.com", 30));
-    c.insert(k.clone(), &m, DnssecStatus::Unchecked, t0);
+    c.insert(k.clone(), m.clone(), DnssecStatus::Unchecked, t0);
     assert!(matches!(
         c.get(&k, secs_later(t0, 29)),
         CacheLookup::Fresh { .. }
@@ -184,7 +184,7 @@ fn expired_entry_misses() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 10),
+        positive("www.example.com", 10),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -199,7 +199,7 @@ fn zero_ttl_not_cached() {
     let t0 = Instant::now();
     c.insert(
         key("z.example.com", RecordType::A),
-        &positive("z.example.com", 0),
+        positive("z.example.com", 0),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -212,7 +212,7 @@ fn name_is_case_insensitive() {
     let t0 = Instant::now();
     c.insert(
         key("WWW.Example.COM", RecordType::A),
-        &positive("www.example.com", 60),
+        positive("www.example.com", 60),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -229,7 +229,7 @@ fn negative_cache_uses_soa_minimum() {
     let k = key("nodata.example.com", RecordType::Aaaa);
     c.insert(
         k.clone(),
-        &negative(
+        negative(
             "nodata.example.com",
             RecordType::Aaaa,
             Rcode::NoError,
@@ -247,7 +247,7 @@ fn negative_cache_uses_soa_minimum() {
     let k2 = key("n2.example.com", RecordType::A);
     c.insert(
         k2.clone(),
-        &negative("n2.example.com", RecordType::A, Rcode::NoError, 30, 500),
+        negative("n2.example.com", RecordType::A, Rcode::NoError, 30, 500),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -262,7 +262,7 @@ fn negative_cache_uses_soa_minimum() {
     });
     capped.insert(
         k.clone(),
-        &negative(
+        negative(
             "nodata.example.com",
             RecordType::Aaaa,
             Rcode::NoError,
@@ -285,13 +285,13 @@ fn negative_without_soa_not_cached() {
     let k = key("x.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &response("x.example.com", RecordType::A, Rcode::NxDomain),
+        response("x.example.com", RecordType::A, Rcode::NxDomain),
         DnssecStatus::Unchecked,
         t0,
     );
     c.insert(
         k,
-        &response("x.example.com", RecordType::A, Rcode::NoError),
+        response("x.example.com", RecordType::A, Rcode::NoError),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -305,7 +305,7 @@ fn nxdomain_answers_other_types() {
     let m = negative("gone.example.com", RecordType::A, Rcode::NxDomain, 300, 300);
     c.insert(
         key("gone.example.com", RecordType::A),
-        &m,
+        m.clone(),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -338,7 +338,7 @@ fn nxdomain_behind_cname_stays_per_type() {
     });
     c.insert(
         key("alias.example.com", RecordType::A),
-        &m,
+        m.clone(),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -362,7 +362,7 @@ fn servfail_short_ttl() {
     let k = key("down.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &response("down.example.com", RecordType::A, Rcode::ServFail),
+        response("down.example.com", RecordType::A, Rcode::ServFail),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -379,7 +379,7 @@ fn other_rcodes_not_cached() {
     let t0 = Instant::now();
     c.insert(
         key("r.example.com", RecordType::A),
-        &response("r.example.com", RecordType::A, Rcode::Refused),
+        response("r.example.com", RecordType::A, Rcode::Refused),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -397,7 +397,7 @@ fn bounded_eviction_counts() {
         let n = format!("h{i}.example.com");
         c.insert(
             key(&n, RecordType::A),
-            &positive(&n, 300),
+            positive(&n, 300),
             DnssecStatus::Unchecked,
             t0,
         );
@@ -407,6 +407,44 @@ fn bounded_eviction_counts() {
     assert_eq!(s.capacity, 4);
     assert_eq!(s.inserts, 10);
     assert_eq!(s.evictions, 6);
+}
+
+#[test]
+fn eviction_prefers_older_entries() {
+    // 16 shards of 100. Half the entries are touched after insertion; inserting 400 more must
+    // evict mostly untouched ones, whatever positions the random samples land on.
+    let c = Cache::new(CacheOptions {
+        max_entries: 1600,
+        ..cfg()
+    });
+    let t0 = Instant::now();
+    let k = |i: usize| key(&format!("e{i}.example.com"), RecordType::A);
+    for i in 0..2000 {
+        if i == 1600 {
+            for warm in (0..1600).step_by(2) {
+                assert!(matches!(c.get(&k(warm), t0), CacheLookup::Fresh { .. }));
+            }
+        }
+        c.insert(
+            k(i),
+            positive(&format!("e{i}.example.com"), 300),
+            DnssecStatus::Unchecked,
+            t0,
+        );
+    }
+    let s = c.stats();
+    assert_eq!((s.entries, s.evictions), (1600, 400));
+    let alive = |range: std::iter::StepBy<std::ops::Range<usize>>| {
+        range
+            .filter(|&i| matches!(c.get(&k(i), t0), CacheLookup::Fresh { .. }))
+            .count()
+    };
+    let warm = alive((0..1600).step_by(2));
+    let cold = alive((1..1600).step_by(2));
+    let new = alive((1600..2000).step_by(1));
+    assert!(warm >= 760, "warm survivors {warm}/800");
+    assert!(cold <= 440, "cold survivors {cold}/800");
+    assert!(new >= 380, "new survivors {new}/400");
 }
 
 #[test]
@@ -422,13 +460,13 @@ fn single_slot_cache_replaces_its_entry() {
     );
     c.insert(
         a.clone(),
-        &positive("a.example.com", 300),
+        positive("a.example.com", 300),
         DnssecStatus::Unchecked,
         t0,
     );
     c.insert(
         b.clone(),
-        &positive("b.example.com", 300),
+        positive("b.example.com", 300),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -446,7 +484,7 @@ fn eviction_keeps_recently_used() {
     let hot = key("hot.example.com", RecordType::A);
     c.insert(
         hot.clone(),
-        &positive("hot.example.com", 300),
+        positive("hot.example.com", 300),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -458,7 +496,7 @@ fn eviction_keeps_recently_used() {
         let n = format!("n{i}.example.com");
         c.insert(
             key(&n, RecordType::A),
-            &positive(&n, 300),
+            positive(&n, 300),
             DnssecStatus::Unchecked,
             t0,
         );
@@ -475,7 +513,7 @@ fn do_bit_separates_entries() {
     dok.do_bit = true;
     c.insert(
         dok.clone(),
-        &positive("www.example.com", 60),
+        positive("www.example.com", 60),
         DnssecStatus::Secure,
         t0,
     );
@@ -498,7 +536,7 @@ fn cd_entries_isolated() {
     cd.cd_bit = true;
     c.insert(
         cd.clone(),
-        &positive("www.example.com", 60),
+        positive("www.example.com", 60),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -510,7 +548,7 @@ fn cd_entries_isolated() {
     other_cd.cd_bit = true;
     c.insert(
         other.clone(),
-        &positive("o.example.com", 60),
+        positive("o.example.com", 60),
         DnssecStatus::Secure,
         t0,
     );
@@ -527,7 +565,7 @@ fn bogus_never_served_as_secure() {
     let k = key("bad.example.com", RecordType::A);
     let mut m = positive("bad.example.com", 3600);
     m.header.ad = true;
-    c.insert(k.clone(), &m, DnssecStatus::Bogus, t0);
+    c.insert(k.clone(), m.clone(), DnssecStatus::Bogus, t0);
     let CacheLookup::Fresh { msg, dnssec } = c.get(&k, t0) else {
         panic!("expected entry");
     };
@@ -545,7 +583,7 @@ fn bogus_keeps_its_ede_and_is_data_only_when_asked() {
     let k = key("bad.example.com", RecordType::A);
     let mut m = positive("bad.example.com", 300);
     m.set_ede(7, "signature expired");
-    c.insert(k.clone(), &m, DnssecStatus::Bogus, t0);
+    c.insert(k.clone(), m.clone(), DnssecStatus::Bogus, t0);
     let CacheLookup::Fresh { msg, .. } = c.get(&k, t0) else {
         panic!("expected entry");
     };
@@ -570,13 +608,13 @@ fn secure_not_overwritten_by_bogus() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 300),
+        positive("www.example.com", 300),
         DnssecStatus::Secure,
         t0,
     );
     c.insert(
         k.clone(),
-        &positive("www.example.com", 300),
+        positive("www.example.com", 300),
         DnssecStatus::Bogus,
         secs_later(t0, 1),
     );
@@ -588,7 +626,7 @@ fn secure_not_overwritten_by_bogus() {
     // Once the Secure entry has expired, Bogus may take its place.
     c.insert(
         k.clone(),
-        &positive("www.example.com", 300),
+        positive("www.example.com", 300),
         DnssecStatus::Bogus,
         secs_later(t0, 400),
     );
@@ -610,8 +648,8 @@ fn tc_and_aa_not_cached() {
     tc.header.tc = true;
     let mut aa = positive("www.example.com", 60);
     aa.header.aa = true;
-    c.insert(k.clone(), &tc, DnssecStatus::Unchecked, t0);
-    c.insert(k.clone(), &aa, DnssecStatus::Unchecked, t0);
+    c.insert(k.clone(), tc.clone(), DnssecStatus::Unchecked, t0);
+    c.insert(k.clone(), aa.clone(), DnssecStatus::Unchecked, t0);
     assert!(matches!(c.get(&k, t0), CacheLookup::Miss));
     assert_eq!(c.stats().inserts, 0);
 }
@@ -626,7 +664,7 @@ fn disabled_cache_stores_nothing() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 60),
+        positive("www.example.com", 60),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -645,7 +683,7 @@ fn flush_name_subtree() {
     ] {
         c.insert(
             key(n, RecordType::A),
-            &positive(n, 60),
+            positive(n, 60),
             DnssecStatus::Unchecked,
             t0,
         );
@@ -672,7 +710,7 @@ fn stats_counters_accurate() {
     assert!(matches!(c.get(&k, t0), CacheLookup::Miss));
     c.insert(
         k.clone(),
-        &positive("www.example.com", 60),
+        positive("www.example.com", 60),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -708,7 +746,7 @@ fn concurrent_get_insert() {
                 for i in 0..500 {
                     let n = format!("h{}.example.com", (i * 7 + t) % 100);
                     let k = key(&n, RecordType::A);
-                    c.insert(k.clone(), &positive(&n, 300), DnssecStatus::Unchecked, t0);
+                    c.insert(k.clone(), positive(&n, 300), DnssecStatus::Unchecked, t0);
                     if let CacheLookup::Fresh { msg, .. } = c.get(&k, t0) {
                         assert_eq!(msg.answers[0].name, name(&n));
                     }
@@ -733,7 +771,7 @@ fn qtype_zero_neither_hits_nor_overwrites_name_level_nxdomain() {
     let m = negative("gone.example.com", RecordType::A, Rcode::NxDomain, 300, 300);
     c.insert(
         key("gone.example.com", RecordType::A),
-        &m,
+        m.clone(),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -745,7 +783,7 @@ fn qtype_zero_neither_hits_nor_overwrites_name_level_nxdomain() {
     // A type-0 response is not cached, so it cannot replace it either.
     c.insert(
         key("gone.example.com", zero),
-        &positive("gone.example.com", 300),
+        positive("gone.example.com", 300),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -769,7 +807,7 @@ fn bound_is_global_whatever_the_hash_distribution() {
             let n = format!("h{i}.example.com");
             c.insert(
                 key(&n, RecordType::A),
-                &positive(&n, 300),
+                positive(&n, 300),
                 DnssecStatus::Unchecked,
                 t0,
             );
@@ -786,7 +824,7 @@ fn reconfigure_changes_ttl_bounds_for_later_inserts() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 300),
+        positive("www.example.com", 300),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -794,7 +832,7 @@ fn reconfigure_changes_ttl_bounds_for_later_inserts() {
     c.reconfigure(|cfg| cfg.max_ttl = 60);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 300),
+        positive("www.example.com", 300),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -831,7 +869,7 @@ fn stale_window_follows_expiry() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 100),
+        positive("www.example.com", 100),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -853,7 +891,7 @@ fn stale_disabled_expires_normally() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 100),
+        positive("www.example.com", 100),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -866,7 +904,7 @@ fn stale_nxdomain_answers_other_types_by_name() {
     let t0 = Instant::now();
     c.insert(
         key("gone.example.com", RecordType::A),
-        &negative("gone.example.com", RecordType::A, Rcode::NxDomain, 60, 60),
+        negative("gone.example.com", RecordType::A, Rcode::NxDomain, 60, 60),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -889,13 +927,13 @@ fn stale_bogus_and_servfail_never_served() {
     );
     c.insert(
         bogus.clone(),
-        &positive("bad.example.com", 100),
+        positive("bad.example.com", 100),
         DnssecStatus::Bogus,
         t0,
     );
     c.insert(
         sf.clone(),
-        &response("sf.example.com", RecordType::A, Rcode::ServFail),
+        response("sf.example.com", RecordType::A, Rcode::ServFail),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -911,7 +949,7 @@ fn stale_secure_is_not_reported_validated() {
     let k = key("s.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("s.example.com", 100),
+        positive("s.example.com", 100),
         DnssecStatus::Secure,
         t0,
     );
@@ -927,7 +965,7 @@ fn refresh_replaces_stale() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 100),
+        positive("www.example.com", 100),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -935,7 +973,7 @@ fn refresh_replaces_stale() {
     stale(c.get(&k, t1));
     c.insert(
         k.clone(),
-        &positive("www.example.com", 300),
+        positive("www.example.com", 300),
         DnssecStatus::Unchecked,
         t1,
     );
@@ -954,7 +992,7 @@ fn stale_entries_stay_within_the_bound() {
         let n = format!("h{i}.example.com");
         c.insert(
             key(&n, RecordType::A),
-            &positive(&n, 10),
+            positive(&n, 10),
             DnssecStatus::Unchecked,
             t0,
         );
@@ -1051,7 +1089,7 @@ fn prefetch_triggers_for_popular_entry_once() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 100),
+        positive("www.example.com", 100),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -1069,7 +1107,7 @@ fn prefetch_triggers_for_popular_entry_once() {
     // A refresh is a new entry and can be prefetched again once popular.
     c.insert(
         k.clone(),
-        &positive("www.example.com", 100),
+        positive("www.example.com", 100),
         DnssecStatus::Unchecked,
         late,
     );
@@ -1083,7 +1121,7 @@ fn prefetch_not_triggered_below_min_hits() {
     let k = key("www.example.com", RecordType::A);
     c.insert(
         k.clone(),
-        &positive("www.example.com", 100),
+        positive("www.example.com", 100),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -1099,7 +1137,7 @@ fn prefetch_disabled_and_bogus_and_expired_never_due() {
     let off = Cache::new(cfg());
     off.insert(
         k.clone(),
-        &positive("www.example.com", 100),
+        positive("www.example.com", 100),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -1111,7 +1149,7 @@ fn prefetch_disabled_and_bogus_and_expired_never_due() {
     let c = Cache::new(prefetch_cfg());
     c.insert(
         k.clone(),
-        &positive("www.example.com", 100),
+        positive("www.example.com", 100),
         DnssecStatus::Unchecked,
         t0,
     );
@@ -1123,7 +1161,7 @@ fn prefetch_disabled_and_bogus_and_expired_never_due() {
     let bogus = key("bad.example.com", RecordType::A);
     c.insert(
         bogus.clone(),
-        &positive("bad.example.com", 100),
+        positive("bad.example.com", 100),
         DnssecStatus::Bogus,
         t0,
     );

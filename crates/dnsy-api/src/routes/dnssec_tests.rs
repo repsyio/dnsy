@@ -658,7 +658,7 @@ fn cache_entry(fx: &Fx) {
         .cache
         .as_ref()
         .unwrap()
-        .insert(key, &msg, DnssecStatus::Unchecked, Instant::now());
+        .insert(key, msg, DnssecStatus::Unchecked, Instant::now());
     assert_eq!(fx.state.cache.as_ref().unwrap().stats().entries, 1);
 }
 
