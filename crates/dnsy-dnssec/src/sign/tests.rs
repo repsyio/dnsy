@@ -799,3 +799,171 @@ fn nsec3_owner_too_long_rejected() {
         DnssecError::InvalidZone("NSEC3 owner name too long")
     );
 }
+
+fn big_zone(names: u32) -> ZoneData {
+    let mut records = vec![
+        soa(),
+        ns("example.", "ns1.example."),
+        a("ns1.example.", [192, 0, 2, 1]),
+    ];
+    for i in 0..names {
+        let [b0, b1, b2, b3] = i.to_be_bytes();
+        records.push(a(&format!("h{i}.example."), [10, b1, b2, b3 ^ b0]));
+    }
+    ZoneData {
+        origin: n("example."),
+        records,
+    }
+}
+
+/// Timing harness: `cargo test --release -p dnsy-dnssec big_zone_timing -- --ignored --nocapture`.
+#[test]
+#[ignore = "timing harness, run by hand in release mode"]
+fn big_zone_timing() {
+    let zone = big_zone(100_000);
+    let keys = csk(Algorithm::EcdsaP256Sha256);
+    for (label, denial) in [("nsec", Denial::Nsec), ("nsec3", nsec3(false))] {
+        let p = policy(denial);
+        let t = std::time::Instant::now();
+        let full = ZoneSigner::sign(&zone, &keys, &p, NOW).unwrap();
+        let full_t = t.elapsed();
+        let t = std::time::Instant::now();
+        let again = ZoneSigner::resign(&zone, &keys, &p, &full, NOW).unwrap();
+        let resign_t = t.elapsed();
+        assert_eq!(full, again);
+        println!(
+            "{label}: full {full_t:?} resign-unchanged {resign_t:?} ({:.0}%)",
+            resign_t.as_secs_f64() / full_t.as_secs_f64() * 100.0
+        );
+    }
+}
+
+fn sign_with(
+    zone: &ZoneData,
+    keys: &ActiveKeys,
+    denial: Denial,
+    previous: Option<&SignedZone>,
+    workers: usize,
+) -> SignedZone {
+    sign_zone(zone, keys, &policy(denial), previous, NOW, workers).unwrap()
+}
+
+#[test]
+fn parallel_sign_equals_sequential_sign() {
+    // Ed25519 signatures are deterministic, so equal means byte-identical.
+    let zone = big_zone(3000);
+    let keys = csk(Algorithm::Ed25519);
+    for denial in [Denial::Nsec, nsec3(false), nsec3(true)] {
+        let serial = sign_with(&zone, &keys, denial.clone(), None, 1);
+        let parallel = sign_with(&zone, &keys, denial, None, 8);
+        assert_eq!(serial, parallel);
+        verify_zone(&parallel, NOW);
+    }
+}
+
+#[test]
+fn parallel_resign_equals_sequential_resign() {
+    let mut zone = big_zone(3000);
+    let keys = csk(Algorithm::Ed25519);
+    let first = sign_with(&zone, &keys, nsec3(false), None, 8);
+    zone.records.push(a("new.example.", [192, 0, 2, 77]));
+    let serial = sign_with(&zone, &keys, nsec3(false), Some(&first), 1);
+    let parallel = sign_with(&zone, &keys, nsec3(false), Some(&first), 8);
+    assert_eq!(serial, parallel);
+    verify_zone(&parallel, NOW);
+}
+
+#[test]
+fn parallel_sign_reports_the_same_error_as_sequential() {
+    let mut zone = big_zone(3000);
+    zone.records.push(a("outside.other.", [192, 0, 2, 1]));
+    let keys = csk(Algorithm::Ed25519);
+    let err =
+        |workers| sign_zone(&zone, &keys, &policy(Denial::Nsec), None, NOW, workers).unwrap_err();
+    assert_eq!(err(1), err(8));
+}
+
+fn changed_rrsets(old: &SignedZone, new: &SignedZone) -> Vec<(Name, u16)> {
+    new.rrsets
+        .iter()
+        .filter(|(k, set)| old.rrsets.get(*k).is_none_or(|o| o.rrsigs != set.rrsigs))
+        .map(|(k, _)| k.clone())
+        .collect()
+}
+
+/// Every NSEC3 points at the next hash in the ring and owns the hash of a zone name.
+fn assert_nsec3_ring_complete(z: &SignedZone, names: &[&str]) {
+    let chain = nsec3_records(z);
+    for (i, (_, x)) in chain.iter().enumerate() {
+        assert_eq!(
+            x.next_hashed,
+            nsec3_hash_of_label(&chain[(i + 1) % chain.len()].0.name)
+        );
+    }
+    for name in names {
+        assert!(
+            nsec3_records(z)
+                .iter()
+                .any(|(r, _)| r.name.labels().next() == Some(hash_label(name).as_bytes())),
+            "no NSEC3 for {name}"
+        );
+    }
+}
+
+fn nsec3_hash_of_label(owner: &Name) -> Vec<u8> {
+    dnsy_proto::base32hex_decode(std::str::from_utf8(owner.labels().next().unwrap()).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn nsec3_resign_after_one_change_touches_only_the_changed_name() {
+    let mut zone = big_zone(2000);
+    let keys = csk(Algorithm::EcdsaP256Sha256);
+    let first = sign_with(&zone, &keys, nsec3(false), None, 4);
+    let target = zone
+        .records
+        .iter_mut()
+        .find(|r| r.name == n("h7.example."))
+        .unwrap();
+    target.data = RData::A(Ipv4Addr::new(203, 0, 113, 7));
+    let second = sign_with(&zone, &keys, nsec3(false), Some(&first), 4);
+    assert_eq!(
+        changed_rrsets(&first, &second),
+        vec![(n("h7.example."), u16::from(RecordType::A))]
+    );
+    // The chain is untouched: same NSEC3 records, same signatures.
+    assert_eq!(nsec3_records(&first).len(), nsec3_records(&second).len());
+    verify_zone(&second, NOW);
+}
+
+#[test]
+fn nsec3_resign_after_adding_a_name_touches_the_name_and_its_chain_neighbour() {
+    let mut zone = big_zone(2000);
+    let keys = csk(Algorithm::EcdsaP256Sha256);
+    let first = sign_with(&zone, &keys, nsec3(false), None, 4);
+    zone.records.push(a("added.example.", [192, 0, 2, 99]));
+    let second = sign_with(&zone, &keys, nsec3(false), Some(&first), 4);
+    let new_label = hash_label("added.example.");
+    let changed: Vec<String> = changed_rrsets(&first, &second)
+        .into_iter()
+        .map(|(name, code)| {
+            if code == u16::from(RecordType::Nsec3) {
+                format!(
+                    "nsec3 {}",
+                    String::from_utf8_lossy(name.labels().next().unwrap())
+                )
+            } else {
+                format!("{name} {code}")
+            }
+        })
+        .collect();
+    // The new A record, its own NSEC3 and the predecessor NSEC3 whose next hash moved.
+    assert_eq!(changed.len(), 3, "{changed:?}");
+    assert!(changed.contains(&"added.example. 1".to_owned()));
+    assert!(changed.contains(&format!("nsec3 {new_label}")));
+    let mut names: Vec<String> = (0..2000).map(|i| format!("h{i}.example.")).collect();
+    names.push("added.example.".to_owned());
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    assert_nsec3_ring_complete(&second, &refs);
+    verify_zone(&second, NOW);
+}

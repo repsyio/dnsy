@@ -1,5 +1,6 @@
 //! NSEC (RFC 4034 4, RFC 4035 2.3) and NSEC3 (RFC 5155 7.1) chains.
 
+use super::parallel;
 use crate::{DnssecError, nsec3_hash};
 use dnsy_proto::{Class, Name, Nsec3, RData, Record, RecordType, TypeBitmap, base32hex_encode};
 use std::collections::BTreeSet;
@@ -55,6 +56,7 @@ pub(super) fn nsec3_chain(
     iterations: u16,
     salt: &[u8],
     opt_out: bool,
+    workers: usize,
 ) -> Result<Vec<Record>, DnssecError> {
     let kept: Vec<&ChainNode> = nodes
         .iter()
@@ -75,24 +77,23 @@ pub(super) fn nsec3_chain(
         }
     }
 
-    let mut hashed: Vec<([u8; 20], TypeBitmap)> = kept
+    let names: Vec<(&Name, Option<&ChainNode>)> = kept
         .iter()
-        .map(|n| {
-            let mut types = n.types.clone();
-            if n.signed {
+        .map(|n| (&n.name, Some(*n)))
+        .chain(empty.iter().map(|n| (n, None)))
+        .collect();
+    // Hashing is independent per name; with many iterations it dominates the chain.
+    let mut hashed: Vec<([u8; 20], TypeBitmap)> =
+        parallel::map_with(names, workers, |(name, node)| {
+            let mut types = node.map(|n| n.types.clone()).unwrap_or_default();
+            if node.is_some_and(|n| n.signed) {
                 types.push(RecordType::Rrsig);
             }
             (
-                nsec3_hash(&n.name, salt, iterations),
+                nsec3_hash(name, salt, iterations),
                 TypeBitmap::from_types(&types),
             )
-        })
-        .chain(
-            empty
-                .iter()
-                .map(|n| (nsec3_hash(n, salt, iterations), TypeBitmap::from_types(&[]))),
-        )
-        .collect();
+        });
     hashed.sort_by_key(|h| h.0);
 
     let origin_labels: Vec<&[u8]> = origin.labels().collect();

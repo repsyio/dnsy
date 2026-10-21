@@ -162,6 +162,17 @@ with its RRSIGs. `dnsy-zone` supplies the inputs: `Zone::signing_data()` for the
 `DnssecPolicy::signing_policy()` for the policy and `KeyStore::active_keys(zone)` for the
 keys. `export_bind(&zone, Some(&signed))` writes the signed zone as a master file.
 
+### Parallel signing and re-signing
+
+RRsets (and the NSEC3 owner hashes) are independent, so `ZoneSigner` spreads them over
+`std::thread::scope` workers, bounded by `available_parallelism` and started only for zones
+with more than about 500 RRsets. Results are collected in canonical order, so the output equals
+a single-threaded run for a fixed clock (Ed25519 signatures are deterministic, ECDSA ones are
+valid but not byte-equal between runs). `ZoneSigner::resign` keeps the RRSIG of every RRset
+whose data, key and validity window are unchanged; after one record changes, only that RRset
+and, when a name is added or removed, its NSEC3 (or NSEC) record and the chain predecessor are
+signed again.
+
 ### What is signed
 
 | RRset | Signed by |
