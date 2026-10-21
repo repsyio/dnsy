@@ -374,6 +374,10 @@ pub struct KeyStore {
     store: Store,
     /// Shared by clones so a passphrase change reaches every holder of the store.
     passphrase: Arc<RwLock<Option<Arc<Passphrase>>>>,
+    /// Held shared by everything that seals, inserts or decrypts keys, and exclusively by a
+    /// passphrase change, so no key is sealed or read under a passphrase that is being
+    /// replaced.
+    key_lock: Arc<tokio::sync::RwLock<()>>,
     clock: Arc<dyn Clock>,
     cost: KdfCost,
     /// Serialises `bootstrap`: its check for existing keys and the insert must not interleave.
@@ -400,6 +404,7 @@ impl KeyStore {
         KeyStore {
             store,
             passphrase: Arc::new(RwLock::new(passphrase.map(Arc::new))),
+            key_lock: Arc::default(),
             clock,
             cost: KdfCost::default(),
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -523,6 +528,7 @@ impl KeyStore {
         role: KeyRole,
         algorithm: Algorithm,
     ) -> Result<KeyRecord, KeyStoreError> {
+        let _shared = self.key_lock.read().await;
         let z = zone.clone();
         let new = self
             .offload(move |s| s.new_key(&z, role, algorithm, KeyState::Generated))
@@ -545,6 +551,7 @@ impl KeyStore {
         policy: &DnssecPolicy,
     ) -> Result<Vec<KeyRecord>, KeyStoreError> {
         let _guard = self.bootstrap_lock.lock().await;
+        let _shared = self.key_lock.read().await;
         let existing = self.keys(zone).await?;
         if existing.iter().any(|k| k.state != KeyState::Removed) {
             return Ok(existing);
@@ -627,6 +634,7 @@ impl KeyStore {
     /// # Errors
     /// Unknown or removed key, missing or wrong passphrase, or a database failure.
     pub async fn signing_key(&self, id: i64) -> Result<SigningKey, KeyStoreError> {
+        let _shared = self.key_lock.read().await;
         let row = self
             .store
             .read(move |c| {
@@ -673,6 +681,7 @@ impl KeyStore {
         role: KeyRole,
         algorithm: Algorithm,
     ) -> Result<KeyRecord, KeyStoreError> {
+        let _shared = self.key_lock.read().await;
         let existing = self.keys(zone).await?;
         if existing
             .iter()
@@ -878,6 +887,7 @@ impl KeyStore {
         zone: Option<&Name>,
         bundle_passphrase: &Passphrase,
     ) -> Result<Vec<u8>, KeyStoreError> {
+        let _shared = self.key_lock.read().await;
         let filter = zone.map(zone_key);
         let rows = self
             .store
@@ -936,6 +946,7 @@ impl KeyStore {
         bundle: &[u8],
         bundle_passphrase: &Passphrase,
     ) -> Result<usize, KeyStoreError> {
+        let _shared = self.key_lock.read().await;
         let bundle = bundle.to_vec();
         let bundle_pass = bundle_passphrase.clone();
         let new = self
@@ -985,50 +996,49 @@ impl KeyStore {
     /// A key that cannot be decrypted with the current passphrase, keys changing while the
     /// passphrase is changed, or a database failure. Nothing is changed on error.
     pub async fn change_passphrase(&self, new: Passphrase) -> Result<usize, KeyStoreError> {
-        let rows = self
-            .store
-            .read(|c| {
-                let mut stmt = c.prepare(&format!(
-                    "SELECT {COLUMNS}, encrypted, private_key FROM dnssec_keys \
-                     WHERE state != 'removed' ORDER BY id"
-                ))?;
-                Ok(stmt
-                    .query_map([], secret_row)?
-                    .collect::<Result<Vec<_>, _>>()?)
-            })
-            .await?;
+        // No key is sealed, inserted or decrypted while the passphrase is replaced, and the
+        // key set is read inside the write transaction, so every key that exists when the
+        // transaction commits is re-sealed.
+        let _exclusive = self.key_lock.write().await;
         let new = Arc::new(new);
+        let this = self.clone();
         let sealer = Arc::clone(&new);
-        let resealed = self
-            .offload(move |s| {
-                let current = s.pass();
-                let mut out = Vec::with_capacity(rows.len());
+        let count = self
+            .store
+            .write(move |tx| {
+                let rows: Vec<SecretRow> = {
+                    let mut stmt = tx.prepare(&format!(
+                        "SELECT {COLUMNS}, encrypted, private_key FROM dnssec_keys \
+                         WHERE state != 'removed' ORDER BY id"
+                    ))?;
+                    stmt.query_map([], secret_row)?
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                let current = this.pass();
+                // Re-seal everything first: a key that cannot be opened ends the change
+                // before any row is touched.
+                let mut resealed = Vec::with_capacity(rows.len());
                 for row in rows {
                     let id = row.0.id;
-                    let old_blob = row.2.clone();
-                    let (_, key) = open_key(Some(row), id, current.as_deref())?;
-                    let blob = encrypt(&sealer, s.cost, &key.to_pkcs8())?;
-                    out.push((id, old_blob, blob));
-                }
-                Ok(out)
-            })
-            .await?;
-        let count = resealed.len();
-        self.store
-            .write(move |tx| {
-                for (id, old, blob) in &resealed {
-                    let n = tx.execute(
-                        "UPDATE dnssec_keys SET private_key = ?1, encrypted = 1 \
-                         WHERE id = ?2 AND private_key = ?3 AND state != 'removed'",
-                        params![blob, id, old],
-                    )?;
-                    if n != 1 {
-                        return Ok(Err(KeyStoreError::InvalidState(
-                            "keys changed during the passphrase change; try again",
-                        )));
+                    let opened = open_key(Some(row), id, current.as_deref())
+                        .and_then(|(_, key)| encrypt(&sealer, this.cost, &key.to_pkcs8()));
+                    match opened {
+                        Ok(blob) => resealed.push((id, blob)),
+                        Err(e) => return Ok(Err(e)),
                     }
                 }
-                Ok(Ok(()))
+                let count = resealed.len();
+                for (id, blob) in resealed {
+                    let n = tx.execute(
+                        "UPDATE dnssec_keys SET private_key = ?1, encrypted = 1 WHERE id = ?2",
+                        params![blob, id],
+                    )?;
+                    if n != 1 {
+                        // An error return rolls the whole transaction back.
+                        return Err(rusqlite::Error::StatementChangedRows(n).into());
+                    }
+                }
+                Ok(Ok(count))
             })
             .await??;
         *self
@@ -1227,6 +1237,7 @@ mod tests {
                 .unwrap();
         let wrong = KeyStore {
             passphrase: Arc::new(RwLock::new(Some(Arc::new(Passphrase::new("wrong"))))),
+            key_lock: Arc::default(),
             ..f.ks.clone()
         };
         assert!(matches!(
@@ -1235,6 +1246,7 @@ mod tests {
         ));
         let none = KeyStore {
             passphrase: Arc::new(RwLock::new(None)),
+            key_lock: Arc::default(),
             ..f.ks.clone()
         };
         assert!(matches!(
@@ -1351,6 +1363,7 @@ mod tests {
 
         let locked = KeyStore {
             passphrase: Arc::new(RwLock::new(None)),
+            key_lock: Arc::default(),
             ..f.ks.clone()
         };
         assert!(locked.active_keys(&zone()).await.is_err());
@@ -1621,6 +1634,58 @@ mod tests {
                 .await
                 .unwrap();
         reopen("new").signing_key(k.id).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn keys_created_during_a_passphrase_change_end_up_under_the_new_passphrase() {
+        let f = fixture(Some("old"));
+        let z = zone();
+        f.ks.bootstrap(&z, &policy("{}")).await.unwrap();
+        let mut tasks = Vec::new();
+        for i in 0..8 {
+            let ks = f.ks.clone();
+            let zone = z.clone();
+            tasks.push(tokio::spawn(async move {
+                let role = if i % 2 == 0 {
+                    KeyRole::Zsk
+                } else {
+                    KeyRole::Ksk
+                };
+                ks.generate_key(&zone, role, Algorithm::Ed25519)
+                    .await
+                    .unwrap()
+                    .id
+            }));
+        }
+        let change = tokio::spawn({
+            let ks = f.ks.clone();
+            async move { ks.change_passphrase(Passphrase::new("new")).await.unwrap() }
+        });
+        let mut ids = vec![f.ks.keys(&z).await.unwrap()[0].id];
+        for t in tasks {
+            ids.push(t.await.unwrap());
+        }
+        change.await.unwrap();
+        // Every key, whenever it was created, opens with the new passphrase and with that only.
+        let fresh = KeyStore::open(
+            f.ks.store.clone(),
+            Some(Passphrase::new("new")),
+            Arc::new(f.clock.clone()),
+        )
+        .with_kdf_cost(CHEAP);
+        let stale = KeyStore::open(
+            f.ks.store.clone(),
+            Some(Passphrase::new("old")),
+            Arc::new(f.clock.clone()),
+        )
+        .with_kdf_cost(CHEAP);
+        for id in ids {
+            fresh.signing_key(id).await.unwrap();
+            assert!(matches!(
+                stale.signing_key(id).await,
+                Err(KeyStoreError::Decrypt)
+            ));
+        }
     }
 
     #[tokio::test]

@@ -808,6 +808,30 @@ fn expired_nta_no_longer_short_circuits() {
 }
 
 #[test]
+fn answers_accepted_under_an_expiring_nta_are_capped_at_its_expiry() {
+    let w = world();
+    let mut answers = w.signed_a("www.example.");
+    corrupt(&mut answers);
+    let resp = positive("www.example.", answers);
+    let run_at = |expires: Option<u32>| {
+        let mut ta = anchors(&w.root);
+        match expires {
+            Some(e) => ta.add_negative_until(n("example."), e),
+            None => ta.add_negative(n("example.")),
+        }
+        block_on(Validator::new(ta).validate(&w.net, &resp.questions[0], &resp, NOW))
+    };
+    let out = run_at(Some(NOW + 90));
+    assert_eq!(out.status, DnssecStatus::Insecure);
+    assert_eq!(
+        out.min_ttl,
+        Some(90),
+        "cache for no longer than the NTA lasts"
+    );
+    assert_eq!(run_at(None).min_ttl, None, "no expiry, no cap");
+}
+
+#[test]
 fn nta_short_circuits() {
     let w = world();
     let mut ta = anchors(&w.root);

@@ -76,9 +76,28 @@ impl TrustAnchors {
     /// True when `name` is at or below a negative trust anchor that has not expired at `now`
     /// (Unix seconds).
     pub fn is_negative(&self, name: &Name, now: u32) -> bool {
-        self.negative
-            .iter()
-            .any(|(n, expires)| expires.is_none_or(|e| now < e) && name.is_subdomain_of(n))
+        self.negative_ttl(name, now).is_some()
+    }
+
+    /// For a `name` at or below an unexpired negative trust anchor: `Some(cap)`, where `cap`
+    /// is how many seconds an answer treated as insecure because of it may be cached (the
+    /// time left of the longest-lived matching anchor), or `None` when an anchor without
+    /// expiry applies. `None` overall means no anchor applies.
+    pub fn negative_ttl(&self, name: &Name, now: u32) -> Option<Option<u32>> {
+        let mut longest: Option<u32> = None;
+        for (n, expires) in &self.negative {
+            if !name.is_subdomain_of(n) {
+                continue;
+            }
+            match expires {
+                None => return Some(None),
+                Some(e) if now < *e => {
+                    longest = Some(longest.map_or(*e - now, |l| l.max(*e - now)))
+                }
+                Some(_) => {}
+            }
+        }
+        longest.map(Some)
     }
 
     /// The deepest positive anchor at or above `name`.
@@ -175,7 +194,22 @@ mod tests {
         assert!(ta.is_negative(&n("forever.example."), u32::MAX));
         assert_eq!(
             ta.negative_entries(),
-            [(n("lab.example."), Some(1000)), (n("forever.example."), None)]
+            [
+                (n("lab.example."), Some(1000)),
+                (n("forever.example."), None)
+            ]
+        );
+        assert_eq!(
+            ta.negative_ttl(&n("www.lab.example."), 400),
+            Some(Some(600))
+        );
+        assert_eq!(ta.negative_ttl(&n("forever.example."), 400), Some(None));
+        assert_eq!(ta.negative_ttl(&n("www.lab.example."), 1000), None);
+        ta.add_negative_until(n("example."), 5000);
+        assert_eq!(
+            ta.negative_ttl(&n("www.lab.example."), 400),
+            Some(Some(4600)),
+            "the longest-lived matching anchor decides"
         );
         ta.set_negative_entries([(n("x.test."), Some(7))]);
         assert_eq!(ta.negative_anchors(), [n("x.test.")]);

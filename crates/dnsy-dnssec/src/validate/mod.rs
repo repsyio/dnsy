@@ -131,7 +131,8 @@ impl Validator {
             Ok(Verdict::Insecure(ede)) => ValidationOutcome {
                 status: DnssecStatus::Insecure,
                 ede,
-                min_ttl: None,
+                // An answer accepted under an expiring negative trust anchor carries a cap.
+                min_ttl: ctx.min_ttl(),
             },
             Err(f) => ValidationOutcome {
                 status: f.status,

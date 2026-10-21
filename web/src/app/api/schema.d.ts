@@ -252,6 +252,48 @@ export interface paths {
         patch: operations["patch_cert"];
         trace?: never;
     };
+    "/api/v1/dnssec/keys/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export the zone keys as a bundle encrypted under the given passphrase, for backup. The
+         *     response holds ciphertext only; the passphrase and the keys are never logged.
+         */
+        post: operations["export_keys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dnssec/passphrase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change the key passphrase: every stored private key is re-encrypted under the new one in a
+         *     single transaction (all or none). Keys stored unencrypted become encrypted. The running
+         *     server uses the new passphrase at once; update `DNSY_DNSSEC_PASSPHRASE` or the passphrase
+         *     file before the next start, or the keys cannot be read.
+         */
+        post: operations["change_passphrase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dnssec/status": {
         parameters: {
             query?: never;
@@ -608,11 +650,14 @@ export interface paths {
         get: operations["get_user"];
         put?: never;
         post?: never;
-        /** Delete a user. Their tokens and sessions go with them. */
+        /**
+         * Delete a user. Their tokens and sessions go with them. The last active admin cannot be
+         *     deleted.
+         */
         delete: operations["delete_user"];
         options?: never;
         head?: never;
-        /** Change a user's role and/or reset the password. */
+        /** Change a user's role, reset the password, and/or disable or enable the user. */
         patch: operations["update_user"];
         trace?: never;
     };
@@ -770,6 +815,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/zones/{name}/dnssec/rollover/abort": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abort the rollover of one role (or of every role): the incoming key is withdrawn and its
+         *     private key destroyed, and the active key keeps signing. A rollover whose new key already
+         *     became active cannot be aborted. If the incoming KSK or CSK's DS was already published at
+         *     the parent, remove it there.
+         */
+        post: operations["abort_rollover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/zones/{name}/export": {
         parameters: {
             query?: never;
@@ -861,6 +928,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Which rollover to abort. */
+        AbortRolloverInput: {
+            role?: components["schemas"]["KeyRoleBody"] | null;
+        };
         /** @description Rules and the rate limit. */
         AclOverview: {
             /** @description Applied to clients no rule matches. */
@@ -978,6 +1049,11 @@ export interface components {
             prefetches: number;
             /** Format: int64 */
             stale_served: number;
+        };
+        /** @description Key passphrase change. */
+        ChangePassphraseInput: {
+            /** @description The new key passphrase (at least 8 characters). */
+            new_passphrase: string;
         };
         /** @description Password change. */
         ChangePassword: {
@@ -1121,6 +1197,12 @@ export interface components {
             enabled: boolean;
             key_layout?: components["schemas"]["KeyLayoutBody"] | null;
             nsec3?: components["schemas"]["Nsec3Body"] | null;
+            /**
+             * Format: int32
+             * @description Seconds added to the DNSKEY TTL before a published key may sign (default 3600,
+             *     at most 604800).
+             */
+            propagation_delay?: number | null;
             /** Format: int32 */
             refresh_days?: number | null;
             /** Format: int32 */
@@ -1170,6 +1252,8 @@ export interface components {
             next_resign?: number | null;
             nsec3: components["schemas"]["Nsec3Body"];
             /** Format: int32 */
+            propagation_delay: number;
+            /** Format: int32 */
             refresh_days: number;
             rollover: components["schemas"]["RolloverView"];
             /** Format: int32 */
@@ -1199,6 +1283,16 @@ export interface components {
             key_tag: number;
             /** @description The record in presentation format. */
             record: string;
+        };
+        /** @description Key export request. */
+        ExportKeysInput: {
+            /**
+             * @description Passphrase the bundle is encrypted under (at least 8 characters). It may differ from
+             *     the key passphrase; keep it apart from the bundle.
+             */
+            passphrase: string;
+            /** @description Export only this zone's keys; omitted exports every zone's. */
+            zone?: string | null;
         };
         FilterPatch: {
             block_mode?: components["schemas"]["BlockModeView"] | null;
@@ -1260,6 +1354,14 @@ export interface components {
              */
             latency_ms?: number | null;
             upstream: string;
+        };
+        /** @description An encrypted key backup. */
+        KeyBackup: {
+            /**
+             * @description Base64 of the bundle: every non-removed key, sealed with AES-256-GCM under a key
+             *     derived from the request's passphrase. `dnsy dnssec keys import` restores it.
+             */
+            bundle: string;
         };
         /**
          * @description Whether one key signs everything or keys are split into KSK and ZSK.
@@ -1385,6 +1487,32 @@ export interface components {
             /** @description Salt in hexadecimal; empty for none. */
             salt?: string;
         };
+        /** @description A negative trust anchor with an optional expiry. */
+        NtaEntryInput: {
+            /**
+             * Format: int64
+             * @description Unix time (in the future) at which the anchor stops applying; omitted keeps it until
+             *     removed.
+             */
+            expires_at?: number | null;
+            name: string;
+        };
+        /** @description A negative trust anchor to set: a bare name, or a name with an optional expiry. */
+        NtaInput: string | components["schemas"]["NtaEntryInput"];
+        /** @description A negative trust anchor in force. */
+        NtaView: {
+            /**
+             * Format: int64
+             * @description Unix time at which the anchor stops applying; `None` until it is removed.
+             */
+            expires_at?: number | null;
+            name: string;
+        };
+        /** @description Result of a key passphrase change. */
+        PassphraseChanged: {
+            /** @description Keys re-encrypted under the new passphrase. */
+            keys_reencrypted: number;
+        };
         /** @description Fields of a source that can change. */
         PatchBlocklist: {
             enabled: boolean;
@@ -1496,16 +1624,33 @@ export interface components {
              */
             algorithm?: number | null;
         };
-        /** @description Where the key rollover stands. */
-        RolloverView: {
+        /** @description One rollover under way: a role with an incoming key. */
+        RolloverRoleView: {
             /**
              * Format: int64
              * @description The incoming key.
              */
+            new_key_id: number;
+            /** @description `csk`, `ksk` or `zsk`. */
+            role: string;
+            /** @description `in_progress` or `awaiting_ds_confirmation`. */
+            state: string;
+        };
+        /** @description Where the key rollover stands. */
+        RolloverView: {
+            /**
+             * Format: int64
+             * @description The incoming key of the first rollover in `rollovers`.
+             */
             new_key_id?: number | null;
-            /** @description Role being rolled over. */
+            /** @description Role of the first rollover in `rollovers`; use `rollovers` to see them all. */
             role?: string | null;
-            /** @description `idle`, `in_progress` or `awaiting_ds_confirmation`. */
+            /** @description Every rollover under way (a KSK and a ZSK rollover can run at the same time). */
+            rollovers: components["schemas"]["RolloverRoleView"][];
+            /**
+             * @description `idle`, `in_progress`, or `awaiting_ds_confirmation` when any rollover waits for the
+             *     registrar's DS.
+             */
             state: string;
         };
         /**
@@ -1677,6 +1822,11 @@ export interface components {
         };
         /** @description Fields to change; absent fields stay as they are. */
         UpdateUser: {
+            /**
+             * @description `true` disables the user (sessions end at once, tokens are refused, login fails);
+             *     `false` enables them again. The last active admin cannot be disabled.
+             */
+            disabled?: boolean | null;
             /** @description Reset the password (at least 8 characters); ends all of the user's sessions. */
             password?: string | null;
             /**
@@ -1692,6 +1842,13 @@ export interface components {
              * @description Unix seconds.
              */
             created_at: number;
+            /** @description A disabled user cannot log in and their tokens are refused. */
+            disabled: boolean;
+            /**
+             * Format: int64
+             * @description Unix seconds when the user was disabled.
+             */
+            disabled_at?: number | null;
             /** Format: int64 */
             id: number;
             /**
@@ -1712,13 +1869,18 @@ export interface components {
          *     anchors flushes the cache.
          */
         ValidationPatch: {
-            /** @description Replaces the whole list; `[]` clears it. */
-            negative_trust_anchors?: string[] | null;
+            /**
+             * @description Replaces the whole list; `[]` clears it. An entry is a name, or `{name, expires_at}`
+             *     for an anchor that stops applying at `expires_at` (Unix time).
+             */
+            negative_trust_anchors?: components["schemas"]["NtaInput"][] | null;
             validation?: components["schemas"]["ValidationMode"] | null;
         };
         /** @description Validation settings. */
         ValidationSettings: {
-            /** @description Names at or below which validation is skipped (RFC 7646). */
+            /** @description The same anchors with their expiry. */
+            negative_trust_anchor_entries: components["schemas"]["NtaView"][];
+            /** @description Names at or below which validation is skipped (RFC 7646); expired entries are left out. */
             negative_trust_anchors: string[];
             trust_anchors: components["schemas"]["TrustAnchorView"][];
             validation: components["schemas"]["ValidationMode"];
@@ -2570,6 +2732,92 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    export_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportKeysInput"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyBackup"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    change_passphrase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePassphraseInput"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PassphraseChanged"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3807,7 +4055,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Would demote the last admin */
+            /** @description Would demote or disable the last active admin */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4372,6 +4620,58 @@ export interface operations {
                 };
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    abort_rollover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Zone name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AbortRolloverInput"];
+            };
+        };
+        responses: {
+            /** @description The zone's DNSSEC state after the abort */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnssecView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

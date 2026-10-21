@@ -428,13 +428,29 @@ async fn expired_nta_stops_applying() {
     assert_eq!(resp.header.rcode, Rcode::ServFail);
 
     // Expires in an hour: still in force.
-    r.h.engine.set_negative_trust_anchor_entries(vec![(
-        name("broken.example."),
-        Some(now + 3600),
-    )]);
+    r.h.engine
+        .set_negative_trust_anchor_entries(vec![(name("broken.example."), Some(now + 3600))]);
     let resp = r.ask(q("broken.example.", true, true, false)).await;
     assert_eq!(resp.header.rcode, Rcode::NoError);
     assert_eq!(r.statuses(), [DnssecStatus::Bogus, DnssecStatus::Insecure]);
+}
+
+#[tokio::test]
+async fn answer_cached_under_an_nta_does_not_outlive_it() {
+    let r = rig(Validation::Strict);
+    let now = u32::try_from(unix_now()).unwrap();
+    r.h.engine
+        .set_negative_trust_anchor_entries(vec![(name("broken.example."), Some(now + 20))]);
+    let resp = r.ask(q("broken.example.", true, true, false)).await;
+    assert_eq!(resp.header.rcode, Rcode::NoError);
+    let (cached, status) = r.cached("broken.example.", true, false).expect("cached");
+    assert_eq!(status, DnssecStatus::Insecure);
+    assert!(
+        cached.answers.iter().all(|a| a.ttl <= 20),
+        "cached TTLs are capped at the NTA's remaining time: {:?}",
+        cached.answers.iter().map(|a| a.ttl).collect::<Vec<_>>()
+    );
+    assert!(!cached.answers.is_empty());
 }
 
 #[tokio::test]

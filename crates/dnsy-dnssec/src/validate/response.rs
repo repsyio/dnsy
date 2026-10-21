@@ -11,7 +11,7 @@ const DNAME: RecordType = RecordType::Unknown(39);
 
 impl<F: DnssecFetcher> Ctx<'_, F> {
     pub(super) async fn response(&mut self, q: &Question, resp: &Message) -> Res<Verdict> {
-        if self.validator.anchors.is_negative(&q.name, self.now) {
+        if self.negative_anchor(&q.name) {
             return Ok(Verdict::Insecure(None));
         }
         let nxdomain = match resp.header.rcode {
@@ -45,7 +45,7 @@ impl<F: DnssecFetcher> Ctx<'_, F> {
         if answered {
             return Ok(verdict);
         }
-        if self.validator.anchors.is_negative(&sname, self.now) {
+        if self.negative_anchor(&sname) {
             return Ok(verdict.and(Verdict::Insecure(None)));
         }
         let Some(zone) = denial.deepest_zone(&sname) else {
