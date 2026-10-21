@@ -181,10 +181,18 @@ impl ZoneStore {
     }
 
     /// Rescans the directory. A file that fails to load keeps its previous version serving.
+    /// Serialised with every write, so a scan that started before a write cannot publish its
+    /// older view of the directory over the write's result.
     ///
     /// # Errors
     /// Fails on invalid zone data or an i/o error.
     pub fn reload(&self) -> Result<(), ZoneError> {
+        let _w = self.write_guard();
+        self.reload_locked()
+    }
+
+    /// [`ZoneStore::reload`] for a caller that holds the write lock.
+    fn reload_locked(&self) -> Result<(), ZoneError> {
         let mut found = BTreeMap::new();
         for entry in fs::read_dir(&self.dir)? {
             let path = entry?.path();
@@ -389,7 +397,7 @@ impl ZoneStore {
         let old = self.stored(origin)?;
         check_serial(expected_serial, &old)?;
         fs::remove_file(self.dir.join(crate::zone_file_name(origin)?))?;
-        self.reload()
+        self.reload_locked()
     }
 
     /// The latest stored version of a zone. Unlike the snapshot, which may still serve an older
@@ -412,7 +420,7 @@ impl ZoneStore {
         let (checked, _) = Zone::from_json(&json)?;
         let file_name = zone.file_name()?;
         write_atomic(&self.dir, &file_name, json.as_bytes())?;
-        self.reload()?;
+        self.reload_locked()?;
         Ok(Arc::new(checked))
     }
 
@@ -615,6 +623,29 @@ mod tests {
         store.remove_zone(&origin(), None).unwrap();
         assert!(store.snapshot().is_empty());
         assert!(store.remove_zone(&origin(), None).is_err());
+    }
+
+    #[test]
+    fn a_reload_waits_for_a_write_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("example.com.json"), EXAMPLE).unwrap();
+        let store = ZoneStore::open(dir.path()).unwrap();
+        let write = store.write_guard();
+        let (done, finished) = mpsc::channel();
+        let reloader = {
+            let store = Arc::clone(&store);
+            std::thread::spawn(move || {
+                store.reload().unwrap();
+                done.send(()).unwrap();
+            })
+        };
+        assert!(
+            finished.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a reload scanned the directory while a write was in flight"
+        );
+        drop(write);
+        finished.recv_timeout(Duration::from_secs(10)).unwrap();
+        reloader.join().unwrap();
     }
 
     #[test]
