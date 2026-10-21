@@ -129,7 +129,13 @@ mod tests {
         let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
         let state = ApiState::new(store.clone());
         state.users.create("admin", PW, Role::Admin).await.unwrap();
-        let app = router(state.clone(), ApiConfig { tls: false });
+        let app = router(
+            state.clone(),
+            ApiConfig {
+                tls: false,
+                secure_cookies: None,
+            },
+        );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (stop, rx) = watch::channel(false);
