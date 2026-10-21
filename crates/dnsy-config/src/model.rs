@@ -169,6 +169,9 @@ pub struct Api {
     pub login_hash_wait_ms: u64,
     /// Maximum concurrent API connections (default 256); further ones are closed at accept.
     pub max_conns: u32,
+    /// Maximum concurrent API connections per client address (IPv6 `/64`; default 64), so one
+    /// address cannot take every connection.
+    pub max_conns_per_client: u32,
 }
 
 /// `[api] secure_cookies`: the string `"auto"` or a boolean.
@@ -221,6 +224,7 @@ impl Default for Api {
             login_hash_per_client: 16,
             login_hash_wait_ms: 5000,
             max_conns: 256,
+            max_conns_per_client: 64,
         }
     }
 }

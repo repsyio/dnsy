@@ -40,6 +40,7 @@ listen = ["127.0.0.1:5380"]
 # login_hash_per_client = 16
 # login_hash_wait_ms = 5000
 # max_conns = 256 # concurrent API connections
+# max_conns_per_client = 64 # per client address (IPv6 /64)
 
 [zones]
 dir = "/var/lib/dnsy/zones"

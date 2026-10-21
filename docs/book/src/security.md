@@ -49,7 +49,7 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
   take every slot; excess connections are closed at accept. UDP is bounded by
   `limits.udp_in_flight` (4096) requests in flight with `limits.udp_in_flight_per_client` (64)
   per client; excess datagrams are dropped. The API listener closes connections that send nothing
-  or an incomplete request head within 30 s, closes connections (HTTP/1.1 or HTTP/2, pings notwithstanding) that have had no request in progress for 30 s, serves at most `api.max_conns` (256) connections (and `limits.max_conns_per_client` per client, so one address cannot lock out the admin API) and
+  or an incomplete request head within 30 s, closes connections (HTTP/1.1 or HTTP/2, pings notwithstanding) that have had no request in progress for 30 s, serves at most `api.max_conns` (256) connections (and `api.max_conns_per_client` (64) per client address, so one address cannot lock out the admin API) and
   answers 408 to a request whose handler takes longer than 30 s (the live-tail stream is exempt).
   UDP slots are keyed on the unauthenticated source address, so a spoofed source can occupy that
   address's share for the milliseconds a request is in flight; spoofed floods stay bounded by the

@@ -305,6 +305,7 @@ mod tests {
             "[limits]\nudp_in_flight = 0",
             "[limits]\nudp_in_flight_per_client = 0",
             "[api]\nmax_conns = 0",
+            "[api]\nmax_conns_per_client = 0",
         ] {
             assert!(Config::from_toml(bad).is_err(), "{bad}");
         }

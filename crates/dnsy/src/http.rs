@@ -1,8 +1,10 @@
 //! Serves the API router over plain HTTP or TLS with graceful shutdown.
 
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use axum::Router;
@@ -68,7 +70,7 @@ impl HttpLimits {
         let count = |n: u32| usize::try_from(n).unwrap_or(usize::MAX);
         Self::new(
             count(config.api.max_conns),
-            count(config.limits.max_conns_per_client),
+            count(config.api.max_conns_per_client),
         )
     }
 
@@ -111,6 +113,20 @@ impl Activity {
         RequestGuard(Arc::clone(self))
     }
 
+    /// Completes once the connection has had no request in progress for `limit`.
+    async fn closed_when_idle(&self, limit: Duration) {
+        let mut deadline = tokio::time::Instant::now() + limit;
+        loop {
+            tokio::time::sleep_until(deadline).await;
+            let wait = match self.idle_for() {
+                Some(idle) if idle >= limit => return,
+                Some(idle) => limit.saturating_sub(idle),
+                None => limit,
+            };
+            deadline = tokio::time::Instant::now() + wait;
+        }
+    }
+
     /// How long the connection has had no request in progress, `None` while one is.
     fn idle_for(&self) -> Option<Duration> {
         if self.active.load(Ordering::Relaxed) > 0 {
@@ -122,6 +138,27 @@ impl Activity {
 }
 
 struct RequestGuard(Arc<Activity>);
+
+/// A response body that keeps its connection counted as busy until it is finished or dropped.
+struct Tracked {
+    body: axum::body::BodyDataStream,
+    _guard: RequestGuard,
+}
+
+impl futures_util::Stream for Tracked {
+    type Item = std::result::Result<axum::body::Bytes, axum::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.body).poll_next(cx)
+    }
+}
+
+fn tracked(body: axum::body::Body, guard: RequestGuard) -> axum::body::Body {
+    axum::body::Body::from_stream(Tracked {
+        body: body.into_data_stream(),
+        _guard: guard,
+    })
+}
 
 impl Drop for RequestGuard {
     fn drop(&mut self) {
@@ -188,9 +225,14 @@ pub(crate) async fn serve(
                 let guard = tracker.begin();
                 async move {
                     if exempt {
-                        // An open-ended stream: the connection counts as busy until it closes.
-                        std::mem::forget(guard);
-                        return call.await;
+                        // The live-tail stream is open-ended: it has no request timeout, and a
+                        // successful response keeps the connection busy until its body ends or
+                        // is dropped. A rejected request (401, 403, 429) does not.
+                        let response = call.await?;
+                        if response.status().is_success() {
+                            return Ok(response.map(|body| tracked(body, guard)));
+                        }
+                        return Ok(response);
                     }
                     let _guard = guard;
                     match timeout(limits.request, call).await {
@@ -212,22 +254,15 @@ pub(crate) async fn serve(
                 .keep_alive_timeout(limits.header_read);
             let conn = builder.serve_connection(TokioIo::new(io), service);
             tokio::pin!(conn);
-            let mut deadline = tokio::time::Instant::now() + limits.header_read;
-            let result = loop {
-                tokio::select! {
-                    r = conn.as_mut() => break r,
-                    () = tokio::time::sleep_until(deadline) => match activity.idle_for() {
-                        Some(idle) if idle >= limits.header_read => {
-                            tracing::debug!(%peer, "api connection idle; closing");
-                            break Ok(());
-                        }
-                        Some(idle) => deadline = tokio::time::Instant::now() + limits.header_read.saturating_sub(idle),
-                        None => deadline = tokio::time::Instant::now() + limits.header_read,
-                    },
-                    _ = stop.changed() => {
-                        conn.as_mut().graceful_shutdown();
-                        break conn.await;
-                    }
+            let result = tokio::select! {
+                r = conn.as_mut() => r,
+                () = activity.closed_when_idle(limits.header_read) => {
+                    tracing::debug!(%peer, "api connection idle; closing");
+                    Ok(())
+                }
+                _ = stop.changed() => {
+                    conn.as_mut().graceful_shutdown();
+                    conn.await
                 }
             };
             if let Err(e) = result {
@@ -472,15 +507,16 @@ mod tests {
         assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
     }
 
-    /// An HTTP/2 client that answers PING frames, so keep-alive pings alone never close it.
-    #[tokio::test]
-    async fn api_h2_connection_without_streams_is_closed() {
-        let s = server_with(short(256)).await;
-        let mut c = tokio::net::TcpStream::connect(s.addr).await.unwrap();
+    /// True when the server closes an HTTP/2 connection that sent `request` (a HEADERS frame, or
+    /// nothing) within 5 s. The client answers PING frames, as a live peer would, so keep-alive
+    /// pings alone never close it.
+    async fn h2_is_closed(addr: SocketAddr, request: &[u8]) -> bool {
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
         c.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00")
             .await
             .unwrap();
-        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        c.write_all(request).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let mut head = [0_u8; 9];
                 if c.read_exact(&mut head).await.is_err() {
@@ -492,7 +528,6 @@ mod tests {
                 if c.read_exact(&mut payload).await.is_err() {
                     return;
                 }
-                // PING without ACK: answer it, as a live peer would.
                 if head[3] == 6 && head[4] & 1 == 0 {
                     let mut ack = vec![0, 0, 8, 6, 1, 0, 0, 0, 0];
                     ack.extend_from_slice(&payload);
@@ -502,7 +537,51 @@ mod tests {
                 }
             }
         })
-        .await;
-        assert!(closed.is_ok(), "idle h2 connection stayed open");
+        .await
+        .is_ok()
+    }
+
+    /// A HEADERS frame (stream 1, `END_STREAM`) for `GET path`.
+    fn h2_get(path: &str) -> Vec<u8> {
+        let mut block = vec![0x82, 0x86, 0x44, u8::try_from(path.len()).unwrap()];
+        block.extend_from_slice(path.as_bytes());
+        block.extend_from_slice(&[0x41, 0x01, b't']);
+        let mut frame = vec![0, 0, u8::try_from(block.len()).unwrap(), 1, 0x5, 0, 0, 0, 1];
+        frame.extend(block);
+        frame
+    }
+
+    #[tokio::test]
+    async fn api_h2_connection_without_streams_is_closed() {
+        let s = server_with(short(256)).await;
+        assert!(
+            h2_is_closed(s.addr, &[]).await,
+            "idle h2 connection stayed open"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_connection_is_idle_closed_after_stream_ends_or_request_rejected() {
+        let s = server_with(short(256)).await;
+        // The stream path is rejected without a session; the connection must then count as idle
+        // and be closed, not stay busy forever.
+        assert!(
+            h2_is_closed(s.addr, &h2_get(STREAM_PATH)).await,
+            "rejected stream request left the connection busy"
+        );
+    }
+
+    #[tokio::test]
+    async fn tracked_body_releases_the_connection_when_finished_or_dropped() {
+        use http_body_util::BodyExt as _;
+        let activity = Activity::new();
+        let finished = tracked(axum::body::Body::from("x"), activity.begin());
+        assert!(activity.idle_for().is_none());
+        finished.collect().await.unwrap();
+        assert!(activity.idle_for().is_some());
+        let dropped = tracked(axum::body::Body::from("y"), activity.begin());
+        assert!(activity.idle_for().is_none());
+        drop(dropped);
+        assert!(activity.idle_for().is_some());
     }
 }
