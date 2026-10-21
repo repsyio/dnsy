@@ -530,6 +530,7 @@ async fn pooled_sockets_use_random_ports_and_rotate() {
     c.rotation = Rotation {
         queries: u32::MAX,
         age: Duration::from_millis(50),
+        idle: Duration::from_secs(60),
     };
     c.query(&u, &query("example.com.")).await.unwrap();
     let before = rx.recv().await.unwrap();
@@ -665,5 +666,119 @@ async fn upstream_address_is_cached() {
     let addr = c.resolve(&named).await.unwrap();
     assert_eq!(addr.port(), port);
     let until = c.udp_state()[&named].resolved.unwrap().until.unwrap();
-    assert!(until > Instant::now() && until <= Instant::now() + UDP_ROTATE_AGE);
+    assert!(until > Instant::now() && until <= Instant::now() + RESOLVE_TTL);
+}
+
+#[tokio::test]
+async fn pooled_socket_never_outlives_rotation_count_age_or_idle_lifetime() {
+    let (port, mut rx) = port_recorder().await;
+    let mut c = client(1000);
+    let u = up(UpstreamTransport::Udp, port);
+    // Default count: no port serves more than UDP_ROTATE_QUERIES queries.
+    let mut ports = Vec::new();
+    for _ in 0..UDP_ROTATE_QUERIES * 3 {
+        c.query(&u, &query("example.com.")).await.unwrap();
+        ports.push(rx.recv().await.unwrap());
+    }
+    let runs: Vec<usize> = ports.chunk_by(|a, b| a == b).map(<[u16]>::len).collect();
+    assert!(
+        runs.iter().all(|&n| n <= UDP_ROTATE_QUERIES as usize),
+        "{runs:?}"
+    );
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    const { assert!(UDP_ROTATE_QUERIES <= 16 && UDP_ROTATE_AGE.as_secs() <= 5) };
+
+    // Idle lifetime: a socket parked longer than it is closed.
+    c.rotation.idle = Duration::from_millis(50);
+    c.query(&u, &query("example.com.")).await.unwrap();
+    let before = rx.recv().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    c.query(&u, &query("example.com.")).await.unwrap();
+    assert_ne!(rx.recv().await.unwrap(), before);
+}
+
+#[tokio::test]
+async fn answer_from_wrong_source_is_rejected() {
+    // A valid-looking answer (right ID and question) sent to the client's port from another
+    // socket must not be accepted: the pooled socket is connected to the upstream.
+    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let spoofer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = server.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok((n, peer)) = server.recv_from(&mut buf).await {
+            let q = Message::decode(&buf[..n]).unwrap();
+            let mut forged = answer(&q);
+            forged.answers[0].data = RData::A(Ipv4Addr::new(198, 51, 100, 66));
+            spoofer.send_to(&enc(&forged), peer).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            server.send_to(&enc(&answer(&q)), peer).await.unwrap();
+        }
+    });
+    let c = client(1000);
+    let u = up(UpstreamTransport::Udp, port);
+    for _ in 0..3 {
+        let r = c.query(&u, &query("example.com.")).await.unwrap();
+        assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 1)));
+    }
+}
+
+#[tokio::test]
+async fn question_is_matched_case_sensitively() {
+    let (port, _h) = udp_server(|q| {
+        let mut recased = answer(&q);
+        recased.questions[0].name = Name::from_ascii("EXAMPLE.com.").unwrap();
+        recased.answers[0].data = RData::A(Ipv4Addr::new(198, 51, 100, 66));
+        vec![enc(&recased), enc(&answer(&q))]
+    })
+    .await;
+    let r = client(1000)
+        .query(&up(UpstreamTransport::Udp, port), &query("example.com."))
+        .await
+        .unwrap();
+    assert_eq!(r.questions[0].name.as_wire(), b"\x07example\x03com\x00");
+    assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 1)));
+}
+
+#[tokio::test]
+async fn datagrams_queued_while_pooled_are_discarded_before_reuse() {
+    let (port, _rx) = port_recorder().await;
+    let c = client(1000);
+    let u = up(UpstreamTransport::Udp, port);
+    c.query(&u, &query("example.com.")).await.unwrap();
+    let mut conn = c.udp_state().get_mut(&u).unwrap().idle.pop().unwrap();
+    // A datagram sprayed at the parked socket's port from another address.
+    let forger = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    forger
+        .send_to(b"x", conn.socket.local_addr().unwrap())
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Only the connected peer gets through the kernel filter; the stray one was dropped there.
+    assert_eq!(conn.drain().unwrap(), 0);
+    c.put_udp(&u, conn);
+
+    // Late answers from the upstream itself do queue up; they are discarded on reuse.
+    let (tx, mut rx) = mpsc::unbounded_channel::<SocketAddr>();
+    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let sport = server.local_addr().unwrap().port();
+    let server = Arc::new(server);
+    let s2 = Arc::clone(&server);
+    tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok((n, peer)) = s2.recv_from(&mut buf).await {
+            let q = Message::decode(&buf[..n]).unwrap();
+            tx.send(peer).unwrap();
+            s2.send_to(&enc(&answer(&q)), peer).await.unwrap();
+        }
+    });
+    let u2 = up(UpstreamTransport::Udp, sport);
+    c.query(&u2, &query("example.com.")).await.unwrap();
+    let peer = rx.recv().await.unwrap();
+    for _ in 0..3 {
+        server.send_to(b"late", peer).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let mut conn = c.udp_state().get_mut(&u2).unwrap().idle.pop().unwrap();
+    assert_eq!(conn.drain().unwrap(), 3);
+    assert_eq!(conn.drain().unwrap(), 0);
 }

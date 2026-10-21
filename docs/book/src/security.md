@@ -13,7 +13,7 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
 | Threat | Controls |
 | --- | --- |
 | Open resolver and amplification | the private-only default ACL (`open_resolver`), per-client rate limiting, both applied before any reply (FORMERR, NOTIMP and BADVERS included, so a dropped client gets nothing and error replies count against the limit), REFUSED for RD=0 queries, RFC 8482 minimal ANY for local zones and REFUSED ANY for forwarded names, REFUSED AXFR/IXFR, minimal FORMERR responses, UDP responses capped at the client's EDNS size (max 1232), DoH tokens ([Filtering](filtering.md), [Architecture](architecture.md)) |
-| Cache poisoning | responses are scrubbed to in-bailiwick data, a mismatched question is discarded, cache keys include DO and CD, DNSSEC validation in `strict` mode by default ([Architecture](architecture.md), [DNSSEC](dnssec.md)) |
+| Cache poisoning | random CSPRNG query IDs and random source ports on connected sockets; pooled upstream sockets rotate after 16 queries, 5 s or 2 s idle and drop queued datagrams before reuse, so a learnt port helps an attacker only inside that window ([Resolver](resolver.md#upstream-client)); responses are scrubbed to in-bailiwick data, a question that does not match byte for byte is discarded, cache keys include DO and CD, DNSSEC validation in `strict` mode by default ([Architecture](architecture.md), [DNSSEC](dnssec.md)) |
 | Upstream exhaustion by slow names | identical concurrent cache misses share one upstream exchange, and at most 256 requests wait on one; further identical misses get SERVFAIL (EDE 22) at once instead of holding a listener slot ([Resolver](resolver.md#cache)) |
 | DNSSEC attacks | work limits against KeyTrap-style and NSEC3 cost attacks, algorithm checks, signature validity windows, a clock-safety guard ([DNSSEC](dnssec.md)) |
 | DNS rebinding | response-IP policy replaces answers pointing into listed networks |
@@ -80,6 +80,12 @@ Everything on the network path is Rust. Crates worth knowing about when you audi
 finding is printed but does not fail the recipe).
 
 ## Known limits
+
+- Upstream UDP sockets are pooled for speed. Inside one socket's rotation window (at most 16
+  queries or 5 s) its source port is fixed, so an off-path attacker who learnt it guesses only
+  the 16-bit ID (about 1 in 65536 per forged answer instead of about 1 in 2^31). DNSSEC `strict`
+  validation is the second line of defence for signed zones; see
+  [Resolver](resolver.md#upstream-client) for the numbers.
 
 - Live tail (`/querylog/stream`) allows 4 streams per user and 16 overall, with 2 of the 16
   reserved for admins.

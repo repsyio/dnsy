@@ -3,11 +3,11 @@
 //! Anti-spoofing: every attempt uses a fresh CSPRNG query ID. UDP goes over a small per-upstream
 //! pool of sockets, each bound to an OS-randomised ephemeral port and connected to the upstream
 //! (so the kernel drops datagrams from any other source), used by one query at a time and
-//! replaced after [`UDP_ROTATE_QUERIES`] queries or [`UDP_ROTATE_AGE`], whichever comes first. A
-//! socket whose attempt failed or timed out is closed, never pooled. A response is accepted only
-//! if its ID, QR bit, opcode and full question section match the query; mismatching UDP
-//! datagrams (including late answers to an earlier query on the same socket) are ignored until
-//! the attempt times out.
+//! replaced after [`UDP_ROTATE_QUERIES`] queries, [`UDP_ROTATE_AGE`] or [`UDP_IDLE_LIFETIME`]
+//! idle, whichever comes first. A socket whose attempt failed or timed out is closed, never
+//! pooled. A response is accepted only if its ID, QR bit, opcode and full question section (the
+//! name compared case-sensitively) match the query; mismatching UDP datagrams (including late
+//! answers to an earlier query on the same socket) are ignored until the attempt times out.
 
 mod spec;
 
@@ -33,12 +33,19 @@ pub const ADVERTISED_UDP_PAYLOAD: u16 = 1232;
 /// size, so an upstream overshooting it a little is still understood.
 pub const MAX_UDP_RESPONSE: usize = 4096;
 /// A pooled UDP socket is closed after this many queries ...
-pub const UDP_ROTATE_QUERIES: u32 = 128;
-/// ... or this long after it was opened, whichever comes first. A host-name upstream is resolved
-/// again at most this often.
-pub const UDP_ROTATE_AGE: Duration = Duration::from_secs(60);
+///
+/// Rotation bounds how long one source port is in use. While it is, an off-path attacker who
+/// learnt the port only has to guess the 16-bit ID (and match the question) to poison a
+/// response, so the window is kept short: a few queries and a few seconds.
+pub const UDP_ROTATE_QUERIES: u32 = 16;
+/// ... or this long after it was opened, whichever comes first.
+pub const UDP_ROTATE_AGE: Duration = Duration::from_secs(5);
+/// A pooled UDP socket left idle for this long is closed instead of reused.
+pub const UDP_IDLE_LIFETIME: Duration = Duration::from_secs(2);
 /// Idle UDP sockets kept per upstream; a query finding none opens a new one.
-pub const UDP_POOL_IDLE: usize = 64;
+pub const UDP_POOL_IDLE: usize = 16;
+/// A host-name upstream is resolved again at most this often.
+pub const RESOLVE_TTL: Duration = Duration::from_secs(60);
 
 /// Why an upstream query failed.
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +107,7 @@ struct PooledConn {
 struct Rotation {
     queries: u32,
     age: Duration,
+    idle: Duration,
 }
 
 /// A connected UDP socket with its receive buffer, used by one query at a time.
@@ -108,6 +116,8 @@ struct UdpConn {
     peer: SocketAddr,
     buf: Box<[u8]>,
     opened: Instant,
+    /// When the socket last went back to the pool.
+    idle_since: Instant,
     uses: u32,
 }
 
@@ -126,14 +136,31 @@ impl UdpConn {
             peer,
             buf: vec![0u8; MAX_UDP_RESPONSE].into_boxed_slice(),
             opened: Instant::now(),
+            idle_since: Instant::now(),
             uses: 0,
         })
     }
 
+    /// Discards whatever queued up while the socket sat in the pool (late answers, or forgeries
+    /// aimed at a port that was known for a while), so that only datagrams arriving after the
+    /// next query's ID goes out can match it, as with a fresh socket. Returns how many.
+    fn drain(&mut self) -> io::Result<usize> {
+        let mut dropped = 0;
+        loop {
+            match self.socket.try_recv(&mut self.buf) {
+                Ok(_) => dropped += 1,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(dropped),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Never across upstream addresses, never past the rotation count, age or idle lifetime.
     fn reusable(&self, peer: SocketAddr, rotation: Rotation, now: Instant) -> bool {
         self.peer == peer
             && self.uses < rotation.queries
             && now.saturating_duration_since(self.opened) < rotation.age
+            && now.saturating_duration_since(self.idle_since) < rotation.idle
     }
 }
 
@@ -190,6 +217,7 @@ impl UpstreamClient {
             rotation: Rotation {
                 queries: UDP_ROTATE_QUERIES,
                 age: UDP_ROTATE_AGE,
+                idle: UDP_IDLE_LIFETIME,
             },
         })
     }
@@ -308,7 +336,7 @@ impl UpstreamClient {
                 })?;
             Resolved {
                 addr,
-                until: Some(now + self.rotation.age),
+                until: Some(now + RESOLVE_TTL),
             }
         };
         self.udp_state()
@@ -328,7 +356,8 @@ impl UpstreamClient {
     /// is full (then it is closed).
     fn put_udp(&self, upstream: &Upstream, mut conn: UdpConn) {
         conn.uses += 1;
-        if !conn.reusable(conn.peer, self.rotation, Instant::now()) {
+        conn.idle_since = Instant::now();
+        if !conn.reusable(conn.peer, self.rotation, conn.idle_since) {
             return;
         }
         let mut state = self.udp_state();
@@ -424,12 +453,16 @@ fn random_id() -> u16 {
     u16::from_be_bytes(b)
 }
 
-/// A response matches when it answers this exact query.
+/// A response matches when it answers this exact query: ID, QR, opcode and the question section
+/// byte for byte (the name compared case-sensitively, so the QNAME case is part of the match).
 fn matches(query: &Message, resp: &Message) -> bool {
     resp.header.qr
         && resp.header.id == query.header.id
         && resp.header.opcode == Opcode::Query
-        && resp.questions == query.questions
+        && resp.questions.len() == query.questions.len()
+        && resp.questions.iter().zip(&query.questions).all(|(r, q)| {
+            r.qtype == q.qtype && r.qclass == q.qclass && r.name.as_wire() == q.name.as_wire()
+        })
 }
 
 async fn udp_exchange(
@@ -437,6 +470,7 @@ async fn udp_exchange(
     wire: &[u8],
     query: &Message,
 ) -> Result<Message, UpstreamError> {
+    conn.drain()?;
     conn.socket.send(wire).await?;
     loop {
         let n = conn.socket.recv(&mut conn.buf).await?;
