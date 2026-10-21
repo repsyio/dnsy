@@ -286,9 +286,12 @@ curl -s -X POST -H "$A" -H 'Content-Type: application/json' \
   -d '{"new_passphrase":"new-phrase"}' http://127.0.0.1:5380/api/v1/dnssec/passphrase
 ```
 
-Passphrases need at least 8 characters. The CLI also reads the new passphrase from stdin
+Passphrases need at least 12 characters. The CLI also reads the new passphrase from stdin
 (`--new-passphrase-stdin`). **Afterwards update `DNSY_DNSSEC_PASSPHRASE` or the passphrase
-file** before the next start; a server started with the old passphrase cannot read the keys.
+file** before the next start. A server started with the old passphrase cannot read the keys:
+it does not serve the zone unsigned (the DS would still be at the parent and validators would
+fail it anyway). The zone answers SERVFAIL, the failure is logged once, and `/readyz` answers
+503 with `dnssec_signing_failed` until the passphrase is right again.
 After the offline command, restart a running server with the new passphrase. The passphrase
 never appears in logs or responses.
 
@@ -311,7 +314,11 @@ Keys are rows of the `dnssec_keys` table in `<server.data_dir>/dnsy.db` (default
   The CLI creates the file with mode 0600 and refuses to overwrite one; `--zone` limits it and
   `--passphrase-stdin` reads the passphrase from stdin. Import re-seals the keys under the
   store's passphrase and skips keys that already exist. The API export needs the admin scope
-  (the response is ciphertext only). Keep the bundle passphrase apart from the bundle.
+  (the response is ciphertext only) and is **refused with 403 on a plain-HTTP API listener**:
+  the request carries the bundle passphrase and the response every private key, so serve the
+  API over TLS (`[api] tls`) or reach it through a TLS-terminating proxy. The bundle
+  passphrase needs at least 12 characters and is stretched with argon2id at 64 MiB and three
+  passes. Keep it apart from the bundle.
 - The SQLite database, taken as described in [Operations](operations.md#backups), plus the
   passphrase kept separately.
 
@@ -376,9 +383,15 @@ a signature validity V of 14 days):
   that the last signature it made has expired.
 - A ZSK rolls by itself (pre-publish). A KSK or CSK also waits for you to confirm that its DS
   is at the parent (double-DS); DNSY never contacts the registrar.
+- A retired KSK or CSK keeps signing the DNSKEY RRset until it is removed, so the RRset
+  stays valid for resolvers that still hold the old DS (a parent's DS TTL is often 24 to 48
+  hours). Confirming the DS never takes the old signature away.
 - One rollover per role at a time. A second start answers
   `dnsy: a zsk rollover is already in progress for this zone` (API: 409). A role needs an
   active key to roll.
+- A key made with `POST /zones/{name}/dnssec/keys` is only `generated`: it stays inert, and
+  the same 409 stops a second one while it exists. Starting a rollover of that role publishes
+  it (it keeps its algorithm) instead of making a new key; abort withdraws it.
 
 ### ZSK rollover (about 2 hours plus the retire wait, no registrar)
 

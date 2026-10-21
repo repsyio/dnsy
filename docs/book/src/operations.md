@@ -22,7 +22,7 @@ DoH path tokens, passwords and the DNSSEC key passphrase are never logged.
 ## Health
 
 `GET /healthz` answers while the process runs. `GET /readyz` answers 200 when the database
-works and 503 otherwise; point load balancers and orchestrators at it.
+works and every DNSSEC zone can be signed, and 503 otherwise; point load balancers and orchestrators at it.
 
 ## Background work
 

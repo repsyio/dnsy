@@ -43,7 +43,7 @@ it reads precomputed rollups) or scrape the JSON with an exporter of your own.
 ## Health
 
 `GET /healthz` is liveness (the process runs). `GET /readyz` is readiness: 200 when the database
-answers, 503 otherwise, and a `warnings` list such as `dnssec_clock_untrusted` while the system
+answers and every DNSSEC zone can be signed, 503 otherwise (`dnssec_signing_failed` when a zone's keys cannot be opened), and a `warnings` list such as `dnssec_clock_untrusted` while the system
 clock is earlier than the build time. Neither needs credentials.
 
 ## What to alert on

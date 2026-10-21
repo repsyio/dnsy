@@ -652,6 +652,13 @@ impl<E: Exchange> Engine<E> {
         let Some(outcome) = outcome else {
             return Ok((msg, from, DnssecStatus::Unchecked));
         };
+        if outcome.fetch_failed && policy.mode == Validation::Strict {
+            // The chain could not be fetched: strict mode never hands on data it could not
+            // validate. SERVFAIL with EDE 5, cached for `servfail_ttl` so a blip is retried soon.
+            let (code, text) = outcome.ede.unwrap_or((ede::DNSSEC_INDETERMINATE, String::new()));
+            let servfail = error_response(query, Rcode::ServFail, Some((code, &text)));
+            return Ok((servfail, from, outcome.status));
+        }
         if let Some(cap) = outcome.min_ttl {
             cap_ttls(&mut msg, cap);
         }

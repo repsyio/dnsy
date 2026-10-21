@@ -162,6 +162,7 @@ impl DnssecPolicy {
                     "system clock is untrusted; DNSSEC not validated".to_owned(),
                 )),
                 min_ttl: None,
+                fetch_failed: false,
             };
         }
         // RFC 1982 serial arithmetic: the validator compares times modulo 2^32.

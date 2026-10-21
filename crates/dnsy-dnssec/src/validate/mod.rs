@@ -86,6 +86,9 @@ pub struct ValidationOutcome {
     /// For `Secure` answers: the lowest of the validated records' TTLs, their RRSIG original
     /// TTLs and the seconds left until their RRSIGs expire. Caches cap their TTL with it.
     pub min_ttl: Option<u32>,
+    /// The chain of trust could not be built because a DS or DNSKEY fetch failed (status
+    /// `Indeterminate`, EDE 5). A strict resolver must not hand the unvalidated data on.
+    pub fetch_failed: bool,
 }
 
 /// A DNSSEC validator holding trust anchors and work limits; cheap to share.
@@ -131,17 +134,20 @@ impl Validator {
                 status: DnssecStatus::Secure,
                 ede: None,
                 min_ttl: ctx.min_ttl(),
+                fetch_failed: false,
             },
             Ok(Verdict::Insecure(ede)) => ValidationOutcome {
                 status: DnssecStatus::Insecure,
                 ede,
                 // An answer accepted under an expiring negative trust anchor carries a cap.
                 min_ttl: ctx.min_ttl(),
+                fetch_failed: false,
             },
             Err(f) => ValidationOutcome {
                 status: f.status,
                 ede: Some((f.ede, f.text)),
                 min_ttl: f.transient.then_some(self.limits.indeterminate_ttl),
+                fetch_failed: f.transient,
             },
         }
     }
