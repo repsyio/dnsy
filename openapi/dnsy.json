@@ -1120,7 +1120,7 @@
         "tags": [
           "dnssec"
         ],
-        "summary": "Export the zone keys as a bundle encrypted under the given passphrase, for backup. The\nresponse holds ciphertext only; the passphrase and the keys are never logged.",
+        "summary": "Export the zone keys as a bundle encrypted under the given passphrase, for backup. The\nresponse holds ciphertext only; the passphrase and the keys are never logged. Refused with\n403 when the API listener is plain HTTP.",
         "operationId": "export_keys",
         "requestBody": {
           "content": {
@@ -1138,6 +1138,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/KeyBackup"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin scope missing, or the API listener is plain HTTP",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -4637,7 +4647,7 @@
             }
           },
           "503": {
-            "description": "Not ready",
+            "description": "Not ready: the database does not answer, or a DNSSEC zone cannot be signed (`dnssec_signing_failed`)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4985,7 +4995,7 @@
         "properties": {
           "new_passphrase": {
             "type": "string",
-            "description": "The new key passphrase (at least 8 characters)."
+            "description": "The new key passphrase (at least 12 characters)."
           }
         },
         "additionalProperties": false
@@ -5641,7 +5651,7 @@
         "properties": {
           "passphrase": {
             "type": "string",
-            "description": "Passphrase the bundle is encrypted under (at least 8 characters). It may differ from\nthe key passphrase; keep it apart from the bundle."
+            "description": "Passphrase the bundle is encrypted under (at least 12 characters). It may differ from\nthe key passphrase; keep it apart from the bundle."
           },
           "zone": {
             "type": [

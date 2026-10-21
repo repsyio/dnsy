@@ -290,6 +290,53 @@ async fn strict_bogus_servfail_ede6() {
     assert_eq!(r.statuses(), [DnssecStatus::Bogus, DnssecStatus::Bogus]);
 }
 
+/// Answers the data query but fails every DS and DNSKEY fetch, like an upstream that
+/// hiccups mid-validation.
+fn flaky_chain_rig(mode: Validation) -> Rig {
+    let world = World::new();
+    let policy = world.policy(mode);
+    let seen: Seen = Arc::default();
+    let fake = Fake::answering(move |q| {
+        let question = &q.questions[0];
+        if matches!(question.qtype, RecordType::Ds | RecordType::Dnskey) {
+            return Err(UpstreamError::Timeout);
+        }
+        let mut r = Message::response_to(q);
+        r.answers = vec![a("www.example.")];
+        Ok(r)
+    });
+    let h = harness_with(fake, &Config::default(), |b| b.dnssec(policy));
+    Rig { h, seen }
+}
+
+#[tokio::test]
+async fn strict_fetch_failure_is_servfail_ede5_not_bogus() {
+    let r = flaky_chain_rig(Validation::Strict);
+    let resp = r.ask(q("www.example.", true, false, false)).await;
+    assert_eq!(resp.header.rcode, Rcode::ServFail);
+    assert!(resp.answers.is_empty() && !resp.header.ad);
+    assert_eq!(ede_codes(&resp), [ede::DNSSEC_INDETERMINATE]);
+    assert_eq!(r.statuses(), [DnssecStatus::Indeterminate]);
+    // Cached as a SERVFAIL (servfail_ttl), not as a Bogus entry for `bogus_ttl`.
+    let (cached, status) = r.cached("www.example.", true, false).unwrap();
+    assert_eq!(cached.header.rcode, Rcode::ServFail);
+    assert_eq!(status, DnssecStatus::Indeterminate);
+}
+
+#[tokio::test]
+async fn permissive_fetch_failure_serves_without_ad_and_a_short_ttl() {
+    let r = flaky_chain_rig(Validation::Permissive);
+    let resp = r.ask(q("www.example.", true, true, false)).await;
+    assert_eq!(resp.header.rcode, Rcode::NoError);
+    assert!(!resp.header.ad);
+    assert!(
+        resp.answers.iter().all(|x| x.ttl <= 5),
+        "{:?}",
+        resp.answers
+    );
+    assert_eq!(r.statuses(), [DnssecStatus::Indeterminate]);
+}
+
 #[tokio::test]
 async fn permissive_bogus_answered_without_ad() {
     let r = rig(Validation::Permissive);

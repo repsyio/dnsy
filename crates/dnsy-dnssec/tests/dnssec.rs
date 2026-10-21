@@ -298,6 +298,7 @@ fn key_checks() {
     };
     assert_eq!(check(&|k| k.flags = 0), Err(VerifyError::NotZoneKey));
     assert_eq!(check(&|k| k.protocol = 2), Err(VerifyError::NotZoneKey));
+    assert_eq!(check(&|k| k.flags |= 0x0080), Err(VerifyError::Revoked));
     assert_eq!(
         check(&|k| k.algorithm = 14),
         Err(VerifyError::AlgorithmMismatch)

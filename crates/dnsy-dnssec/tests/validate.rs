@@ -3,7 +3,9 @@
 mod fixture;
 
 use dnsy_core::DnssecStatus;
-use dnsy_dnssec::{DigestType, TrustAnchors, ValidationLimits, Validator, ds_for};
+use dnsy_dnssec::{
+    Algorithm, DigestType, SigningKey, TrustAnchors, ValidationLimits, Validator, ds_for,
+};
 use dnsy_proto::{Ds, Message, RData, Rcode, Record, RecordType, ede};
 use fixture::{
     INCEPTION, NOW, Net, Zone, a, anchors, block_on, corrupt, msg, n, rec, run, unsigned_soa,
@@ -272,7 +274,7 @@ fn bogus_missing_ds_dnskey_mismatch() {
 }
 
 #[test]
-fn bogus_when_dnskey_cannot_be_fetched() {
+fn fetch_error_is_indeterminate_not_bogus() {
     let root = Zone::new(".");
     let example = Zone::new("example.");
     let mut net = Net::default();
@@ -289,8 +291,24 @@ fn bogus_when_dnskey_cannot_be_fetched() {
         &net,
         &positive("www.example.", example.sign(vec![a("www.example.")])),
     );
-    assert_eq!(out.status, DnssecStatus::Bogus);
-    assert_eq!(out.ede.unwrap().0, ede::DNSKEY_MISSING);
+    // The DNSKEY fetch failed: a transport problem, not an attack. EDE 5, and the answer is
+    // cached only for `indeterminate_ttl`.
+    assert_eq!(out.status, DnssecStatus::Indeterminate);
+    assert_eq!(out.ede.unwrap().0, ede::DNSSEC_INDETERMINATE);
+    assert_eq!(
+        out.min_ttl,
+        Some(ValidationLimits::default().indeterminate_ttl)
+    );
+
+    // The same for a failed DS fetch.
+    let w = world();
+    let resp = positive("www.example.", w.signed_a("www.example."));
+    let mut net = Net::default();
+    net.zone(&w.root);
+    let out = run(&w.validator(), &net, &resp);
+    assert_eq!(out.status, DnssecStatus::Indeterminate);
+    assert_eq!(out.ede.unwrap().0, ede::DNSSEC_INDETERMINATE);
+    assert!(out.min_ttl.is_some());
 }
 
 #[test]
@@ -690,6 +708,160 @@ fn wildcard_expansion_proof_nsec3() {
     assert_eq!(w.check(&resp), (DnssecStatus::Insecure, None));
 }
 
+#[test]
+fn wildcard_expansion_proof_nsec3_opt_out_is_insecure() {
+    let w = world();
+    let resp_with = |opt_out: bool| {
+        let chain = w.example.nsec3_chain(
+            &[
+                ("example.", apex_types()),
+                ("*.example.", &[A, Rrsig]),
+                ("www.example.", &[A, Rrsig]),
+            ],
+            opt_out,
+            0,
+        );
+        msg(
+            "foo.example.",
+            A,
+            Rcode::NoError,
+            wildcard_answer(&w),
+            chain.proof(&w.example, &["foo.example."]),
+        )
+    };
+    // The covering NSEC3 may span an unsigned delegation, so the next closer name is not
+    // proven absent (RFC 5155 8.8).
+    assert_eq!(w.check(&resp_with(true)), (DnssecStatus::Insecure, None));
+    assert_eq!(w.check(&resp_with(false)), (DnssecStatus::Secure, None));
+}
+
+/// A DNSKEY `RRset` for `zone` with a revoked ZSK, and `www.example.` signed by that ZSK with a
+/// key tag matching the revoked key, so only the REVOKE check can reject it.
+fn revoked_zsk_world(revoke: bool) -> (World, Message) {
+    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+    let mut w = world();
+    let mut zsk = w.example.zsk.dnskey();
+    if revoke {
+        zsk.flags |= 0x0080;
+    }
+    let dnskeys: Vec<Record> = [w.example.ksk.dnskey(), zsk.clone()]
+        .into_iter()
+        .map(|k| rec("example.", RData::Dnskey(k)))
+        .collect();
+    let signed_keys = w.example.sign(dnskeys);
+    w.net
+        .serve(msg("example.", Dnskey, Rcode::NoError, signed_keys, vec![]));
+
+    let rrset = vec![a("www.example.")];
+    let signed = w
+        .example
+        .zsk
+        .sign_rrset(
+            &rrset,
+            &n("example."),
+            fixture::INCEPTION,
+            fixture::EXPIRATION,
+        )
+        .unwrap();
+    let RData::Rrsig(mut sig) = signed.data else {
+        unreachable!()
+    };
+    sig.key_tag = zsk.key_tag();
+    let input = dnsy_proto::canonical::rrset_signing_input(&sig, &rrset);
+    let rng = ring::rand::SystemRandom::new();
+    let pair = EcdsaKeyPair::from_pkcs8(
+        &ECDSA_P256_SHA256_FIXED_SIGNING,
+        &w.example.zsk.to_pkcs8(),
+        &rng,
+    )
+    .unwrap();
+    assert_eq!(pair.public_key().as_ref().len(), 65);
+    sig.signature = pair.sign(&rng, &input).unwrap().as_ref().to_vec();
+    let mut answers = rrset;
+    answers.push(rec("www.example.", RData::Rrsig(sig)));
+    let resp = positive("www.example.", answers);
+    (w, resp)
+}
+
+#[test]
+fn revoked_zsk_signature_is_bogus() {
+    // Control: the same signature under a non-revoked key validates.
+    let (w, resp) = revoked_zsk_world(false);
+    assert_eq!(w.check(&resp), (DnssecStatus::Secure, None));
+    let (w, resp) = revoked_zsk_world(true);
+    assert_eq!(w.check(&resp).0, DnssecStatus::Bogus);
+}
+
+/// `example.` after the DS handover: the DNSKEY `RRset` holds the old and the new KSK, signed
+/// by the old one when `old_signs` and by the new one when `new_signs`; the parent's DS names
+/// the old key when `ds_old`, else the new one.
+fn rollover_world(old_signs: bool, new_signs: bool, ds_old: bool) -> World {
+    let root = Zone::new(".");
+    let example = Zone::new("example.");
+    let new_ksk = SigningKey::generate(Algorithm::EcdsaP256Sha256, true).unwrap();
+    let mut net = Net::default();
+    net.zone(&root);
+    let keys: Vec<Record> = [example.ksk.dnskey(), new_ksk.dnskey(), example.zsk.dnskey()]
+        .into_iter()
+        .map(|k| rec("example.", RData::Dnskey(k)))
+        .collect();
+    let mut served = keys.clone();
+    for key in [(old_signs, &example.ksk), (new_signs, &new_ksk)]
+        .into_iter()
+        .filter_map(|(on, k)| on.then_some(k))
+    {
+        served.push(
+            key.sign_rrset(
+                &keys,
+                &n("example."),
+                fixture::INCEPTION,
+                fixture::EXPIRATION,
+            )
+            .unwrap(),
+        );
+    }
+    net.serve(msg("example.", Dnskey, Rcode::NoError, served, vec![]));
+    let ds_key = if ds_old { &example.ksk } else { &new_ksk };
+    let ds = ds_for(&n("example."), &ds_key.dnskey(), DigestType::Sha256).unwrap();
+    net.serve(msg(
+        "example.",
+        DsType,
+        Rcode::NoError,
+        root.sign(vec![rec("example.", RData::Ds(ds))]),
+        vec![],
+    ));
+    World { root, example, net }
+}
+
+#[test]
+fn retired_ksk_still_signs_dnskey_rrset() {
+    // A validator holding only the old DS (cached at the parent for up to a DS TTL) and one
+    // holding only the new DS must both find a valid DNSKEY signature after the handover.
+    let probe = |w: &World| {
+        w.check(&positive(
+            "www.example.",
+            w.example.sign(vec![a("www.example.")]),
+        ))
+    };
+    for ds_old in [true, false] {
+        assert_eq!(
+            probe(&rollover_world(true, true, ds_old)),
+            (DnssecStatus::Secure, None),
+            "double-signed, DS names the {} key",
+            if ds_old { "old" } else { "new" }
+        );
+    }
+    // Signed by the new key alone (what the signer did before): the old DS no longer chains.
+    assert_eq!(
+        probe(&rollover_world(false, true, false)).0,
+        DnssecStatus::Secure
+    );
+    assert_eq!(
+        probe(&rollover_world(false, true, true)).0,
+        DnssecStatus::Bogus
+    );
+}
+
 fn ds_rrset(owner: &str, ds: Ds) -> Vec<Record> {
     vec![rec(owner, RData::Ds(ds))]
 }
@@ -957,7 +1129,13 @@ fn cname_chain_validated_per_link() {
 
 #[test]
 fn unrelated_answer_rrsets_are_validated() {
-    let w = world();
+    let mut w = world();
+    let mut auth = w
+        .example
+        .nsec("evil.example.", "zzz.example.", &[A, Rrsig, Nsec]);
+    auth.extend(w.example.soa());
+    w.net
+        .serve(msg("evil.example.", DsType, Rcode::NoError, vec![], auth));
     let answers = concat(vec![w.signed_a("www.example."), vec![a("evil.example.")]]);
     let out = run(&w.validator(), &w.net, &positive("www.example.", answers));
     assert_eq!(out.status, DnssecStatus::Bogus);
@@ -1103,7 +1281,7 @@ fn ds_walk_rejects_bad_denials() {
 
     let w = world();
     let out = run(&w.validator(), &w.net, &resp);
-    assert_eq!(out.status, DnssecStatus::Bogus);
+    assert_eq!(out.status, DnssecStatus::Indeterminate);
     assert!(out.ede.unwrap().1.contains("fetch failed"));
 }
 

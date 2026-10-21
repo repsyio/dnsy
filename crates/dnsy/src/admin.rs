@@ -28,7 +28,7 @@ const BACKUP_PASSPHRASE_ENV: &str = "DNSY_DNSSEC_BACKUP_PASSPHRASE";
 /// Environment variable holding the new key passphrase for `dnssec passphrase change`.
 const NEW_PASSPHRASE_ENV: &str = "DNSY_DNSSEC_NEW_PASSPHRASE";
 /// Shortest passphrase accepted for a bundle or the key store.
-const MIN_PASSPHRASE_LEN: usize = 8;
+const MIN_PASSPHRASE_LEN: usize = 12;
 
 pub(crate) fn openapi(out: &mut impl Write) -> Result<()> {
     writeln!(out, "{}", dnsy_api::openapi().to_pretty_json()?)?;

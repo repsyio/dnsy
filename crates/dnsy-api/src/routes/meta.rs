@@ -4,12 +4,14 @@ use std::sync::atomic::Ordering;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use crate::error::{ApiError, Problem};
+use crate::error::{ApiError, Problem, problem_response};
 use crate::state::ApiState;
 
 /// Liveness/readiness answer.
@@ -62,22 +64,42 @@ async fn healthz() -> Json<Status> {
 #[utoipa::path(get, path = "/readyz", tag = "meta",
     responses(
         (status = 200, description = "Ready", body = Ready),
-        (status = 503, description = "Not ready", body = Problem, content_type = "application/problem+json"),
+        (status = 503, description = "Not ready: the database does not answer, or a DNSSEC zone cannot be signed (`dnssec_signing_failed`)", body = Problem, content_type = "application/problem+json"),
     ))]
-async fn readyz(State(state): State<ApiState>) -> Result<Json<Ready>, ApiError> {
-    state
+async fn readyz(State(state): State<ApiState>) -> Response {
+    if state
         .store
         .read(|c| Ok(c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?))
         .await
-        .map_err(|_| ApiError::Unavailable)?;
+        .is_err()
+    {
+        return ApiError::Unavailable.into_response();
+    }
+    // A zone whose signing failed (its keys cannot be opened, for instance after a passphrase
+    // change that was not carried over to the environment) is not served unsigned: the pod is
+    // not ready until an operator fixes it.
+    if let Some(zones) = &state.zones {
+        let failed = zones.signing_failures().len();
+        if failed > 0 {
+            return problem_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Service unavailable",
+                format!(
+                    "dnssec_signing_failed: {failed} signed zone(s) cannot be signed; see the log"
+                ),
+            );
+        }
+    }
     let mut warnings = Vec::new();
     if state.dnssec_clock_untrusted.load(Ordering::Relaxed) {
         warnings.push("dnssec_clock_untrusted");
     }
-    Ok(Json(Ready {
+    Json(Ready {
         status: "ready",
         warnings,
-    }))
+    })
+    .into_response()
 }
 
 /// The server version.

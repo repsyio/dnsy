@@ -19,7 +19,7 @@ use dnsy_core::DnssecStatus;
 use dnsy_dnssec::{
     DnssecFetcher, FetchError, TrustAnchors, ValidationLimits, ValidationOutcome, Validator,
 };
-use dnsy_proto::{Ds, Edns, Header, Message, Name, Opcode, Question, Rcode, ede};
+use dnsy_proto::{Ds, Edns, Header, Message, Name, Opcode, Question, Rcode, RecordType, ede};
 use tokio::sync::Semaphore;
 
 use crate::cache::{Cache, CacheKey, CacheLookup};
@@ -162,6 +162,7 @@ impl DnssecPolicy {
                     "system clock is untrusted; DNSSEC not validated".to_owned(),
                 )),
                 min_ttl: None,
+                fetch_failed: false,
             };
         }
         // RFC 1982 serial arithmetic: the validator compares times modulo 2^32.
@@ -245,6 +246,34 @@ pub fn dnssec_query(q: &Question) -> Message {
     }
 }
 
+/// Reduces a DS or DNSKEY response to what the validator needs before it is cached. The cache
+/// entry is also what a CD=1 client asking for the same name is served, so nothing the upstream
+/// added beyond the question may stay: answers keep only the asked `RRset` and its RRSIGs at
+/// the query name; authority keeps only the SOA and the NSEC/NSEC3/RRSIG denial records of a
+/// negative answer.
+fn scrub_fetch(q: &Question, resp: &mut Message) {
+    resp.header.aa = false;
+    resp.header.ad = false;
+    resp.additional.clear();
+    resp.edns = None;
+    if !matches!(resp.header.rcode, Rcode::NoError | Rcode::NxDomain) {
+        resp.answers.clear();
+        resp.authority.clear();
+        return;
+    }
+    let name = q.name.to_lowercase();
+    resp.answers.retain(|r| {
+        r.name.to_lowercase() == name && (r.rtype == q.qtype || r.rtype == RecordType::Rrsig)
+    });
+    let negative = !resp.answers.iter().any(|r| r.rtype == q.qtype);
+    resp.authority.retain(|r| {
+        matches!(
+            r.rtype,
+            RecordType::Rrsig | RecordType::Nsec | RecordType::Nsec3
+        ) || (negative && r.rtype == RecordType::Soa)
+    });
+}
+
 /// The validator's [`DnssecFetcher`] over the upstream groups, memoising through `cache`.
 pub struct UpstreamFetcher<'a, E> {
     pub groups: &'a GroupSet,
@@ -286,10 +315,7 @@ impl<E: Exchange> UpstreamFetcher<'_, E> {
                 q.name, q.qtype
             )));
         }
-        resp.header.aa = false;
-        resp.header.ad = false;
-        resp.additional.clear();
-        resp.edns = None;
+        scrub_fetch(&q, &mut resp);
         self.cache
             .insert(key, &resp, DnssecStatus::Unchecked, Instant::now());
         Ok(resp)

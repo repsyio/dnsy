@@ -139,6 +139,14 @@ pub struct KdfCost {
     pub iterations: u32,
 }
 
+impl KdfCost {
+    /// Cost of backup bundles: 64 MiB, 3 iterations, 1 lane.
+    pub const BUNDLE: KdfCost = KdfCost {
+        memory_kib: 64 * 1024,
+        iterations: 3,
+    };
+}
+
 impl Default for KdfCost {
     /// OWASP minimum for argon2id: 19 MiB, 2 iterations, 1 lane.
     fn default() -> Self {
@@ -380,6 +388,8 @@ pub struct KeyStore {
     key_lock: Arc<tokio::sync::RwLock<()>>,
     clock: Arc<dyn Clock>,
     cost: KdfCost,
+    /// Cost of sealing a backup bundle, which leaves the machine and so gets a stronger KDF.
+    bundle_cost: KdfCost,
     /// Serialises `bootstrap`: its check for existing keys and the insert must not interleave.
     bootstrap_lock: Arc<tokio::sync::Mutex<()>>,
 }
@@ -407,14 +417,17 @@ impl KeyStore {
             key_lock: Arc::default(),
             clock,
             cost: KdfCost::default(),
+            bundle_cost: KdfCost::BUNDLE,
             bootstrap_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    /// Overrides the argon2id cost used for newly sealed keys (existing keys carry their own).
+    /// Overrides the argon2id cost used for newly sealed keys and bundles (existing blobs
+    /// carry their own).
     #[must_use]
     pub fn with_kdf_cost(mut self, cost: KdfCost) -> KeyStore {
         self.cost = cost;
+        self.bundle_cost = cost;
         self
     }
 
@@ -518,10 +531,12 @@ impl KeyStore {
         Ok(nk)
     }
 
-    /// Generates a key in the `generated` state (not yet in the DNSKEY `RRset`).
+    /// Generates a key in the `generated` state (not yet in the DNSKEY `RRset`). The key stays
+    /// inert until [`start_rollover`](Self::start_rollover) publishes it.
     ///
     /// # Errors
-    /// Unsupported algorithm (only 13 and 15 can sign) or a database failure.
+    /// A rollover of `role` already running (a `generated` or `published` key exists),
+    /// an unsupported algorithm (only 13 and 15 can sign) or a database failure.
     pub async fn generate_key(
         &self,
         zone: &Name,
@@ -529,6 +544,14 @@ impl KeyStore {
         algorithm: Algorithm,
     ) -> Result<KeyRecord, KeyStoreError> {
         let _shared = self.key_lock.read().await;
+        if self
+            .keys(zone)
+            .await?
+            .iter()
+            .any(|k| k.role == role && matches!(k.state, KeyState::Generated | KeyState::Published))
+        {
+            return Err(KeyStoreError::RolloverInProgress(role));
+        }
         let z = zone.clone();
         let new = self
             .offload(move |s| s.new_key(&z, role, algorithm, KeyState::Generated))
@@ -670,11 +693,14 @@ impl KeyStore {
         Ok(ActiveKeys { keys })
     }
 
-    /// Starts a rollover of `role`: generates a new key of `algorithm` and publishes it.
-    /// [`tick`](Self::tick) then advances it per [`plan`].
+    /// Starts a rollover of `role`: publishes the zone's `generated` key of that role (made
+    /// by [`generate_key`](Self::generate_key); it keeps its own algorithm), or generates a
+    /// new key of `algorithm` and publishes it. [`tick`](Self::tick) then advances it per
+    /// [`plan`].
     ///
     /// # Errors
-    /// No active key of that role, a rollover already running, or a database failure.
+    /// No active key of that role, a rollover already running (a `published` key exists),
+    /// or a database failure.
     pub async fn start_rollover(
         &self,
         zone: &Name,
@@ -685,7 +711,7 @@ impl KeyStore {
         let existing = self.keys(zone).await?;
         if existing
             .iter()
-            .any(|k| k.role == role && matches!(k.state, KeyState::Generated | KeyState::Published))
+            .any(|k| k.role == role && k.state == KeyState::Published)
         {
             return Err(KeyStoreError::RolloverInProgress(role));
         }
@@ -695,6 +721,37 @@ impl KeyStore {
         {
             return Err(KeyStoreError::NoActiveKey(role));
         }
+        if let Some(generated) = existing
+            .into_iter()
+            .find(|k| k.role == role && k.state == KeyState::Generated)
+        {
+            let now = self.clock.now();
+            self.store
+                .write(move |tx| {
+                    tx.execute(
+                        "UPDATE dnssec_keys SET state = 'published', published_at = ?1 \
+                         WHERE id = ?2",
+                        params![now, generated.id],
+                    )?;
+                    Ok(KeyRecord {
+                        state: KeyState::Published,
+                        published_at: Some(now),
+                        ..generated
+                    })
+                })
+                .await
+                .map_err(Into::into)
+        } else {
+            self.start_new_rollover(zone, role, algorithm).await
+        }
+    }
+
+    async fn start_new_rollover(
+        &self,
+        zone: &Name,
+        role: KeyRole,
+        algorithm: Algorithm,
+    ) -> Result<KeyRecord, KeyStoreError> {
         let z = zone.clone();
         let new = self
             .offload(move |s| s.new_key(&z, role, algorithm, KeyState::Published))
@@ -930,7 +987,7 @@ impl KeyStore {
                     .map_err(|_| KeyStoreError::Bundle("cannot serialize"))?,
             );
             drop(bundle);
-            encrypt(&bundle_pass, s.cost, &json)
+            encrypt(&bundle_pass, s.bundle_cost, &json)
         })
         .await
     }
@@ -1167,10 +1224,18 @@ mod tests {
     #[tokio::test]
     async fn generate_csk_ecdsa_and_ed25519() {
         let f = fixture(Some("pw"));
-        for alg in [Algorithm::EcdsaP256Sha256, Algorithm::Ed25519] {
-            let rec = f.ks.generate_key(&zone(), KeyRole::Csk, alg).await.unwrap();
+        for (i, alg) in [Algorithm::EcdsaP256Sha256, Algorithm::Ed25519]
+            .into_iter()
+            .enumerate()
+        {
+            let z = if i == 0 {
+                zone()
+            } else {
+                Name::from_ascii("other.test.").unwrap()
+            };
+            let rec = f.ks.generate_key(&z, KeyRole::Csk, alg).await.unwrap();
             assert_eq!(rec.state, KeyState::Generated);
-            assert_eq!(rec.zone, "example.com.");
+            assert_eq!(rec.zone, z.to_string().to_ascii_lowercase());
             assert_eq!(rec.algorithm, alg);
             let key = f.ks.signing_key(rec.id).await.unwrap();
             assert_eq!(key.dnskey().key_tag(), rec.key_tag);
@@ -1493,6 +1558,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_key_twice_is_conflict() {
+        let f = fixture(None);
+        let z = zone();
+        f.ks.bootstrap(&z, &policy(r#"{"key_layout":"ksk_zsk"}"#))
+            .await
+            .unwrap();
+        let alg = Algorithm::EcdsaP256Sha256;
+        let first = f.ks.generate_key(&z, KeyRole::Zsk, alg).await.unwrap();
+        assert_eq!(first.state, KeyState::Generated);
+        assert!(matches!(
+            f.ks.generate_key(&z, KeyRole::Zsk, alg).await,
+            Err(KeyStoreError::RolloverInProgress(KeyRole::Zsk))
+        ));
+        // Another role is independent.
+        f.ks.generate_key(&z, KeyRole::Ksk, alg).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn generated_key_is_inert_until_a_rollover_publishes_it() {
+        let f = fixture(None);
+        let z = zone();
+        f.ks.bootstrap(&z, &policy(r#"{"key_layout":"ksk_zsk"}"#))
+            .await
+            .unwrap();
+        let alg = Algorithm::EcdsaP256Sha256;
+        let generated = f.ks.generate_key(&z, KeyRole::Zsk, alg).await.unwrap();
+        f.clock.advance(1_000_000);
+        assert_eq!(f.ks.tick(&z, T).await.unwrap(), [], "nothing publishes it");
+        let before = f.ks.dnskeys(&z).await.unwrap().len();
+        assert!(
+            f.ks.keys(&z)
+                .await
+                .unwrap()
+                .iter()
+                .any(|k| k.id == generated.id && k.state == KeyState::Generated)
+        );
+
+        let started = f.ks.start_rollover(&z, KeyRole::Zsk, alg).await.unwrap();
+        assert_eq!(started.id, generated.id, "the generated key is adopted");
+        assert_eq!(started.state, KeyState::Published);
+        assert_eq!(f.ks.dnskeys(&z).await.unwrap().len(), before + 1);
+        assert!(matches!(
+            f.ks.start_rollover(&z, KeyRole::Zsk, alg).await,
+            Err(KeyStoreError::RolloverInProgress(KeyRole::Zsk))
+        ));
+        f.clock.advance(3600);
+        assert_eq!(f.ks.tick(&z, T).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn bundles_use_the_strong_kdf_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(&dir.path().join("k.db")).unwrap();
+        let ks = KeyStore::open(db, None, Arc::new(ManualClock::new(T0)));
+        let z = zone();
+        ks.bootstrap(&z, &policy("{}")).await.unwrap();
+        let bundle = ks
+            .export_bundle(None, &Passphrase::new("twelve-chars"))
+            .await
+            .unwrap();
+        assert_eq!(
+            u32::from_be_bytes(bundle[1..5].try_into().unwrap()),
+            64 * 1024
+        );
+        assert_eq!(u32::from_be_bytes(bundle[5..9].try_into().unwrap()), 3);
+    }
+
+    #[tokio::test]
     async fn ksk_rollover_waits_for_ds_confirmation() {
         let f = fixture(None);
         let z = zone();
@@ -1644,14 +1777,9 @@ mod tests {
         let mut tasks = Vec::new();
         for i in 0..8 {
             let ks = f.ks.clone();
-            let zone = z.clone();
+            let zone = Name::from_ascii(&format!("z{i}.test.")).unwrap();
             tasks.push(tokio::spawn(async move {
-                let role = if i % 2 == 0 {
-                    KeyRole::Zsk
-                } else {
-                    KeyRole::Ksk
-                };
-                ks.generate_key(&zone, role, Algorithm::Ed25519)
+                ks.generate_key(&zone, KeyRole::Zsk, Algorithm::Ed25519)
                     .await
                     .unwrap()
                     .id

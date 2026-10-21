@@ -182,6 +182,7 @@ impl SignedIndex {
                 authority.extend(proofs);
                 LookupResult::NoData { authority }
             }
+            LookupResult::ServFail => LookupResult::ServFail,
             LookupResult::NxDomain { authority } => {
                 let mut authority = self.with_sigs(&authority, trace);
                 authority.extend(proofs);
@@ -401,16 +402,26 @@ impl ZoneSigning {
 
     /// Signs every zone that needs it: never signed, changed since its last signing, keys
     /// changed state, or a signature within `refresh_days` of expiry. Zones without keys get
-    /// their initial key set. Failures are logged per zone (the zone keeps serving its
-    /// previous snapshot) and do not stop the others. Returns how many zones were signed.
+    /// their initial key set. A failure is logged once per zone and does not stop the others;
+    /// the zone keeps serving its previous signed snapshot, or answers SERVFAIL when it was
+    /// never signed (see [`ZoneStore::signing_failures`]). Returns how many zones were signed.
     pub async fn sign_due(&self) -> usize {
         let mut signed = 0;
         for (zone, previous) in self.inner.store.signing_state() {
             match self.sign_zone(&zone, previous).await {
                 Ok(true) => signed += 1,
-                Ok(false) => {}
+                Ok(false) => {
+                    self.inner.store.set_signing_failure(&zone.origin, None);
+                }
                 Err(e) => {
-                    tracing::error!(zone = %zone.origin, error = %e, "zone signing failed");
+                    // Logged when the failure appears or changes, not on every pass.
+                    if self
+                        .inner
+                        .store
+                        .set_signing_failure(&zone.origin, Some(e.to_string()))
+                    {
+                        tracing::error!(zone = %zone.origin, error = %e, "zone signing failed");
+                    }
                 }
             }
         }

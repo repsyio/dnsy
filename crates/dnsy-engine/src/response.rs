@@ -177,6 +177,10 @@ pub(crate) fn authoritative(
             msg.header.rcode = Rcode::NxDomain;
             msg.authority = authority;
         }
+        LookupResult::ServFail => {
+            msg.header.aa = false;
+            msg.header.rcode = Rcode::ServFail;
+        }
     }
     msg
 }

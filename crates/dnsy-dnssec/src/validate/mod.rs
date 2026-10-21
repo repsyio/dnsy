@@ -56,6 +56,9 @@ pub struct ValidationLimits {
     pub max_nsec3_hashes: usize,
     /// Seconds the RRSIG validity window is widened by on each side (capped at one day).
     pub clock_skew: u32,
+    /// Seconds an answer stays cached when validation failed to fetch DS or DNSKEY data
+    /// (`Indeterminate`); match the cache's `servfail_ttl`.
+    pub indeterminate_ttl: u32,
 }
 
 impl Default for ValidationLimits {
@@ -68,6 +71,7 @@ impl Default for ValidationLimits {
             max_nsec3_iterations: 100,
             max_nsec3_hashes: 64,
             clock_skew: 300,
+            indeterminate_ttl: 5,
         }
     }
 }
@@ -82,6 +86,9 @@ pub struct ValidationOutcome {
     /// For `Secure` answers: the lowest of the validated records' TTLs, their RRSIG original
     /// TTLs and the seconds left until their RRSIGs expire. Caches cap their TTL with it.
     pub min_ttl: Option<u32>,
+    /// The chain of trust could not be built because a DS or DNSKEY fetch failed (status
+    /// `Indeterminate`, EDE 5). A strict resolver must not hand the unvalidated data on.
+    pub fetch_failed: bool,
 }
 
 /// A DNSSEC validator holding trust anchors and work limits; cheap to share.
@@ -127,17 +134,20 @@ impl Validator {
                 status: DnssecStatus::Secure,
                 ede: None,
                 min_ttl: ctx.min_ttl(),
+                fetch_failed: false,
             },
             Ok(Verdict::Insecure(ede)) => ValidationOutcome {
                 status: DnssecStatus::Insecure,
                 ede,
                 // An answer accepted under an expiring negative trust anchor carries a cap.
                 min_ttl: ctx.min_ttl(),
+                fetch_failed: false,
             },
             Err(f) => ValidationOutcome {
                 status: f.status,
                 ede: Some((f.ede, f.text)),
-                min_ttl: None,
+                min_ttl: f.transient.then_some(self.limits.indeterminate_ttl),
+                fetch_failed: f.transient,
             },
         }
     }
@@ -166,6 +176,8 @@ struct Failure {
     status: DnssecStatus,
     ede: u16,
     text: String,
+    /// A fetch failure: retry soon instead of caching the outcome for long.
+    transient: bool,
 }
 
 impl Failure {
@@ -174,6 +186,7 @@ impl Failure {
             status: DnssecStatus::Bogus,
             ede,
             text: text.into(),
+            transient: false,
         }
     }
 
@@ -182,6 +195,14 @@ impl Failure {
             status: DnssecStatus::Indeterminate,
             ede: ede::DNSSEC_INDETERMINATE,
             text: text.into(),
+            transient: false,
+        }
+    }
+
+    fn fetch(text: impl Into<String>) -> Self {
+        Self {
+            transient: true,
+            ..Self::indeterminate(text)
         }
     }
 

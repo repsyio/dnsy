@@ -137,6 +137,10 @@ is how the tests advance days without sleeping.
   (`confirm_ds`, exposed through the API) and the DNSKEY TTL has elapsed does it become
   `active` and the old key `retired`. DNSY never contacts the registrar.
 
+A `generated` key never moves by itself. `generate_key` refuses to make a second one while a
+`generated` or `published` key of the role exists (`RolloverInProgress`), and `start_rollover`
+publishes the waiting `generated` key rather than creating another.
+
 Only one rollover per role runs at a time, and a role needs an active key to roll. Algorithm
 rollovers are not coordinated beyond this: start one by passing the new algorithm.
 
@@ -144,7 +148,9 @@ rollovers are not coordinated beyond this: start one by passing the new algorith
 
 `export_bundle` writes the zone's (or every zone's) non-removed keys as a single blob encrypted
 with AES-256-GCM under a bundle passphrase of the operator's choosing, independent of the
-store passphrase. `import_bundle` decrypts it, validates every key (PKCS#8, algorithm, key
+store passphrase (at least 12 characters in the API and CLI; argon2id with 64 MiB and three
+passes, where stored keys use the cheaper per-key cost). The API refuses the export route on a
+plain-HTTP listener. `import_bundle` decrypts it, validates every key (PKCS#8, algorithm, key
 tag), re-seals the keys under the current store passphrase and skips keys that are already
 present. The file variants create the bundle with mode `0600` and refuse to overwrite.
 
@@ -160,7 +166,7 @@ keys. `export_bind(&zone, Some(&signed))` writes the signed zone as a master fil
 
 | RRset | Signed by |
 | --- | --- |
-| DNSKEY at the apex | every active or published KSK/CSK |
+| DNSKEY at the apex | every active, published or retired KSK/CSK |
 | CDS, CDNSKEY (during a KSK/CSK rollover) | the KSK/CSKs above and the zone-signing keys |
 | every other authoritative RRset, NSEC, NSEC3, NSEC3PARAM | every active ZSK/CSK |
 | DS at a delegation | the zone-signing keys |
@@ -169,7 +175,9 @@ keys. `export_bind(&zone, Some(&signed))` writes the signed zone as a master fil
 The DNSKEY RRset holds every published, active and retired key. A ZSK being pre-published
 appears in it without signing anything, and a retired ZSK stays until its signatures are gone.
 During a KSK or CSK rollover the new key is published and signs the DNSKEY RRset next to the
-old one, so the RRset validates whichever DS the parent holds. While that rollover waits for
+old one, and the retired key keeps signing until it is removed, so the RRset validates
+whichever DS the parent holds, including an old DS still cached by resolvers after the
+operator confirmed the new one. While that rollover waits for
 the DS, the apex also carries CDS (SHA-256) and CDNSKEY records for both keys (RFC 7344).
 
 Each RRSIG has the RRset's TTL as original TTL, a `labels` count that leaves out a wildcard
@@ -231,7 +239,7 @@ control it.
 | `Secure` | Every RRset on the answer chain, and the denial proof if any, verified up to a trust anchor. |
 | `Insecure` | The data lies below a proven unsigned delegation, an NSEC3 opt-out span, a zone using only unsupported algorithms or digests, or a negative trust anchor. |
 | `Bogus` | Something should have verified and did not. |
-| `Indeterminate` | No trust anchor covers the name, or the response code (SERVFAIL, REFUSED, ...) carries nothing to validate. |
+| `Indeterminate` | No trust anchor covers the name, the response code (SERVFAIL, REFUSED, ...) carries nothing to validate, or a DS or DNSKEY fetch failed. |
 
 ### Trust anchors
 
@@ -278,6 +286,11 @@ an unsigned one next to a secure chain makes the answer `Bogus` rather than down
 A positive answer whose RRSIG `labels` field is shorter than the owner name is a wildcard
 expansion; the authority section must prove that the name itself does not exist (RFC 4035
 5.3.4, RFC 5155 8.8), using only denial records signed by the zone that signed the wildcard.
+When the NSEC3 covering the next closer name has the opt-out flag, the name may exist as an
+unsigned delegation, so the expansion is `Insecure`, not `Secure`.
+
+DNSKEYs with the REVOKE flag (0x0080, RFC 5011) are never trusted: they are dropped from the
+validated key set and `verify_rrsig` rejects them with `VerifyError::Revoked`.
 
 ### Denial of existence
 
@@ -431,13 +444,15 @@ covers the name) are served without AD.
 ### Extended DNS errors on Bogus answers
 
 The EDE is the validator's reason (see the table above): 6 DNSSEC bogus (bad signature, work
-limit exceeded, failed DS/DNSKEY fetch), 7 signature expired, 8 signature not yet valid,
+limit exceeded), 7 signature expired, 8 signature not yet valid,
 9 DNSKEY missing, 10 RRSIGs missing, 12 NSEC missing. It is stored with the cache entry, so
 cached replies carry the same code.
 
-A DS or DNSKEY fetch that fails or times out makes the answer `Bogus`, not `Indeterminate`.
-This is deliberate: an attacker who can block those fetches must not get unvalidated answers
-served in strict mode.
+A DS or DNSKEY fetch that fails or times out is a transport problem, not evidence of an
+attack: the status is `Indeterminate` with EDE 5, never `Bogus`, so it is not cached for
+`bogus_ttl`. In `strict` mode the client gets SERVFAIL with EDE 5, cached for `servfail_ttl`,
+so unvalidated data is never handed on and a blip is retried within seconds. In `permissive`
+mode the answer is served without AD, with its TTLs lowered to `indeterminate_ttl` (5 s).
 
 ### Cache
 
@@ -448,7 +463,9 @@ served in strict mode.
   validator's `min_ttl` (the lowest record TTL, RRSIG original TTL and seconds until the
   RRSIGs expire), so a cached `Secure` answer never outlives its RRSIGs.
 - DS and DNSKEY answers fetched for validation are memoised in the same cache under the
-  DO=1/CD=1 key with status `unchecked`; the validator checks them on every use.
+  DO=1/CD=1 key with status `unchecked`; the validator checks them on every use. That entry
+  is also what a CD=1 client asking for the same name receives, so the fetcher first strips
+  everything but the asked RRset, its RRSIGs and the denial records of a negative answer.
 - Changing the validation mode (`Engine::set_dnssec_mode`) or the negative trust anchors
   (`Engine::set_negative_trust_anchors`, from `dnssec.negative_trust_anchors` at start or the
   API at run time) flushes the cache.

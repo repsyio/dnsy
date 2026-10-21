@@ -112,10 +112,11 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
                 .0,
         );
     }
+    // The API is served over TLS, as key export requires.
     let app = build(
         state.clone(),
         ApiConfig {
-            tls: false,
+            tls: true,
             ..ApiConfig::default()
         },
         Router::new(),
@@ -365,6 +366,34 @@ async fn key_generation_and_listing() {
     assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
     let list = admin(&fx, Method::GET, &keys, None).await.json();
     assert_eq!(list.as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn generate_key_twice_is_conflict() {
+    let fx = fx().await;
+    create_zone(&fx).await;
+    signed_zone_view(&fx).await;
+    let keys = format!("{Z}/keys");
+    let first = admin(&fx, Method::POST, &keys, Some(json!({"role": "zsk"}))).await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.body);
+    let second = admin(&fx, Method::POST, &keys, Some(json!({"role": "zsk"}))).await;
+    assert_eq!(second.status, StatusCode::CONFLICT, "{}", second.body);
+    // Another role is independent.
+    let ksk = admin(&fx, Method::POST, &keys, Some(json!({"role": "ksk"}))).await;
+    assert_eq!(ksk.status, StatusCode::CREATED);
+
+    // The generated key stays inert: nothing publishes it until a rollover starts.
+    fx.clock.advance(10 * 86_400);
+    fx.state.signing.as_ref().unwrap().sign_due().await;
+    let list = admin(&fx, Method::GET, &keys, None).await.json();
+    let states: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|k| k["role"] == "zsk")
+        .map(|k| k["state"].as_str().unwrap())
+        .collect();
+    assert!(states.contains(&"generated"), "{states:?}");
 }
 
 #[tokio::test]
@@ -1223,6 +1252,87 @@ async fn key_export_is_encrypted_and_admin_only() {
         .await;
         assert_eq!(res.status, StatusCode::FORBIDDEN);
     }
+}
+
+#[tokio::test]
+async fn short_bundle_passphrase_rejected() {
+    let fx = fx().await;
+    signed_zone(&fx).await;
+    let url = "/api/v1/dnssec/keys/export";
+    let res = admin(
+        &fx,
+        Method::POST,
+        url,
+        Some(json!({"passphrase": "elevenchars"})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    assert!(res.body.contains("12"), "{}", res.body);
+    let res = admin(
+        &fx,
+        Method::POST,
+        url,
+        Some(json!({"passphrase": "twelve-chars"})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+}
+
+#[tokio::test]
+async fn key_export_refused_on_plaintext_listener() {
+    let fx = fx().await;
+    signed_zone(&fx).await;
+    let plain = build(fx.state.clone(), ApiConfig::default(), Router::new());
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/dnssec/keys/export")
+        .header("authorization", format!("Bearer {}", fx.admin))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"passphrase": BACKUP_PASSPHRASE}).to_string(),
+        ))
+        .unwrap();
+    let res = plain.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let problem: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(problem["status"], 403);
+    assert!(problem["detail"].as_str().unwrap().contains("plain-HTTP"));
+    assert!(!String::from_utf8_lossy(&body).contains("bundle"));
+}
+
+#[tokio::test]
+async fn unopenable_keys_fail_readiness_instead_of_serving_unsigned() {
+    let fx = fx_with(Some(PASSPHRASE), true).await;
+    signed_zone(&fx).await;
+    let ready = |fx: &Fx| {
+        let req = Request::builder()
+            .uri("/readyz")
+            .body(Body::empty())
+            .unwrap();
+        fx.app.clone().oneshot(req)
+    };
+    assert_eq!(ready(&fx).await.unwrap().status(), StatusCode::OK);
+
+    // A restart without the new passphrase: the same database, a key store without it.
+    let lost = KeyStore::open(fx.state.store.clone(), None, Arc::new(SystemClock));
+    let signing = ZoneSigning::new(Arc::clone(&fx.zones), lost);
+    signing.sign_due().await;
+    let res = ready(&fx).await.unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let problem: Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        problem["detail"]
+            .as_str()
+            .unwrap()
+            .contains("dnssec_signing_failed")
+    );
+    assert!(!String::from_utf8_lossy(&body).contains(PASSPHRASE));
 }
 
 #[tokio::test]

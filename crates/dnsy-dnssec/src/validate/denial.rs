@@ -347,10 +347,12 @@ impl Denial {
             return Ok(Verdict::Secure);
         }
         let next_closer = suffix(name, labels.saturating_add(1));
-        if self.nsec3_covered(&next_closer, h)? {
-            Ok(Verdict::Secure)
-        } else {
-            Err(missing("no denial proves the wildcard expansion"))
+        // RFC 5155 8.8, 6.1: an opt-out span may hold unsigned delegations, so the next
+        // closer name is not proven absent and the expansion cannot be called secure.
+        match self.nsec3_cover(&next_closer, h)? {
+            Some(i) if self.nsec3[i].opt_out() => Ok(Verdict::Insecure(None)),
+            Some(_) => Ok(Verdict::Secure),
+            None => Err(missing("no denial proves the wildcard expansion")),
         }
     }
 

@@ -9,7 +9,7 @@ checked in as `openapi/dnsy.json`.
 | Path | Auth | Purpose |
 | --- | --- | --- |
 | `GET /healthz` | none | the process is up |
-| `GET /readyz` | none | the database answers (503 otherwise) |
+| `GET /readyz` | none | the database answers and every DNSSEC zone can be signed (503 otherwise; a signing failure reads `dnssec_signing_failed`) |
 | `GET /api/v1/version` | none | server version |
 
 ## Authentication
@@ -110,7 +110,7 @@ without the engine. Every route that changes something needs the `admin` scope (
 | `POST /api/v1/zones/{name}/dnssec/keys/{id}/rollover` | admin | `{algorithm?}` (body optional) starts a rollover of an active key's role; 202 with the incoming key. 409 when that role already has a rollover or the key is not active |
 | `POST /api/v1/zones/{name}/dnssec/keys/{id}/ds-confirmed` | admin | records that the key's DS is at the parent; 204. Lets a KSK or CSK rollover proceed |
 | `POST /api/v1/zones/{name}/dnssec/rollover/abort` | admin | `{role?}` (body optional) withdraws the incoming key of that role, or of every role, and keeps the active key; 200 with the zone's DNSSEC state. 409 when no rollover is in progress (or the new key already became active) |
-| `POST /api/v1/dnssec/keys/export` | admin | `{passphrase, zone?}` returns `{bundle}`, the zone keys (all zones when `zone` is omitted) as base64 of a bundle encrypted under `passphrase` (at least 8 characters; 422 otherwise). `dnsy dnssec keys import` restores it |
+| `POST /api/v1/dnssec/keys/export` | admin | `{passphrase, zone?}` returns `{bundle}`, the zone keys (all zones when `zone` is omitted) as base64 of a bundle encrypted under `passphrase` (at least 12 characters; 422 otherwise). 403 on a plain-HTTP API listener, because the request carries the passphrase and the response every private key. `dnsy dnssec keys import` restores it |
 | `POST /api/v1/dnssec/passphrase` | admin | `{new_passphrase}` re-encrypts every stored key under the new passphrase in one transaction (all or none) and switches the server to it; 200 `{keys_reencrypted}`. Update `DNSY_DNSSEC_PASSPHRASE` or the passphrase file before the next start. The secrets are never logged or returned |
 | `GET /api/v1/zones/{name}/dnssec/ds` | read | DS records (SHA-256 then SHA-384) and DNSKEY records of the published and active KSKs and CSKs. JSON, or `Accept: text/plain` for zone-file lines |
 | `GET /api/v1/settings/dnssec` | read | `validation` (`off`, `permissive`, `strict`), `negative_trust_anchors` (names) and `negative_trust_anchor_entries` (`name`, `expires_at`; expired anchors are left out), and the read-only `trust_anchors` (owner, key tag, algorithm, digest type, digest) |

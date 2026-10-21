@@ -39,6 +39,9 @@ pub enum LookupResult {
     NoData { authority: Vec<Record> },
     /// The name does not exist and no wildcard covers it.
     NxDomain { authority: Vec<Record> },
+    /// The zone has `dnssec.enabled` but could not be signed (for example its keys cannot be
+    /// opened), so it is withheld instead of served unsigned.
+    ServFail,
 }
 
 /// Record sets of one owner name, in file order per type. Empty for an empty non-terminal.
@@ -427,6 +430,9 @@ impl ZoneSet {
             return None;
         }
         let origin = &self.find(&q.name)?.origin;
+        if self.is_unavailable(origin) {
+            return Some(LookupResult::ServFail);
+        }
         let index = self.indexes.get(origin)?;
         let rotation = self.rotation.fetch_add(1, Ordering::Relaxed);
         let in_zone = |n: &Name| self.find(n).is_some_and(|z| z.origin == *origin);

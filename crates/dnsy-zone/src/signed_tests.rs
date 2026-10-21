@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -73,6 +73,7 @@ fn signed_set(zone: Zone) -> (ZoneSet, Vec<Dnskey>) {
     let set = ZoneSet::with_signed(
         BTreeMap::from([(origin.clone(), Arc::new(zone))]),
         BTreeMap::from([(origin, Arc::new(signed))]),
+        BTreeSet::new(),
     );
     (set, dnskeys)
 }
@@ -101,6 +102,7 @@ fn sections(result: &LookupResult) -> Vec<&Record> {
         LookupResult::NoData { authority } | LookupResult::NxDomain { authority } => {
             authority.iter().collect()
         }
+        LookupResult::ServFail => Vec::new(),
     }
 }
 
@@ -110,6 +112,7 @@ fn authority(result: &LookupResult) -> &[Record] {
         | LookupResult::NoData { authority }
         | LookupResult::NxDomain { authority } => authority,
         LookupResult::Referral { ds_or_proof, .. } => ds_or_proof,
+        LookupResult::ServFail => &[],
     }
 }
 
@@ -547,6 +550,7 @@ fn cds_and_cdnskey_during_rollover() {
     let set = ZoneSet::with_signed(
         BTreeMap::from([(origin.clone(), Arc::new(zone))]),
         BTreeMap::from([(origin, Arc::new(signed))]),
+        BTreeSet::new(),
     );
     for qtype in [RecordType::Cds, RecordType::Cdnskey, RecordType::Dnskey] {
         let result = lookup(&set, "example.com.", qtype, true);
@@ -764,7 +768,7 @@ async fn disabled_or_removed_zone_drops_signed_snapshot() {
 }
 
 #[tokio::test]
-async fn signing_failure_keeps_zone_serving() {
+async fn unopenable_keys_withhold_the_zone_instead_of_serving_it_unsigned() {
     let f = fixture();
     // Keys sealed under a passphrase the signer does not have.
     let db = Store::open(&f.dir.path().join("other.db")).unwrap();
@@ -784,8 +788,61 @@ async fn signing_failure_keeps_zone_serving() {
     assert_eq!(signing.sign_due().await, 0);
     let snap = f.store.snapshot();
     assert!(snap.signed(&origin()).is_none());
+    // Never signed and the keys cannot be opened: SERVFAIL, not unsigned data.
     assert!(matches!(
         lookup(&snap, "www.example.com.", RecordType::A, true),
+        LookupResult::ServFail
+    ));
+    assert!(matches!(
+        lookup(&snap, "www.example.com.", RecordType::A, false),
+        LookupResult::ServFail
+    ));
+    let failures = f.store.signing_failures();
+    assert_eq!(failures.len(), 1);
+    assert!(failures[&origin()].contains("passphrase"), "{failures:?}");
+    // The failure is recorded once; another pass changes nothing.
+    assert_eq!(signing.sign_due().await, 0);
+    assert_eq!(f.store.signing_failures(), failures);
+
+    // Once the keys open again the zone is signed and served, and the failure clears.
+    let signing = ZoneSigning::new(
+        Arc::clone(&f.store),
+        KeyStore::open(
+            Store::open(&f.dir.path().join("dnsy.db")).unwrap(),
+            None,
+            Arc::new(f.clock.clone()),
+        ),
+    );
+    assert_eq!(signing.sign_due().await, 1);
+    assert!(f.store.signing_failures().is_empty());
+    assert!(matches!(
+        lookup(&f.store.snapshot(), "www.example.com.", RecordType::A, true),
+        LookupResult::Answer { .. }
+    ));
+}
+
+#[tokio::test]
+async fn failed_resign_keeps_the_signed_snapshot() {
+    let f = fixture();
+    f.signing.sign_due().await;
+    let db = Store::open(&f.dir.path().join("dnsy.db")).unwrap();
+    let ks = KeyStore::open(
+        db,
+        Some(crate::Passphrase::new("secret")),
+        Arc::new(f.clock.clone()),
+    );
+    // Seal the keys under a passphrase the signer below does not have.
+    f.keys
+        .change_passphrase(crate::Passphrase::new("other"))
+        .await
+        .unwrap();
+    let signing = ZoneSigning::new(Arc::clone(&f.store), ks);
+    f.clock.set(i64::from(T) + 10 * 86_400);
+    assert_eq!(signing.sign_due().await, 0);
+    assert_eq!(f.store.signing_failures().len(), 1);
+    // The previous signed snapshot keeps serving.
+    assert!(matches!(
+        lookup(&f.store.snapshot(), "www.example.com.", RecordType::A, true),
         LookupResult::Answer { .. }
     ));
 }
@@ -821,6 +878,7 @@ fn response(set: &ZoneSet, q: &Question) -> Message {
             msg.additional = glue;
         }
         LookupResult::NoData { authority } => msg.authority = authority,
+        LookupResult::ServFail => msg.header.rcode = dnsy_proto::Rcode::ServFail,
         LookupResult::NxDomain { authority } => {
             msg.header.rcode = dnsy_proto::Rcode::NxDomain;
             msg.authority = authority;
@@ -886,6 +944,8 @@ async fn signed_responses_validate_secure() {
         let set = Arc::new(set);
         // RFC 5155 9.2: an NXDOMAIN whose next closer name is covered by an opt-out NSEC3
         // only shows the name may be an unsigned delegation, so it is Insecure.
+        // The same holds for a wildcard expansion whose next closer name is covered by an
+        // opt-out NSEC3 (RFC 5155 8.8).
         let nxdomain = if opt_out { Insecure } else { Secure };
         for (qname, qtype, expected) in [
             ("www.example.com.", RecordType::A, Secure),
@@ -896,9 +956,9 @@ async fn signed_responses_validate_secure() {
             ("nope.www.example.com.", RecordType::Aaaa, nxdomain),
             ("www.example.com.", RecordType::Txt, Secure),
             ("b.deep.example.com.", RecordType::A, Secure),
-            ("x.y.wild.example.com.", RecordType::Txt, Secure),
+            ("x.y.wild.example.com.", RecordType::Txt, nxdomain),
             ("x.wild.example.com.", RecordType::A, Secure),
-            ("a.cw.example.com.", RecordType::A, Secure),
+            ("a.cw.example.com.", RecordType::A, nxdomain),
             ("secure.example.com.", RecordType::Ds, Secure),
         ] {
             let q = Question {
@@ -931,4 +991,126 @@ async fn signed_responses_validate_secure() {
         let status = validate(&set, &keys, &q, &child).await;
         assert_eq!(status, Insecure, "{denial} opt-out={opt_out}");
     }
+}
+
+// KSK rollover timeline (SEC-06): at every step the DNSKEY RRset is signed by every
+// published, active and retired KSK, so a resolver holding the old DS or the new DS finds
+// a valid signature.
+
+fn dnskey_signers(set: &ZoneSet, now: u32) -> Vec<u16> {
+    let signed = set.signed(&origin()).unwrap();
+    let rrset = signed.rrset(&origin(), RecordType::Dnskey).unwrap();
+    let keys: Vec<Dnskey> = rrset
+        .records
+        .iter()
+        .map(|r| match &r.data {
+            RData::Dnskey(k) => k.clone(),
+            _ => unreachable!(),
+        })
+        .collect();
+    let mut tags = Vec::new();
+    for sig in &rrset.rrsigs {
+        let RData::Rrsig(s) = &sig.data else {
+            unreachable!()
+        };
+        let key = keys
+            .iter()
+            .find(|k| k.key_tag() == s.key_tag)
+            .expect("signer is published");
+        assert_eq!(verify_rrsig(&rrset.records, s, key, now), Ok(()));
+        tags.push(s.key_tag);
+    }
+    tags.sort_unstable();
+    tags
+}
+
+async fn ksk_tags(f: &Fixture, states: &[KeyState]) -> Vec<u16> {
+    let mut tags: Vec<u16> = f
+        .keys
+        .keys(&origin())
+        .await
+        .unwrap()
+        .iter()
+        .filter(|k| k.role == KeyRole::Ksk && states.contains(&k.state))
+        .map(|k| k.key_tag)
+        .collect();
+    tags.sort_unstable();
+    tags
+}
+
+#[tokio::test]
+async fn ksk_rollover_timeline_keeps_every_dnskey_signature_valid() {
+    use dnsy_dnssec::{Clock, RolloverTimings};
+    let timings = RolloverTimings {
+        dnskey_ttl: 3600,
+        propagation: 0,
+        max_signature_validity: 14 * 86_400,
+    };
+    let f = fixture();
+    write_zone(
+        f.zones.path(),
+        &ZONE
+            .replace("DENIAL", "nsec3")
+            .replace("OPTOUT", "false")
+            .replace(
+                r#""algorithm":13,"#,
+                r#""algorithm":13,"key_layout":"ksk_zsk","#,
+            ),
+    );
+    f.store.reload().unwrap();
+    let now = |f: &Fixture| u32::try_from(Clock::now(&f.clock)).unwrap();
+    let all = [KeyState::Published, KeyState::Active, KeyState::Retired];
+
+    // Steady state: one KSK signs.
+    f.signing.sign_due().await;
+    let old = ksk_tags(&f, &[KeyState::Active]).await;
+    assert_eq!(old.len(), 1);
+    assert_eq!(dnskey_signers(&f.store.snapshot(), now(&f)), old);
+
+    // Step 1: the incoming KSK is published; both sign the DNSKEY RRset.
+    f.keys
+        .start_rollover(&origin(), KeyRole::Ksk, Algorithm::EcdsaP256Sha256)
+        .await
+        .unwrap();
+    f.signing.sign_due().await;
+    assert_eq!(
+        dnskey_signers(&f.store.snapshot(), now(&f)),
+        ksk_tags(&f, &all).await
+    );
+    assert_eq!(ksk_tags(&f, &all).await.len(), 2);
+
+    // Step 2: the DS is confirmed and the DNSKEY propagated; the new key activates and the
+    // old one retires in the same tick. This is the moment the old key used to stop signing.
+    let incoming = f
+        .keys
+        .keys(&origin())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|k| k.state == KeyState::Published && k.role == KeyRole::Ksk)
+        .unwrap();
+    f.keys.confirm_ds(incoming.id).await.unwrap();
+    f.clock.advance(3600);
+    assert_eq!(f.keys.tick(&origin(), timings).await.unwrap().len(), 2);
+    assert_eq!(ksk_tags(&f, &[KeyState::Retired]).await, old);
+    f.signing.sign_due().await;
+    let signers = dnskey_signers(&f.store.snapshot(), now(&f));
+    assert_eq!(signers, ksk_tags(&f, &all).await);
+    assert!(signers.contains(&old[0]), "retired KSK still signs DNSKEY");
+    assert_eq!(signers.len(), 2);
+
+    // Step 3: still inside the retire window, nothing changes.
+    f.clock.advance(86_400);
+    f.keys.tick(&origin(), timings).await.unwrap();
+    f.signing.sign_due().await;
+    assert_eq!(dnskey_signers(&f.store.snapshot(), now(&f)), signers);
+
+    // Step 4: the retire window is over; the old key is removed and stops signing.
+    f.clock.advance(timings.retire_wait());
+    f.keys.tick(&origin(), timings).await.unwrap();
+    f.signing.sign_due().await;
+    assert_eq!(
+        dnskey_signers(&f.store.snapshot(), now(&f)),
+        ksk_tags(&f, &[KeyState::Active]).await
+    );
 }

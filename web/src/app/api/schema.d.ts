@@ -263,7 +263,8 @@ export interface paths {
         put?: never;
         /**
          * Export the zone keys as a bundle encrypted under the given passphrase, for backup. The
-         *     response holds ciphertext only; the passphrase and the keys are never logged.
+         *     response holds ciphertext only; the passphrase and the keys are never logged. Refused with
+         *     403 when the API listener is plain HTTP.
          */
         post: operations["export_keys"];
         delete?: never;
@@ -1052,7 +1053,7 @@ export interface components {
         };
         /** @description Key passphrase change. */
         ChangePassphraseInput: {
-            /** @description The new key passphrase (at least 8 characters). */
+            /** @description The new key passphrase (at least 12 characters). */
             new_passphrase: string;
         };
         /** @description Password change. */
@@ -1287,7 +1288,7 @@ export interface components {
         /** @description Key export request. */
         ExportKeysInput: {
             /**
-             * @description Passphrase the bundle is encrypted under (at least 8 characters). It may differ from
+             * @description Passphrase the bundle is encrypted under (at least 12 characters). It may differ from
              *     the key passphrase; keep it apart from the bundle.
              */
             passphrase: string;
@@ -2771,6 +2772,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KeyBackup"];
+                };
+            };
+            /** @description Admin scope missing, or the API listener is plain HTTP */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
                 };
             };
             404: {
@@ -5031,7 +5041,7 @@ export interface operations {
                     "application/json": components["schemas"]["Ready"];
                 };
             };
-            /** @description Not ready */
+            /** @description Not ready: the database does not answer, or a DNSSEC zone cannot be signed (`dnssec_signing_failed`) */
             503: {
                 headers: {
                     [name: string]: unknown;

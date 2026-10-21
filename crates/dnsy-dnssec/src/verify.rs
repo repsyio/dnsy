@@ -7,6 +7,9 @@ use dnsy_proto::{Dnskey, Record, RecordType, Rrsig, canonical, serial_lt};
 /// Largest clock skew [`verify_rrsig_with_skew`] honours, in seconds (one day).
 pub const MAX_CLOCK_SKEW: u32 = 86_400;
 
+/// The DNSKEY REVOKE flag (RFC 5011 2.1): a revoked key is never trusted.
+pub(crate) const DNSKEY_REVOKE: u16 = 0x0080;
+
 /// Verifies `rrsig` over `rrset` with `key` at `now_unix`, with no clock tolerance.
 pub fn verify_rrsig(
     rrset: &[Record],
@@ -21,7 +24,7 @@ pub fn verify_rrsig(
 /// (capped at [`MAX_CLOCK_SKEW`]). Times use RFC 1982 serial arithmetic.
 ///
 /// Checks, in order: the `RRset` matches the RRSIG (owner, class, type, labels, signer),
-/// the DNSKEY is a zone key with protocol 3 and matching algorithm and key tag, the
+/// the DNSKEY is a zone key with protocol 3, not revoked, and has a matching algorithm and key tag, the
 /// validity window, then the signature over `canonical::rrset_signing_input`.
 pub fn verify_rrsig_with_skew(
     rrset: &[Record],
@@ -33,6 +36,9 @@ pub fn verify_rrsig_with_skew(
     check_rrset(rrset, rrsig)?;
     if !key.is_zone_key() || key.protocol != 3 {
         return Err(VerifyError::NotZoneKey);
+    }
+    if key.flags & DNSKEY_REVOKE != 0 {
+        return Err(VerifyError::Revoked);
     }
     if key.algorithm != rrsig.algorithm {
         return Err(VerifyError::AlgorithmMismatch);

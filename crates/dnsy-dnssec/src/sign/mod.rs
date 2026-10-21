@@ -92,8 +92,8 @@ impl ZoneKey {
     }
 
     /// True when a key in this role and state makes signatures, so its private key is
-    /// needed: active zone-signing keys (ZSK, CSK), and active or published key-signing keys
-    /// (KSK, CSK), which double-sign the DNSKEY `RRset` during a rollover.
+    /// needed: active zone-signing keys (ZSK, CSK), and active, published or retired key-signing
+    /// keys (KSK, CSK), which double-sign the DNSKEY `RRset` during a rollover.
     pub fn signs(role: KeyRole, state: KeyState) -> bool {
         Self::signs_zone_data(role, state) || Self::signs_dnskeys(role, state)
     }
@@ -103,7 +103,11 @@ impl ZoneKey {
     }
 
     fn signs_dnskeys(role: KeyRole, state: KeyState) -> bool {
-        role.is_sep() && matches!(state, KeyState::Published | KeyState::Active)
+        role.is_sep()
+            && matches!(
+                state,
+                KeyState::Published | KeyState::Active | KeyState::Retired
+            )
     }
 }
 

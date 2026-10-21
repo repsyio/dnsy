@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use super::denial::{Cut, Denial, Hasher};
 use super::rrset::{rrset_at, sigs_for, ttl_cap};
 use super::{DnssecFetcher, Failure, Res, Validator, Verdict};
+use crate::verify::DNSKEY_REVOKE;
 use crate::{Algorithm, DigestType, ds_for};
 use dnsy_proto::{Class, Dnskey, Ds, Message, Name, Question, RData, Record, RecordType, ede};
 
@@ -90,14 +91,13 @@ impl<'a, F: DnssecFetcher> Ctx<'a, F> {
             qtype,
             qclass: Class::In,
         };
-        let m = self.fetcher.fetch(q).await.map_err(|e| {
-            let code = if qtype == RecordType::Dnskey {
-                ede::DNSKEY_MISSING
-            } else {
-                ede::DNSSEC_BOGUS
-            };
-            Failure::bogus(code, format!("{qtype:?} {name}: {e}"))
-        })?;
+        // A failed fetch is a transport problem, not evidence of an attack: Indeterminate (EDE 5)
+        // with a short cache lifetime, never Bogus.
+        let m = self
+            .fetcher
+            .fetch(q)
+            .await
+            .map_err(|e| Failure::fetch(format!("{qtype:?} {name}: {e}")))?;
         self.fetched.insert(key, m.clone());
         Ok(m)
     }
@@ -295,7 +295,9 @@ impl<'a, F: DnssecFetcher> Ctx<'a, F> {
         let all: Vec<Dnskey> = rrset
             .iter()
             .filter_map(|r| match &r.data {
-                RData::Dnskey(k) if k.is_zone_key() => Some(k.clone()),
+                RData::Dnskey(k) if k.is_zone_key() && k.flags & DNSKEY_REVOKE == 0 => {
+                    Some(k.clone())
+                }
                 _ => None,
             })
             .collect();
