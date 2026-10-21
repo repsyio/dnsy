@@ -25,7 +25,7 @@ use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use super::zones::{current, existing, mutate, zone_error, zone_name};
+use super::zones::{edit, existing, zone_name};
 use crate::auth::{AdminScope, Read, RequireScope};
 use crate::error::{ApiError, Problem};
 use crate::state::ApiState;
@@ -628,18 +628,16 @@ async fn put_dnssec(
     let Ok(Value::Object(given)) = serde_json::to_value(&body) else {
         return Err(ApiError::Internal("policy did not serialise".to_owned()));
     };
-    let zone = mutate(&state, move |store| {
-        let old = current(store, &origin, None)?;
-        let mut doc: Value = serde_json::from_str(&old.to_json()).expect("zone JSON parses");
+    let (zone, ()) = edit(&state, origin, None, move |z| {
+        let mut doc: Value = serde_json::from_str(&z.to_json()).expect("zone JSON parses");
         let mut policy = match doc.get("dnssec") {
             Some(Value::Object(m)) => m.clone(),
             _ => Map::new(),
         };
         policy.extend(given);
         doc["dnssec"] = Value::Object(policy);
-        let (zone, _) = Zone::from_json(&doc.to_string()).map_err(|e| zone_error(&e))?;
-        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
-        Ok(zone)
+        *z = Zone::from_json(&doc.to_string())?.0;
+        Ok(())
     })
     .await?;
     signing.sign_due().await;

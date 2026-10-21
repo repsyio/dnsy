@@ -135,6 +135,8 @@ pub struct ZoneStore {
     dir: PathBuf,
     set: ArcSwap<ZoneSet>,
     state: Mutex<State>,
+    /// Serialises every write (read-modify-write cycles included); never held by readers.
+    write: Mutex<()>,
     /// Set once a [`crate::ZoneSigning`] serves zones with `dnssec.enabled` signed.
     signing: AtomicBool,
     /// Wakes the signing task when a signed zone needs a new snapshot.
@@ -154,6 +156,7 @@ impl ZoneStore {
             dir,
             set: ArcSwap::from_pointee(ZoneSet::default()),
             state: Mutex::new(State::default()),
+            write: Mutex::new(()),
             signing: AtomicBool::new(false),
             resign: Arc::new(Notify::new()),
         });
@@ -309,25 +312,112 @@ impl ZoneStore {
 
     /// Validates `zone` and writes it atomically (temp file in the same directory, fsync,
     /// rename). Readers see the old or the new file, never a partial one. The snapshot is
-    /// refreshed immediately.
+    /// refreshed immediately. Replaces any existing version without touching its serial; use
+    /// [`ZoneStore::update`] to edit a zone.
     ///
     /// # Errors
     /// Fails on invalid zone data or an i/o error.
     pub fn write_zone(&self, zone: &Zone) -> Result<(), ZoneError> {
-        let json = zone.to_json();
-        Zone::from_json(&json)?;
-        let file_name = zone.file_name()?;
-        write_atomic(&self.dir, &file_name, json.as_bytes())?;
+        let _w = self.write_guard();
+        self.write_locked(zone).map(|_| ())
+    }
+
+    /// Writes a new zone. Fails when the zone (or an invalid file of that name) exists, or
+    /// when the store already holds `max_zones` zones.
+    ///
+    /// # Errors
+    /// [`ZoneError::ZoneExists`], [`ZoneError::Invalid`] on invalid zone data or the limit,
+    /// or an i/o error.
+    pub fn create(&self, zone: &Zone, max_zones: usize) -> Result<Arc<Zone>, ZoneError> {
+        let _w = self.write_guard();
+        let file = zone.file_name()?;
+        let exists = {
+            let st = self.lock();
+            st.good.contains_key(&file) || st.errors.contains_key(&file)
+        };
+        if exists {
+            return Err(ZoneError::ZoneExists(zone.origin.clone()));
+        }
+        if self.lock().good.len() >= max_zones {
+            return Err(ZoneError::Invalid(format!(
+                "at most {max_zones} zones can be created"
+            )));
+        }
+        self.write_locked(zone)
+    }
+
+    /// The single way to edit a zone. Under the store's write lock: loads the latest stored
+    /// version of `origin`, fails with [`ZoneError::SerialMismatch`] when `expected_serial` is
+    /// set and differs, applies `f` to a copy, bumps the SOA serial (every successful write
+    /// does; whatever `f` set is overwritten), validates the result exactly like a zone file,
+    /// and writes it atomically. When `f` or validation fails nothing is written. Returns the
+    /// stored zone and `f`'s result.
+    ///
+    /// # Errors
+    /// [`ZoneError::NoSuchZone`], [`ZoneError::SerialMismatch`], whatever `f` returns,
+    /// [`ZoneError::Invalid`] when the edited zone is invalid or its origin changed, or an
+    /// i/o error.
+    pub fn update<T>(
+        &self,
+        origin: &Name,
+        expected_serial: Option<u32>,
+        f: impl FnOnce(&mut Zone) -> Result<T, ZoneError>,
+    ) -> Result<(Arc<Zone>, T), ZoneError> {
+        let _w = self.write_guard();
+        let old = self.stored(origin)?;
+        check_serial(expected_serial, &old)?;
+        let mut zone = (*old).clone();
+        let out = f(&mut zone)?;
+        if zone.origin != old.origin {
+            return Err(ZoneError::Invalid("the zone origin cannot change".into()));
+        }
+        zone.soa.serial = old.soa.serial.wrapping_add(1);
+        Ok((self.write_locked(&zone)?, out))
+    }
+
+    /// Deletes a zone file and refreshes the snapshot. With `expected_serial` set, fails with
+    /// [`ZoneError::SerialMismatch`] when the stored serial differs.
+    ///
+    /// # Errors
+    /// [`ZoneError::NoSuchZone`], [`ZoneError::SerialMismatch`] or an i/o error.
+    pub fn remove_zone(
+        &self,
+        origin: &Name,
+        expected_serial: Option<u32>,
+    ) -> Result<(), ZoneError> {
+        let _w = self.write_guard();
+        let old = self.stored(origin)?;
+        check_serial(expected_serial, &old)?;
+        fs::remove_file(self.dir.join(crate::zone_file_name(origin)?))?;
         self.reload()
     }
 
-    /// Deletes a zone file and refreshes the snapshot.
+    /// The latest stored version of a zone. Unlike the snapshot, which may still serve an older
+    /// signed version while a re-sign is pending, this is what [`ZoneStore::update`] edits.
     ///
     /// # Errors
-    /// Fails on invalid zone data or an i/o error.
-    pub fn remove_zone(&self, origin: &Name) -> Result<(), ZoneError> {
-        fs::remove_file(self.dir.join(crate::zone_file_name(origin)?))?;
-        self.reload()
+    /// [`ZoneError::NoSuchZone`] when the zone is not loaded.
+    pub fn stored(&self, origin: &Name) -> Result<Arc<Zone>, ZoneError> {
+        let file = crate::zone_file_name(origin)?;
+        self.lock()
+            .good
+            .get(&file)
+            .cloned()
+            .ok_or_else(|| ZoneError::NoSuchZone(origin.clone()))
+    }
+
+    /// Validates and writes `zone`, then reloads. The caller holds the write lock.
+    fn write_locked(&self, zone: &Zone) -> Result<Arc<Zone>, ZoneError> {
+        let json = zone.to_json();
+        let (checked, _) = Zone::from_json(&json)?;
+        let file_name = zone.file_name()?;
+        write_atomic(&self.dir, &file_name, json.as_bytes())?;
+        self.reload()?;
+        Ok(Arc::new(checked))
+    }
+
+    fn write_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Starts a watcher that reloads the directory 250 ms after the last change. Dropping the
@@ -372,6 +462,16 @@ impl ZoneStore {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn check_serial(expected: Option<u32>, stored: &Zone) -> Result<(), ZoneError> {
+    match expected {
+        Some(expected) if expected != stored.soa.serial => Err(ZoneError::SerialMismatch {
+            expected,
+            actual: stored.soa.serial,
+        }),
+        _ => Ok(()),
     }
 }
 
@@ -512,9 +612,9 @@ mod tests {
             snap.find(&Name::from_ascii("example.org.").unwrap())
                 .is_none()
         );
-        store.remove_zone(&origin()).unwrap();
+        store.remove_zone(&origin(), None).unwrap();
         assert!(store.snapshot().is_empty());
-        assert!(store.remove_zone(&origin()).is_err());
+        assert!(store.remove_zone(&origin(), None).is_err());
     }
 
     #[test]
@@ -559,5 +659,196 @@ mod tests {
         zone.dnssec.as_mut().unwrap().algorithm = 8;
         assert!(store.write_zone(&zone).is_err());
         assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    fn open_example() -> (tempfile::TempDir, Arc<ZoneStore>) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("example.com.json"), EXAMPLE).unwrap();
+        let store = ZoneStore::open(dir.path()).unwrap();
+        (dir, store)
+    }
+
+    fn a_record(host: &str, addr: &str) -> crate::Record {
+        crate::Record {
+            name: Name::from_ascii(&format!("{host}.example.com.")).unwrap(),
+            ttl: 300,
+            rdata: dnsy_proto::RData::parse(dnsy_proto::RecordType::A, addr).unwrap(),
+        }
+    }
+
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn update_bumps_serial_and_is_atomic() {
+        let (dir, store) = open_example();
+        let before = store.snapshot().get(&origin()).unwrap().records.len();
+        let (zone, id) = store
+            .update(&origin(), Some(2_026_102_001), |z| {
+                // Whatever the closure sets for the serial is overwritten.
+                z.soa.serial = 7;
+                Ok(z.add_record(a_record("new", "192.0.2.77")))
+            })
+            .unwrap();
+        assert_eq!(zone.soa.serial, 2_026_102_002);
+        assert_eq!(zone.records.len(), before + 1);
+        assert_eq!(id, a_record("new", "192.0.2.77").id());
+        let live = store.snapshot();
+        assert_eq!(live.get(&origin()).unwrap().soa.serial, 2_026_102_002);
+        assert!(
+            fs::read_to_string(dir.path().join("example.com.json"))
+                .unwrap()
+                .contains("192.0.2.77")
+        );
+
+        // A failing closure and an invalid result both leave file and serial untouched.
+        let on_disk = fs::read_to_string(dir.path().join("example.com.json")).unwrap();
+        let failed = store.update(&origin(), None, |z| -> Result<(), ZoneError> {
+            z.add_record(a_record("lost", "192.0.2.78"));
+            Err(ZoneError::Invalid("no".into()))
+        });
+        assert!(matches!(failed, Err(ZoneError::Invalid(_))));
+        let invalid = store.update(&origin(), None, |z| {
+            z.add_record(crate::Record {
+                name: Name::from_ascii("www.example.com.").unwrap(),
+                ttl: 60,
+                rdata: dnsy_proto::RData::parse(
+                    dnsy_proto::RecordType::Cname,
+                    "elsewhere.example.com.",
+                )
+                .unwrap(),
+            });
+            Ok(())
+        });
+        assert!(matches!(invalid, Err(ZoneError::Invalid(_))), "{invalid:?}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("example.com.json")).unwrap(),
+            on_disk
+        );
+        assert_eq!(
+            store.snapshot().get(&origin()).unwrap().soa.serial,
+            2_026_102_002
+        );
+        assert_eq!(file_names(dir.path()), ["example.com.json"]);
+    }
+
+    #[test]
+    fn update_with_stale_serial_is_conflict() {
+        let (dir, store) = open_example();
+        store.update(&origin(), None, |_| Ok(())).unwrap();
+        let on_disk = fs::read_to_string(dir.path().join("example.com.json")).unwrap();
+        let res = store.update(&origin(), Some(2_026_102_001), |z| {
+            z.add_record(a_record("late", "192.0.2.9"));
+            Ok(())
+        });
+        assert!(
+            matches!(
+                res,
+                Err(ZoneError::SerialMismatch {
+                    expected: 2_026_102_001,
+                    actual: 2_026_102_002
+                })
+            ),
+            "{res:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("example.com.json")).unwrap(),
+            on_disk
+        );
+        let missing = store.update(&Name::from_ascii("nope.test.").unwrap(), None, |_| Ok(()));
+        assert!(matches!(missing, Err(ZoneError::NoSuchZone(_))));
+    }
+
+    #[test]
+    fn concurrent_updates_serialise() {
+        let (_dir, store) = open_example();
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || {
+                    for i in 0..5 {
+                        store
+                            .update(&origin(), None, |z| {
+                                z.add_record(a_record(&format!("h{t}-{i}"), "192.0.2.5"));
+                                Ok(())
+                            })
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let zone = store.snapshot().get(&origin()).cloned().unwrap();
+        assert_eq!(zone.soa.serial, 2_026_102_001 + 40);
+        assert_eq!(zone.records.len(), 10 + 40);
+    }
+
+    #[test]
+    fn record_edits_need_no_api() {
+        let (_dir, store) = open_example();
+        let www = store
+            .snapshot()
+            .get(&origin())
+            .unwrap()
+            .records
+            .iter()
+            .find(|r| {
+                r.name.to_string() == "www.example.com." && r.rdata.to_string() == "192.0.2.1"
+            })
+            .unwrap()
+            .id();
+        assert_eq!(
+            www.as_str(),
+            "d23bf1f7831e9cb4",
+            "record ids are a stable format"
+        );
+        let (zone, ()) = store
+            .update(&origin(), None, |z| {
+                z.replace_record(&www, a_record("www", "192.0.2.2"))
+            })
+            .unwrap();
+        assert!(zone.records.iter().all(|r| r.id() != www));
+        let new = a_record("www", "192.0.2.2").id();
+        let (zone, ()) = store
+            .update(&origin(), None, |z| z.remove_record(&new))
+            .unwrap();
+        assert!(zone.records.iter().all(|r| r.id() != new));
+        let gone = store.update(&origin(), None, |z| z.remove_record(&new));
+        assert!(matches!(gone, Err(ZoneError::NoSuchRecord(_))));
+    }
+
+    #[test]
+    fn create_and_remove_honour_limits_and_serial() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ZoneStore::open(dir.path()).unwrap();
+        let (zone, _) = Zone::from_json(EXAMPLE).unwrap();
+        store.create(&zone, 1).unwrap();
+        assert!(matches!(
+            store.create(&zone, 5),
+            Err(ZoneError::ZoneExists(_))
+        ));
+        let (mut other, _) =
+            Zone::from_json(&EXAMPLE.replace("example.com.", "other.test.")).unwrap();
+        other.origin = Name::from_ascii("other.test.").unwrap();
+        assert!(matches!(
+            store.create(&other, 1),
+            Err(ZoneError::Invalid(_))
+        ));
+        let stale = store.remove_zone(&origin(), Some(1));
+        assert!(matches!(stale, Err(ZoneError::SerialMismatch { .. })));
+        store.remove_zone(&origin(), Some(2_026_102_001)).unwrap();
+        assert!(store.snapshot().is_empty());
+        assert!(matches!(
+            store.remove_zone(&origin(), None),
+            Err(ZoneError::NoSuchZone(_))
+        ));
     }
 }

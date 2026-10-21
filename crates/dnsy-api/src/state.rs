@@ -39,8 +39,6 @@ pub struct ApiState {
     pub cookie_secure: bool,
     /// The zones directory; zone routes answer 503 without it.
     pub zones: Option<Arc<ZoneStore>>,
-    /// Serialises zone read-modify-write cycles.
-    pub zone_lock: Arc<Mutex<()>>,
     /// The resolver cache; `None` answers cache endpoints with 503.
     pub cache: Option<Arc<Cache>>,
     /// Show client addresses truncated to /24 (IPv4) or /48 (IPv6) (`querylog.redact_client_ip`).
@@ -175,7 +173,6 @@ impl ApiState {
             bootstrap: None,
             cookie_secure: false,
             zones: None,
-            zone_lock: Arc::new(Mutex::new(())),
             cache: None,
             redact_client_ip: false,
             live_tail: Arc::new(LiveTails::new(

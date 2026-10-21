@@ -1,6 +1,7 @@
 //! Zone model and its JSON file format.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use dnsy_proto::{Name, RData, RecordType, Soa};
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,17 @@ pub enum ZoneError {
     Invalid(String),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
+    /// The stored serial is not the one the caller read (optimistic concurrency).
+    #[error("the zone changed since it was read (serial {actual}, expected {expected})")]
+    SerialMismatch { expected: u32, actual: u32 },
+    #[error("zone {0} not found")]
+    NoSuchZone(Name),
+    #[error("zone {0} already exists")]
+    ZoneExists(Name),
+    #[error("record {0} not found")]
+    NoSuchRecord(String),
+    #[error("the zone would contain a duplicate record")]
+    Duplicate,
 }
 
 fn invalid<T>(msg: impl Into<String>) -> Result<T, ZoneError> {
@@ -28,6 +40,84 @@ pub struct Record {
     pub name: Name,
     pub ttl: u32,
     pub rdata: RData,
+}
+
+/// Stable identifier of a record: a hash of its lowercase owner name, type and value, so it
+/// changes exactly when one of those does. Not unique across the zone if a duplicate was
+/// loaded from a file; zone writes reject duplicates.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RecordId(String);
+
+impl RecordId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for RecordId {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl From<String> for RecordId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl std::fmt::Display for RecordId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Record {
+    /// Builds a record from zone file fields: `name` is `@`, relative to `origin` or absolute;
+    /// `ttl` defaults to `default_ttl`; `value` is presentation-format rdata.
+    ///
+    /// # Errors
+    /// [`ZoneError::Invalid`] for an unsupported type, a name outside the zone or bad rdata.
+    pub fn parse(
+        origin: &Name,
+        default_ttl: u32,
+        name: &str,
+        rtype: &str,
+        ttl: Option<u32>,
+        value: &str,
+    ) -> Result<Record, ZoneError> {
+        let record_type = parse_type(rtype)?;
+        let owner = owner(name, origin)?;
+        let rdata = RData::parse(record_type, value)
+            .or_else(|e| invalid(format!("{name} {rtype} {value:?}: {e}")))?;
+        Ok(Record {
+            name: owner,
+            ttl: ttl.unwrap_or(default_ttl),
+            rdata,
+        })
+    }
+
+    /// The record's stable id: 16 hex digits of SHA-256 over owner (lowercase, absolute),
+    /// type name and presentation value, each followed by a zero byte.
+    #[must_use]
+    pub fn id(&self) -> RecordId {
+        let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+        for part in [
+            self.name.to_lowercase().to_string(),
+            format!("{:?}", self.rdata.rtype()).to_ascii_uppercase(),
+            self.rdata.to_string(),
+        ] {
+            ctx.update(part.as_bytes());
+            ctx.update(&[0]);
+        }
+        let digest = ctx.finish();
+        let mut id = String::with_capacity(16);
+        for b in &digest.as_ref()[..8] {
+            let _ = write!(id, "{b:02x}");
+        }
+        RecordId(id)
+    }
 }
 
 /// A validated zone.
@@ -169,15 +259,14 @@ impl Zone {
         };
         let mut records = Vec::with_capacity(file.records.len());
         for r in &file.records {
-            let rtype = parse_type(&r.rtype)?;
-            let name = owner(&r.name, &origin)?;
-            let rdata = RData::parse(rtype, &r.value)
-                .or_else(|e| invalid(format!("{} {} {:?}: {e}", r.name, r.rtype, r.value)))?;
-            records.push(Record {
-                name,
-                ttl: r.ttl.unwrap_or(file.default_ttl),
-                rdata,
-            });
+            records.push(Record::parse(
+                &origin,
+                file.default_ttl,
+                &r.name,
+                &r.rtype,
+                r.ttl,
+                &r.value,
+            )?);
         }
         check_cname_exclusivity(&records, &origin)?;
         check_ds_at_delegations(&records, &origin)?;
@@ -254,6 +343,40 @@ impl Zone {
             origin: self.origin.clone(),
             records,
         }
+    }
+
+    /// Appends a record and returns its id. Validation happens when the zone is written.
+    pub fn add_record(&mut self, record: Record) -> RecordId {
+        let id = record.id();
+        self.records.push(record);
+        id
+    }
+
+    /// Replaces the record with this id, keeping its position.
+    ///
+    /// # Errors
+    /// [`ZoneError::NoSuchRecord`] when no record has this id.
+    pub fn replace_record(&mut self, id: &RecordId, record: Record) -> Result<(), ZoneError> {
+        let at = self.position(id)?;
+        self.records[at] = record;
+        Ok(())
+    }
+
+    /// Removes the record with this id.
+    ///
+    /// # Errors
+    /// [`ZoneError::NoSuchRecord`] when no record has this id.
+    pub fn remove_record(&mut self, id: &RecordId) -> Result<(), ZoneError> {
+        let at = self.position(id)?;
+        self.records.remove(at);
+        Ok(())
+    }
+
+    fn position(&self, id: &RecordId) -> Result<usize, ZoneError> {
+        self.records
+            .iter()
+            .position(|r| r.id() == *id)
+            .ok_or_else(|| ZoneError::NoSuchRecord(id.to_string()))
     }
 
     /// The file name this zone is stored under.

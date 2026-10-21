@@ -5256,24 +5256,35 @@
         }
       },
       "CreateZone": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/ZoneBody"
-          },
-          {
-            "type": "object",
-            "required": [
-              "name"
-            ],
-            "properties": {
-              "name": {
-                "type": "string",
-                "description": "Zone name, e.g. `example.com.`."
-              }
-            }
-          }
+        "type": "object",
+        "description": "New zone: the name plus the settings and records of a zone body.",
+        "required": [
+          "name",
+          "default_ttl",
+          "soa"
         ],
-        "description": "New zone."
+        "properties": {
+          "default_ttl": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "Zone name, e.g. `example.com.`."
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordInput"
+            },
+            "description": "Must contain at least one NS record at the apex."
+          },
+          "soa": {
+            "$ref": "#/components/schemas/SoaBody"
+          }
+        },
+        "additionalProperties": false
       },
       "CreatedToken": {
         "type": "object",
