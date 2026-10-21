@@ -199,7 +199,7 @@ async fn list_blocklists(
     _scope: RequireScope<Read>,
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<BlocklistView>>, ApiError> {
-    let sources = state.sources.list().await.map_err(filter_err)?;
+    let sources = state.stores.sources.list().await.map_err(filter_err)?;
     Ok(Json(sources.into_iter().map(Into::into).collect()))
 }
 
@@ -217,7 +217,7 @@ async fn create_blocklist(
     headers: HeaderMap,
     Json(req): Json<CreateBlocklist>,
 ) -> Result<(StatusCode, Json<BlocklistView>), ApiError> {
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     let interval = req.interval_secs.unwrap_or(DEFAULT_INTERVAL_SECS);
     if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&interval) {
         return Err(ApiError::Unprocessable(format!(
@@ -241,11 +241,12 @@ async fn create_blocklist(
             ));
         }
     }
-    if state.sources.list().await.map_err(filter_err)?.len() >= MAX_SOURCES {
+    if state.stores.sources.list().await.map_err(filter_err)?.len() >= MAX_SOURCES {
         return Err(ApiError::Unprocessable("too many blocklists".to_owned()));
     }
     let enabled = req.enabled.unwrap_or(true);
     let id = state
+        .stores
         .sources
         .add(NewSource {
             name: req.name,
@@ -265,6 +266,7 @@ async fn create_blocklist(
         tracing::warn!(id, error = %e, "initial blocklist fetch failed");
     }
     let source = state
+        .stores
         .sources
         .list()
         .await
@@ -289,8 +291,9 @@ async fn patch_blocklist(
     Json(req): Json<PatchBlocklist>,
 ) -> Result<Json<BlocklistView>, ApiError> {
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     state
+        .stores
         .sources
         .set_enabled(id, req.enabled)
         .await
@@ -307,6 +310,7 @@ async fn patch_blocklist(
         }
     }
     let source = state
+        .stores
         .sources
         .list()
         .await
@@ -329,8 +333,8 @@ async fn delete_blocklist(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
-    state.sources.delete(id).await.map_err(filter_err)?;
+    super::live::require_policy(&state)?;
+    state.stores.sources.delete(id).await.map_err(filter_err)?;
     reload_filter(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -390,6 +394,7 @@ async fn list_rules(
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<RuleView>>, ApiError> {
     let rules = state
+        .stores
         .sources
         .custom_rules_with_ids()
         .await
@@ -424,8 +429,9 @@ async fn create_rule(
         RuleKindView::Allow => RuleKind::Allow,
     };
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     let existing = state
+        .stores
         .sources
         .custom_rules_with_ids()
         .await
@@ -434,6 +440,7 @@ async fn create_rule(
         return Err(ApiError::Unprocessable("too many rules".to_owned()));
     }
     let id = state
+        .stores
         .sources
         .add_custom_rule(kind, &domain)
         .await
@@ -461,8 +468,9 @@ async fn delete_rule(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     state
+        .stores
         .sources
         .delete_custom_rule(id)
         .await

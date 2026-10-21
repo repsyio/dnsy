@@ -27,7 +27,7 @@ impl Fx {
         let dir = tempfile::tempdir().unwrap();
         let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
         let mut state = f(ApiState::new(store));
-        state.live_tail_poll = Duration::from_millis(20);
+        state.observe.live_tail_poll = Duration::from_millis(20);
         Fx { state, _dir: dir }
     }
 
@@ -44,11 +44,13 @@ impl Fx {
     async fn token(&self, name: &str, role: Role, scopes: &[Scope]) -> String {
         let user = self
             .state
+            .auth
             .users
             .create(name, "pw-pw-pw", role)
             .await
             .unwrap();
         self.state
+            .auth
             .tokens
             .create(user.id, "t", scopes, None)
             .await
@@ -84,10 +86,10 @@ impl Fx {
 
     async fn ingest(&self, events: Vec<QueryEvent>) {
         let (w, task) = QueryLogWriter::spawn(
-            self.state.store.clone(),
+            self.state.observe.store.clone(),
             WriterConfig {
                 flush_interval: Duration::from_millis(5),
-                redact_client_ip: self.state.redact_client_ip,
+                redact_client_ip: self.state.observe.redact_client_ip,
                 ..WriterConfig::default()
             },
         );
@@ -523,7 +525,7 @@ async fn client_ips_are_redacted_when_configured() {
     let g = Fx::new(|s| s);
     g.ingest(vec![event("a.example.", now_ms())]).await;
     let mut state = g.state.clone();
-    state.redact_client_ip = true;
+    state.observe.redact_client_ip = true;
     let app = router(
         state,
         ApiConfig {
@@ -587,6 +589,7 @@ async fn summary_reports_lost_query_log_events() {
     let f = Fx::new(|s| s);
     let t = f.viewer().await;
     f.state
+        .observe
         .store
         .write(|tx| Ok(tx.execute_batch("DROP TABLE query_log")?))
         .await
@@ -656,17 +659,19 @@ async fn readyz_warns_while_the_query_log_disk_is_full() {
     let fx = Fx::new(|s| s);
     let pages: i64 = fx
         .state
+        .observe
         .store
         .write(|t| Ok(t.query_row("PRAGMA page_count", [], |r| r.get(0))?))
         .await
         .unwrap();
     fx.state
+        .observe
         .store
         .write(move |t| Ok(t.execute_batch(&format!("PRAGMA max_page_count = {pages}"))?))
         .await
         .unwrap();
     let (w, task) = QueryLogWriter::spawn(
-        fx.state.store.clone(),
+        fx.state.observe.store.clone(),
         WriterConfig {
             flush_interval: Duration::from_millis(5),
             ..WriterConfig::default()
@@ -692,6 +697,7 @@ async fn readyz_warns_while_the_query_log_disk_is_full() {
     assert!(full, "readyz never reported querylog_disk_full");
 
     fx.state
+        .observe
         .store
         .write(|t| Ok(t.execute_batch("PRAGMA max_page_count = 1073741823")?))
         .await

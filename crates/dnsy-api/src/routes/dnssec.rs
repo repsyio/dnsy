@@ -29,7 +29,7 @@ use super::zones::{edit, existing, zone_name};
 use crate::auth::{AdminScope, Read, RequireScope};
 use crate::error::{ApiError, Problem};
 use crate::state::ApiState;
-use crate::validation::{TrustAnchorInfo, ValidationControl, hex_upper};
+use dnsy_engine::{LivePolicy, TrustAnchorInfo, hex_upper};
 
 /// Negative trust anchors the API accepts.
 const MAX_NTAS: usize = 256;
@@ -428,21 +428,12 @@ pub struct DnssecStatus {
 // helpers
 
 fn signing(state: &ApiState) -> Result<&ZoneSigning, ApiError> {
-    state.signing.as_ref().ok_or(ApiError::Unavailable)
+    state.zones.signing.as_ref().ok_or(ApiError::Unavailable)
 }
 
-/// The validation control: the one set explicitly, else the engine.
-fn validation(state: &ApiState) -> Result<Arc<dyn ValidationControl>, ApiError> {
-    state
-        .validation
-        .clone()
-        .or_else(|| {
-            state
-                .engine
-                .clone()
-                .map(|e| e as Arc<dyn ValidationControl>)
-        })
-        .ok_or(ApiError::Unavailable)
+/// The live policy (the engine); the settings routes answer 503 without it.
+fn validation(state: &ApiState) -> Result<Arc<dyn LivePolicy>, ApiError> {
+    state.policy.clone().ok_or(ApiError::Unavailable)
 }
 fn key_error(e: &KeyStoreError) -> ApiError {
     match e {
@@ -537,7 +528,7 @@ async fn view_of(
         .into_iter()
         .filter(|k| k.state != KeyState::Removed)
         .collect();
-    let next_resign = state.zones.as_ref().and_then(|z| {
+    let next_resign = state.zones.store.as_ref().and_then(|z| {
         z.snapshot()
             .signed(&zone.origin)
             .map(|s| i64::from(s.next_resign))
@@ -839,7 +830,7 @@ async fn export_keys(
     let signing = signing(&state)?;
     // The bundle holds every private key and its passphrase travels in the request body:
     // never over a plain-HTTP hop.
-    if !state.cookie_secure {
+    if !state.auth.cookie_secure {
         return Err(ApiError::Forbidden(
             "key export is refused on a plain-HTTP API listener; enable TLS or reach the API through a TLS-terminating proxy",
         ));
@@ -975,7 +966,7 @@ async fn ds_export(
 // ---------------------------------------------------------------------------------------
 // validation settings
 
-fn settings_of(control: &dyn ValidationControl, now: i64) -> ValidationSettings {
+fn settings_of(control: &dyn LivePolicy, now: i64) -> ValidationSettings {
     let entries: Vec<NtaView> = control
         .negative_trust_anchors()
         .into_iter()
@@ -986,7 +977,7 @@ fn settings_of(control: &dyn ValidationControl, now: i64) -> ValidationSettings 
         })
         .collect();
     ValidationSettings {
-        validation: control.mode().into(),
+        validation: control.dnssec_mode().into(),
         negative_trust_anchors: entries.iter().map(|e| e.name.clone()).collect(),
         negative_trust_anchor_entries: entries,
         trust_anchors: control
@@ -1090,7 +1081,7 @@ async fn patch_validation(
         .map(|n| parse_ntas(n, state.clock.now()))
         .transpose()?;
     if let Some(mode) = patch.validation {
-        control.set_mode(mode.into());
+        control.set_dnssec_mode(mode.into());
     }
     if let Some(ntas) = ntas {
         control.set_negative_trust_anchors(ntas);
@@ -1117,24 +1108,25 @@ async fn dnssec_status(
     State(state): State<ApiState>,
 ) -> Result<Json<DnssecStatus>, ApiError> {
     let to_ms = now_ms();
-    let summary = StatsService::new(state.store.clone())
+    let summary = StatsService::new(state.observe.store.clone())
         .summary(TimeRange {
             from_ms: to_ms.saturating_sub(STATUS_WINDOW_MS).max(0),
             to_ms,
         })
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let signed_zones = state.zones.as_ref().map_or(0, |z| {
+    let signed_zones = state.zones.store.as_ref().map_or(0, |z| {
         z.snapshot()
             .iter()
             .filter(|zone| zone.dnssec.as_ref().is_some_and(|d| d.enabled))
             .count()
     });
     Ok(Json(DnssecStatus {
-        validation: validation(&state).ok().map(|v| v.mode().into()),
+        validation: validation(&state).ok().map(|v| v.dnssec_mode().into()),
         clock_trusted: !state
-            .dnssec_clock_untrusted
-            .load(std::sync::atomic::Ordering::Relaxed),
+            .policy
+            .as_ref()
+            .is_some_and(|p| p.dnssec_clock_untrusted()),
         window_ms: STATUS_WINDOW_MS,
         counters: summary.by_dnssec,
         secure: summary.secure,

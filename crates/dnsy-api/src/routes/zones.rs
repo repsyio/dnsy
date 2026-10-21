@@ -255,7 +255,7 @@ pub(super) fn zone_error(e: &ZoneError) -> ApiError {
 }
 
 pub(super) fn store(state: &ApiState) -> Result<&Arc<ZoneStore>, ApiError> {
-    state.zones.as_ref().ok_or(ApiError::Unavailable)
+    state.zones.store.as_ref().ok_or(ApiError::Unavailable)
 }
 
 /// Parses a zone name from a path or body. Only names that map to a safe file name pass.
@@ -838,7 +838,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
         let zones = ZoneStore::open(dir.path().join("zones")).unwrap();
-        let state = ApiState::new(store).with_zones(Arc::clone(&zones));
+        let mut state = ApiState::new(store);
+        state.zones.store = Some(Arc::clone(&zones));
         let mut tokens = Vec::new();
         for (user, role, scopes) in [
             (
@@ -848,9 +849,15 @@ mod tests {
             ),
             ("viewer", Role::Viewer, vec![dnsy_core::Scope::ApiRead]),
         ] {
-            let u = state.users.create(user, "pw-pw-pw", role).await.unwrap();
+            let u = state
+                .auth
+                .users
+                .create(user, "pw-pw-pw", role)
+                .await
+                .unwrap();
             tokens.push(
                 state
+                    .auth
                     .tokens
                     .create(u.id, "t", &scopes, None)
                     .await
@@ -1462,11 +1469,13 @@ mod tests {
         let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
         let state = ApiState::new(store);
         let u = state
+            .auth
             .users
             .create("a", "pw-pw-pw", Role::Admin)
             .await
             .unwrap();
         let (tok, _) = state
+            .auth
             .tokens
             .create(u.id, "t", &[dnsy_core::Scope::ApiRead], None)
             .await

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dnsy_api::state::CertReload;
-use dnsy_api::validation::ValidationControl;
 use dnsy_api::{ApiConfig, ApiState};
 use dnsy_auth::{ClientCertService, TokenService, UserService};
 use dnsy_config::{Config, Mtls};
@@ -178,8 +177,7 @@ fn warn_loose_key_files(config: &Config) {
     }
 }
 
-/// Everything the API needs from the running server: the engine (live policy changes), validation
-/// control, signing, zones, cache, certificate reload and the retention watch.
+/// Everything the API needs from the running server: the engine as live policy, signing, zones, cache, certificate reload and the retention watch.
 async fn api_state(
     config: &Config,
     engine: &Arc<dnsy_engine::Engine>,
@@ -190,9 +188,7 @@ async fn api_state(
 ) -> Result<ApiState> {
     let mut state = ApiState::new(store.clone())
         .with_config(config)
-        .with_engine(Arc::clone(engine))
-        .with_validation(Arc::clone(engine) as Arc<dyn ValidationControl>)
-        .with_dnssec_clock_flag(engine.dnssec_clock_flag())
+        .with_policy(Arc::clone(engine) as Arc<dyn dnsy_engine::LivePolicy>)
         .with_cert_reload(cert_reload(allowlist, store))
         .with_services(services)
         .with_redact_client_ip(config.querylog.redact_client_ip);

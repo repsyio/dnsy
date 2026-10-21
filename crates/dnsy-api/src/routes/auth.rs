@@ -105,7 +105,7 @@ fn session_cookies(
                 session,
                 ABSOLUTE_TIMEOUT_SECS,
                 true,
-                state.cookie_secure,
+                state.auth.cookie_secure,
             ),
         ),
         (
@@ -115,7 +115,7 @@ fn session_cookies(
                 &csrf,
                 ABSOLUTE_TIMEOUT_SECS,
                 false,
-                state.cookie_secure,
+                state.auth.cookie_secure,
             ),
         ),
     ])
@@ -125,11 +125,11 @@ fn clear_cookies(state: &ApiState) -> AppendHeaders<[(axum::http::HeaderName, He
     AppendHeaders([
         (
             SET_COOKIE,
-            cookie_header(SESSION_COOKIE, "", 0, true, state.cookie_secure),
+            cookie_header(SESSION_COOKIE, "", 0, true, state.auth.cookie_secure),
         ),
         (
             SET_COOKIE,
-            cookie_header(CSRF_COOKIE, "", 0, false, state.cookie_secure),
+            cookie_header(CSRF_COOKIE, "", 0, false, state.auth.cookie_secure),
         ),
     ])
 }
@@ -149,9 +149,10 @@ async fn login(
 ) -> Result<impl IntoResponse, ApiError> {
     let previous = cookie(&headers, SESSION_COOKIE);
     let (session, user) = state
+        .auth
         .sessions
         .login(
-            &state.users,
+            &state.auth.users,
             &body.username,
             &body.password,
             client_ip(connect)?,
@@ -177,7 +178,7 @@ async fn logout(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     if let Some(id) = cookie(&headers, SESSION_COOKIE) {
-        state.sessions.destroy(id).await?;
+        state.auth.sessions.destroy(id).await?;
     }
     Ok((StatusCode::NO_CONTENT, clear_cookies(&state)))
 }
@@ -192,7 +193,7 @@ async fn me(
     scope: RequireScope<Read>,
     State(state): State<ApiState>,
 ) -> Result<Json<Me>, ApiError> {
-    let user = state.users.get(scope.0.user).await?;
+    let user = state.auth.users.get(scope.0.user).await?;
     let auth = match scope.0.method {
         AuthMethod::Session => "session",
         AuthMethod::Token(_) => "token",
@@ -215,14 +216,15 @@ async fn bootstrap(
     State(state): State<ApiState>,
     Json(body): Json<Bootstrap>,
 ) -> Result<(StatusCode, Json<UserInfo>), ApiError> {
-    if state.users.count().await? > 0 {
+    if state.auth.users.count().await? > 0 {
         return Err(ApiError::Conflict("bootstrap is already done".to_owned()));
     }
-    let Some(code) = &state.bootstrap else {
+    let Some(code) = &state.auth.bootstrap else {
         return Err(ApiError::Unauthorized);
     };
     check_password(&body.password)?;
     let user = state
+        .auth
         .users
         .bootstrap_admin(code, &body.code, &body.username, &body.password)
         .await?;
@@ -251,19 +253,22 @@ async fn change_password(
         ));
     }
     check_password(&body.new_password)?;
-    let user = state.users.get(scope.0.user).await?;
+    let user = state.auth.users.get(scope.0.user).await?;
     state
+        .auth
         .users
         .verify_password(&user.username, &body.current_password)
         .await?;
     state
+        .auth
         .users
         .set_password(user.id, &body.new_password)
         .await?;
     let (session, user) = state
+        .auth
         .sessions
         .login(
-            &state.users,
+            &state.auth.users,
             &user.username,
             &body.new_password,
             client_ip(connect)?,

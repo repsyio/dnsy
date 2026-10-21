@@ -79,7 +79,7 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
     let mut state = ApiState::new(store.clone())
         .with_clock(Arc::new(clock.clone()))
         .with_services(&services)
-        .with_validation(engine.clone());
+        .with_policy(engine.clone());
     if wire_signing {
         let keys = KeyStore::open(
             store,
@@ -90,7 +90,7 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
             memory_kib: 64,
             iterations: 1,
         });
-        state = state.with_signing(ZoneSigning::new(Arc::clone(&zones), keys));
+        state.zones.signing = Some(ZoneSigning::new(Arc::clone(&zones), keys));
     }
     let mut tokens = Vec::new();
     for (user, role, scopes) in [
@@ -106,9 +106,15 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
         ),
         ("viewer", Role::Viewer, vec![Scope::ApiRead]),
     ] {
-        let u = state.users.create(user, "pw-pw-pw", role).await.unwrap();
+        let u = state
+            .auth
+            .users
+            .create(user, "pw-pw-pw", role)
+            .await
+            .unwrap();
         tokens.push(
             state
+                .auth
                 .tokens
                 .create(u.id, "t", &scopes, None)
                 .await
@@ -318,7 +324,7 @@ async fn policy_validation_and_availability() {
     let res = admin(&bare, Method::PUT, Z, Some(json!({"enabled": true}))).await;
     assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
     let mut no_engine = bare.state.clone();
-    no_engine.validation = None;
+    no_engine.policy = None;
     let app = build(
         no_engine,
         ApiConfig {
@@ -388,7 +394,7 @@ async fn generate_key_twice_is_conflict() {
 
     // The generated key stays inert: nothing publishes it until a rollover starts.
     fx.clock.advance(10 * 86_400);
-    fx.state.signing.as_ref().unwrap().sign_due().await;
+    fx.state.zones.signing.as_ref().unwrap().sign_due().await;
     let list = admin(&fx, Method::GET, &keys, None).await.json();
     let states: Vec<&str> = list
         .as_array()
@@ -409,7 +415,7 @@ async fn ds_endpoint_matches_dnskey() {
     let ds = ds.json();
     assert_eq!(ds["zone"], "example.com.");
 
-    let signing = fx.state.signing.as_ref().unwrap();
+    let signing = fx.state.zones.signing.as_ref().unwrap();
     let dnskeys = signing.keys().dnskeys(&origin()).await.unwrap();
     assert_eq!(dnskeys.len(), 1);
     let (rec, dnskey) = &dnskeys[0];
@@ -784,8 +790,8 @@ async fn status_reports_mode_clock_and_counters() {
     assert_eq!(s["secure"], 0);
     assert_eq!(s["bogus"], 0);
     assert!(s["counters"].is_object());
-    fx.state
-        .dnssec_clock_untrusted
+    fx.engine
+        .dnssec_clock_flag()
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let s = admin(&fx, Method::GET, "/api/v1/dnssec/status", None)
         .await
@@ -858,6 +864,7 @@ impl io::Write for Buf {
 /// Every private key blob in the database, as stored.
 async fn stored_secrets(fx: &Fx) -> Vec<Vec<u8>> {
     fx.state
+        .observe
         .store
         .read(|c| {
             let mut stmt = c.prepare("SELECT private_key FROM dnssec_keys")?;
@@ -1331,7 +1338,7 @@ async fn unopenable_keys_fail_readiness_instead_of_serving_unsigned() {
     assert_eq!(ready(&fx).await.unwrap().status(), StatusCode::OK);
 
     // A restart without the new passphrase: the same database, a key store without it.
-    let lost = KeyStore::open(fx.state.store.clone(), None, Arc::new(SystemClock));
+    let lost = KeyStore::open(fx.state.observe.store.clone(), None, Arc::new(SystemClock));
     let signing = ZoneSigning::new(Arc::clone(&fx.zones), lost);
     signing.sign_due().await;
     let res = ready(&fx).await.unwrap();

@@ -25,8 +25,6 @@ mod upstreams;
 mod users;
 mod zones;
 
-pub use settings::RuntimeSettings;
-
 /// Everything under `/api/v1`.
 pub fn v1() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()

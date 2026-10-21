@@ -115,11 +115,11 @@ impl<'a> Authenticator<'a> {
     }
 
     async fn by_token(&self, token: &str, needed: Scope) -> Result<AuthUser, ApiError> {
-        let principal = self.state.tokens.verify(token, needed).await?;
+        let principal = self.state.auth.tokens.verify(token, needed).await?;
         let dnsy_core::Principal::Token { token, user } = principal else {
             return Err(ApiError::Unauthorized);
         };
-        let role = self.state.users.get(user).await?.role;
+        let role = self.state.auth.users.get(user).await?.role;
         if !role.allows(needed) {
             return Err(ApiError::Forbidden("the role lacks the required scope"));
         }
@@ -137,8 +137,8 @@ impl<'a> Authenticator<'a> {
         method: &Method,
         needed: Scope,
     ) -> Result<AuthUser, ApiError> {
-        let session = self.state.sessions.validate(id).await?;
-        let user = self.state.users.get(session.user).await?;
+        let session = self.state.auth.sessions.validate(id).await?;
+        let user = self.state.auth.users.get(session.user).await?;
         if !user.role.allows(needed) {
             return Err(ApiError::Forbidden("the role lacks the required scope"));
         }

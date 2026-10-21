@@ -255,6 +255,14 @@ impl GroupSet {
         })
     }
 
+    /// [`GroupSet::new`] with the system clock and the thread RNG.
+    ///
+    /// # Errors
+    /// As [`GroupSet::new`].
+    pub fn from_specs(specs: Vec<GroupSpec>) -> Result<Self, GroupError> {
+        Self::new(specs, Arc::new(SystemClock::new()), Arc::new(ThreadRng))
+    }
+
     /// Name of the group that serves `qname`.
     #[must_use]
     pub fn group_for(&self, qname: &Name) -> &str {

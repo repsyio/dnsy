@@ -15,7 +15,7 @@ use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use super::live::{build_groups, group_store_err};
+use super::live::{group_store_err, validate_groups};
 use crate::auth::{AdminScope, Read, RequireScope};
 use crate::error::{ApiError, Problem};
 use crate::state::ApiState;
@@ -157,7 +157,7 @@ fn view(spec: GroupSpec, live: Option<&GroupSet>) -> GroupView {
 }
 
 fn live(state: &ApiState) -> Option<Arc<GroupSet>> {
-    state.live_groups.as_ref().and_then(|g| g.load_full())
+    state.live_groups.load_full()
 }
 
 fn parse_member(m: &MemberInput) -> Result<GroupMember, ApiError> {
@@ -230,15 +230,27 @@ async fn commit(
         specs.push(spec.clone());
         specs.sort_by(|a, b| a.name.cmp(&b.name));
     }
-    let set = build_groups(specs)?;
+    validate_groups(&specs)?;
     if let Some(spec) = &changed {
-        state.groups.put(spec).await.map_err(group_store_err)?;
+        state
+            .stores
+            .groups
+            .put(spec)
+            .await
+            .map_err(group_store_err)?;
     }
     if let Some(name) = deleted {
-        state.groups.delete(name).await.map_err(group_store_err)?;
+        state
+            .stores
+            .groups
+            .delete(name)
+            .await
+            .map_err(group_store_err)?;
     }
-    if let Some(engine) = &state.engine {
-        engine.set_groups(set);
+    if let Some(policy) = &state.policy {
+        policy
+            .replace_groups(specs)
+            .map_err(|e| ApiError::Unprocessable(e.to_string()))?;
     }
     Ok(())
 }
@@ -255,7 +267,7 @@ pub fn router() -> OpenApiRouter<ApiState> {
 }
 
 async fn find(state: &ApiState, name: &str) -> Result<(Vec<GroupSpec>, GroupSpec), ApiError> {
-    let specs = state.groups.list().await.map_err(group_store_err)?;
+    let specs = state.stores.groups.list().await.map_err(group_store_err)?;
     let spec = specs
         .iter()
         .find(|s| s.name == name)
@@ -270,7 +282,7 @@ async fn list_groups(
     _scope: RequireScope<Read>,
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<GroupView>>, ApiError> {
-    let specs = state.groups.list().await.map_err(group_store_err)?;
+    let specs = state.stores.groups.list().await.map_err(group_store_err)?;
     let set = live(&state);
     Ok(Json(
         specs.into_iter().map(|s| view(s, set.as_deref())).collect(),
@@ -291,8 +303,8 @@ async fn create_group(
 ) -> Result<(StatusCode, Json<GroupView>), ApiError> {
     let spec = spec_of(&req.name, req.body)?;
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
-    let specs = state.groups.list().await.map_err(group_store_err)?;
+    super::live::require_policy(&state)?;
+    let specs = state.stores.groups.list().await.map_err(group_store_err)?;
     if specs.iter().any(|s| s.name == spec.name) {
         return Err(ApiError::Conflict("the group exists".to_owned()));
     }
@@ -337,7 +349,7 @@ async fn replace_group(
 ) -> Result<Json<GroupView>, ApiError> {
     let spec = spec_of(&name, body)?;
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     let (specs, _) = find(&state, &name).await?;
     commit(&state, specs, Some(spec.clone()), None).await?;
     Ok(Json(view(spec, live(&state).as_deref())))
@@ -356,7 +368,7 @@ async fn delete_group(
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     let (specs, _) = find(&state, &name).await?;
     commit(&state, specs, None, Some(&name)).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -378,7 +390,7 @@ async fn add_member(
 ) -> Result<(StatusCode, Json<GroupView>), ApiError> {
     let member = parse_member(&req)?;
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     let (specs, mut spec) = find(&state, &name).await?;
     if spec.members.len() >= MAX_MEMBERS {
         return Err(ApiError::Unprocessable("too many members".to_owned()));
@@ -412,7 +424,7 @@ async fn remove_member(
     Path((name, index)): Path<(String, usize)>,
 ) -> Result<Json<GroupView>, ApiError> {
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     let (specs, mut spec) = find(&state, &name).await?;
     if index >= spec.members.len() {
         return Err(ApiError::NotFound("member not found".to_owned()));

@@ -7,16 +7,12 @@
 //! Changes take effect immediately. They are not written to `dnsy.toml`: after a restart the
 //! file wins, except the rate limit, which is persisted with the ACL.
 
-use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
-
 use axum::Json;
 use axum::extract::State;
 use dnsy_config::{Config, ConfigError};
 use dnsy_core::BlockMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::watch;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -25,61 +21,11 @@ use super::acl::MAX_QPS;
 use super::live::{filter_err, internal};
 use crate::auth::{AdminScope, RequireScope};
 use crate::error::{ApiError, Problem};
+use crate::runtime_settings::retention_of;
 use crate::state::ApiState;
 
 const MAX_RETENTION_DAYS: u32 = 3_650;
 const MAX_TTL: u32 = 0x7fff_ffff;
-const SECS_PER_DAY: u64 = 86_400;
-
-/// The running configuration; only the settings below are exposed.
-pub struct RuntimeSettings {
-    config: Mutex<Config>,
-    retention: watch::Sender<Duration>,
-}
-
-impl RuntimeSettings {
-    #[must_use]
-    pub fn new(config: &Config) -> RuntimeSettings {
-        RuntimeSettings {
-            retention: watch::Sender::new(retention_of(config.querylog.retention_days)),
-            config: Mutex::new(config.clone()),
-        }
-    }
-
-    fn snapshot(&self) -> Config {
-        self.config
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    fn store(&self, config: Config) {
-        *self.config.lock().unwrap_or_else(PoisonError::into_inner) = config;
-    }
-
-    pub(super) fn per_client_qps(&self) -> u32 {
-        self.snapshot().limits.per_client_qps
-    }
-
-    pub(super) fn set_per_client_qps(&self, qps: u32) {
-        self.config
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .limits
-            .per_client_qps = qps;
-    }
-
-    /// How long the query log is kept; follows `querylog.retention_days` as it is patched. The
-    /// retention task (`dnsy_observe::spawn_retention_watch`) reads it.
-    #[must_use]
-    pub fn retention_updates(&self) -> watch::Receiver<Duration> {
-        self.retention.subscribe()
-    }
-}
-
-fn retention_of(days: u32) -> Duration {
-    Duration::from_secs(u64::from(days) * SECS_PER_DAY)
-}
 
 /// How blocked names are answered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
@@ -312,7 +258,7 @@ async fn patch_settings(
     let patch: SettingsPatch = serde_json::from_value(body)
         .map_err(|e| ApiError::Unprocessable(format!("invalid settings patch: {e}")))?;
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     let old = state.settings.snapshot();
     let mut next = old.clone();
     patch.apply(&mut next);
@@ -324,7 +270,7 @@ async fn patch_settings(
 
 async fn apply(state: &ApiState, old: &Config, new: &Config) -> Result<(), ApiError> {
     if new.filter.block_mode != old.filter.block_mode
-        && let Some(engine) = &state.engine
+        && let Some(policy) = &state.policy
     {
         if let Some(manager) = &state.lists {
             manager.set_block_mode(new.filter.block_mode);
@@ -333,16 +279,17 @@ async fn apply(state: &ApiState, old: &Config, new: &Config) -> Result<(), ApiEr
                 return Err(internal(e));
             }
         }
-        engine.set_block_mode(new.filter.block_mode);
+        policy.set_block_mode(new.filter.block_mode);
     }
     if new.limits.per_client_qps != old.limits.per_client_qps {
         state
+            .stores
             .rules
             .set_rate_limit_qps(new.limits.per_client_qps)
             .await
             .map_err(filter_err)?;
-        if let Some(engine) = &state.engine {
-            engine.set_rate_limit(new.limits.per_client_qps);
+        if let Some(policy) = &state.policy {
+            policy.set_rate_limit(new.limits.per_client_qps);
         }
     }
     if let Some(cache) = &state.cache {

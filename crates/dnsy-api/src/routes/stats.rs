@@ -179,7 +179,7 @@ async fn summary(
     Params(p): Params<RangeParams>,
 ) -> Result<Json<SummaryBody>, ApiError> {
     let range = range(p.from, p.to)?;
-    let s = StatsService::new(state.store.clone())
+    let s = StatsService::new(state.observe.store.clone())
         .summary(range)
         .await
         .map_err(internal)?;
@@ -243,7 +243,7 @@ async fn timeseries(
             "the range holds more than {MAX_POINTS} buckets; use a larger `bucket`"
         )));
     }
-    let points = StatsService::new(state.store.clone())
+    let points = StatsService::new(state.observe.store.clone())
         .timeseries(range, Duration::from_secs(bucket))
         .await
         .map_err(internal)?;
@@ -264,7 +264,7 @@ async fn timeseries(
 fn items(state: &ApiState, v: Vec<dnsy_observe::TopEntry>, clients: bool) -> Vec<TopItem> {
     v.into_iter()
         .map(|t| TopItem {
-            key: if clients && state.redact_client_ip {
+            key: if clients && state.observe.redact_client_ip {
                 // Defence in depth: rollups are written redacted already.
                 t.key
                     .parse()
@@ -292,7 +292,7 @@ async fn top_domains(
     Params(p): Params<TopParams>,
 ) -> Result<Json<Vec<TopItem>>, ApiError> {
     let (range, n) = (range(p.from, p.to)?, top_limit(&p)?);
-    let v = StatsService::new(state.store.clone())
+    let v = StatsService::new(state.observe.store.clone())
         .top_domains(range, n)
         .await
         .map_err(internal)?;
@@ -314,7 +314,7 @@ async fn top_blocked(
     Params(p): Params<TopParams>,
 ) -> Result<Json<Vec<TopItem>>, ApiError> {
     let (range, n) = (range(p.from, p.to)?, top_limit(&p)?);
-    let v = StatsService::new(state.store.clone())
+    let v = StatsService::new(state.observe.store.clone())
         .top_blocked(range, n)
         .await
         .map_err(internal)?;
@@ -336,7 +336,7 @@ async fn top_clients(
     Params(p): Params<TopParams>,
 ) -> Result<Json<Vec<TopItem>>, ApiError> {
     let (range, n) = (range(p.from, p.to)?, top_limit(&p)?);
-    let v = StatsService::new(state.store.clone())
+    let v = StatsService::new(state.observe.store.clone())
         .top_clients(range, n)
         .await
         .map_err(internal)?;

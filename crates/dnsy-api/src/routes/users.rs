@@ -100,7 +100,7 @@ async fn list_users(
     _: RequireScope<AdminScope>,
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<UserInfo>>, ApiError> {
-    let users = state.users.list().await?;
+    let users = state.auth.users.list().await?;
     Ok(Json(users.into_iter().map(UserInfo::from).collect()))
 }
 
@@ -126,6 +126,7 @@ async fn create_user(
     }
     check_password(&body.password)?;
     let user = state
+        .auth
         .users
         .create(&body.username, &body.password, body.role)
         .await?;
@@ -145,7 +146,7 @@ async fn get_user(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> Result<Json<UserInfo>, ApiError> {
-    Ok(Json(state.users.get(UserId(id)).await?.into()))
+    Ok(Json(state.auth.users.get(UserId(id)).await?.into()))
 }
 
 /// Change a user's role, reset the password, and/or disable or enable the user.
@@ -170,15 +171,15 @@ async fn update_user(
         check_password(password)?;
     }
     // Validate existence and the last-admin rule before touching the password.
-    let mut user = state.users.get(id).await?;
+    let mut user = state.auth.users.get(id).await?;
     if let Some(role) = body.role {
-        user = state.users.update_role(id, role).await?;
+        user = state.auth.users.update_role(id, role).await?;
     }
     if let Some(disabled) = body.disabled {
-        user = state.users.set_disabled(id, disabled).await?;
+        user = state.auth.users.set_disabled(id, disabled).await?;
     }
     if let Some(password) = &body.password {
-        state.users.set_password(id, password).await?;
+        state.auth.users.set_password(id, password).await?;
     }
     Ok(Json(user.into()))
 }
@@ -198,6 +199,6 @@ async fn delete_user(
     State(state): State<ApiState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    state.users.delete(UserId(id)).await?;
+    state.auth.users.delete(UserId(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

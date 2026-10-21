@@ -308,7 +308,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
         let state = ApiState::new(store.clone());
-        state.users.create("admin", PW, Role::Admin).await.unwrap();
+        state
+            .auth
+            .users
+            .create("admin", PW, Role::Admin)
+            .await
+            .unwrap();
         let app = router(
             state.clone(),
             ApiConfig {

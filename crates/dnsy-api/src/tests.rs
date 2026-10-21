@@ -73,11 +73,13 @@ async fn body_json(res: Response<Body>) -> serde_json::Value {
 async fn token(f: &Fixture, role: Role, scopes: &[Scope]) -> String {
     let user = f
         .state
+        .auth
         .users
         .create("alice", "pw-pw-pw", role)
         .await
         .unwrap();
     f.state
+        .auth
         .tokens
         .create(user.id, "t", scopes, None)
         .await
@@ -87,12 +89,18 @@ async fn token(f: &Fixture, role: Role, scopes: &[Scope]) -> String {
 
 /// Returns (`session_cookie`, `csrf_cookie`) for a fresh user of `role`.
 async fn session(f: &Fixture, role: Role) -> (String, String) {
-    f.state.users.create("bob", "pw-pw-pw", role).await.unwrap();
+    f.state
+        .auth
+        .users
+        .create("bob", "pw-pw-pw", role)
+        .await
+        .unwrap();
     let (id, _) = f
         .state
+        .auth
         .sessions
         .login(
-            &f.state.users,
+            &f.state.auth.users,
             "bob",
             "pw-pw-pw",
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -251,25 +259,29 @@ async fn readyz_reports_untrusted_dnssec_clock() {
     let f = fixture();
     let res = send(&f.app, req(Method::GET, "/readyz", &[])).await;
     assert!(body_json(res).await.get("warnings").is_none());
-    f.state
-        .dnssec_clock_untrusted
+
+    let config = dnsy_config::Config::default();
+    let client =
+        dnsy_resolver::UpstreamClient::new(dnsy_resolver::UpstreamConfig::default()).unwrap();
+    let engine = Arc::new(
+        dnsy_engine::EngineBuilder::new(&config, client)
+            .services(&dnsy_engine::Services::bare(&config))
+            .build(),
+    );
+    let app = router(
+        f.state.clone().with_policy(engine.clone()),
+        ApiConfig::default(),
+    );
+    let res = send(&app, req(Method::GET, "/readyz", &[])).await;
+    assert!(body_json(res).await.get("warnings").is_none());
+    engine
+        .dnssec_clock_flag()
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    let res = send(&f.app, req(Method::GET, "/readyz", &[])).await;
+    let res = send(&app, req(Method::GET, "/readyz", &[])).await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
     assert_eq!(body["status"], "ready");
     assert_eq!(body["warnings"][0], "dnssec_clock_untrusted");
-
-    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let state = f
-        .state
-        .clone()
-        .with_dnssec_clock_flag(std::sync::Arc::clone(&flag));
-    assert!(
-        state
-            .dnssec_clock_untrusted
-            .load(std::sync::atomic::Ordering::Relaxed)
-    );
 }
 
 #[tokio::test]

@@ -6,10 +6,10 @@
 pub mod auth;
 pub mod error;
 mod routes;
+mod runtime_settings;
 mod security;
 pub mod state;
 mod ui;
-pub mod validation;
 
 use axum::Json;
 use axum::Router;
@@ -18,6 +18,7 @@ use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder
 use utoipa::{Modify, OpenApi};
 use utoipa_axum::router::OpenApiRouter;
 
+pub use runtime_settings::RuntimeSettings;
 pub use state::ApiState;
 
 /// Options of the HTTP service.
@@ -91,7 +92,7 @@ pub fn router(state: ApiState, config: ApiConfig) -> Router {
 fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router {
     let (router, spec) = assemble();
     let mut state = state;
-    state.cookie_secure = config.secure();
+    state.auth.cookie_secure = config.secure();
     router
         .merge(extra)
         .route(

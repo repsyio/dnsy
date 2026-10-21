@@ -84,7 +84,7 @@ pub fn router() -> OpenApiRouter<ApiState> {
 }
 
 async fn reload(state: &ApiState) -> Result<(), ApiError> {
-    if let Some(reload) = &state.cert_reload {
+    if let Some(reload) = &state.auth.cert_reload {
         reload().await.map_err(internal)?;
     }
     Ok(())
@@ -99,7 +99,7 @@ async fn list_certs(
     _scope: RequireScope<AdminScope>,
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<ClientCertView>>, ApiError> {
-    let certs = state.client_certs.list().await.map_err(internal)?;
+    let certs = state.auth.client_certs.list().await.map_err(internal)?;
     Ok(Json(certs.into_iter().map(Into::into).collect()))
 }
 
@@ -129,7 +129,7 @@ async fn create_cert(
     }
     let _guard = state.apply_lock.lock().await;
     super::live::require_cert_reload(&state)?;
-    let existing = state.client_certs.list().await.map_err(internal)?;
+    let existing = state.auth.client_certs.list().await.map_err(internal)?;
     if existing.iter().any(|c| c.sha256 == sha256) {
         return Err(ApiError::Conflict(
             "the fingerprint is already listed".to_owned(),
@@ -139,6 +139,7 @@ async fn create_cert(
         return Err(ApiError::Unprocessable("too many certificates".to_owned()));
     }
     let cert = state
+        .auth
         .client_certs
         .add(sha256, label, req.expires_at)
         .await
@@ -163,6 +164,7 @@ async fn patch_cert(
     let _guard = state.apply_lock.lock().await;
     super::live::require_cert_reload(&state)?;
     if !state
+        .auth
         .client_certs
         .set_enabled(id, req.enabled)
         .await
@@ -174,6 +176,7 @@ async fn patch_cert(
     }
     reload(&state).await?;
     let cert = state
+        .auth
         .client_certs
         .get(id)
         .await
@@ -195,7 +198,7 @@ async fn delete_cert(
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
     super::live::require_cert_reload(&state)?;
-    if !state.client_certs.remove(id).await.map_err(internal)? {
+    if !state.auth.client_certs.remove(id).await.map_err(internal)? {
         return Err(ApiError::NotFound(
             "client certificate not found".to_owned(),
         ));
