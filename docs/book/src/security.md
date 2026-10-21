@@ -51,9 +51,12 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
   connections that finished their TLS handshake (DoT, DoH) or sent a complete query (plain TCP)
   can be chosen, and never one that proved an identity (an mTLS client certificate, a DoH token),
   so a flood of connections that never get that far cannot push out working or authenticated ones.
-  A client that already holds its whole share never evicts anyone, one client (IPv4 address or
-  IPv6 `/64`) recycles at most one connection per second, and at most 32 newcomers wait for a
-  recycled slot at once. The recycled connection is dropped immediately, abandoning any unflushed
+  A connection that is still not established 5 seconds after accept is recycled ahead of
+  established ones (younger ones may be mid-handshake and are left alone), so silent connections
+  cannot pin slots; they are also closed by the idle timeout. A client that already holds its whole
+  share never evicts anyone, one client (IPv4 address or IPv6 `/56`) recycles at most one
+  connection per second, all clients together at most 64 per second, and at most 32 newcomers
+  wait for a recycled slot at once. The recycled connection is dropped immediately, abandoning any unflushed
   output, so a peer that stopped reading cannot hold the slot. If nothing can be recycled the new
   connection is closed at accept. The accept loop never waits for any of this. UDP is bounded by
   `limits.udp_in_flight` (4096) requests in flight with `limits.udp_in_flight_per_client` (64)
