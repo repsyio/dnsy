@@ -39,6 +39,25 @@ ratio (`cache` plus `cache_stale` answers over those plus `upstream` answers), s
 secure and bogus counts. Rollup buckets are whole minutes or hours, so a range includes any bucket
 it touches.
 
+Once a UTC day is more than 48 hours old, the hourly retention task folds it into daily rollups:
+`stats_day` (the minute counters summed per day, with latency sum and maximum) and `stats_top_day`
+(the 5000 most frequent names, blocked names and clients of that day). Each day is folded in one
+transaction and only once, so a pass interrupted after the fold is finished by the next one without
+double counting. The minute and hour rows of folded days are then deleted in batches, so only the
+last two to three days exist at minute and hour granularity.
+
+- `summary`, `timeseries` with a bucket of one day or more, and the top lists read daily rows for
+  folded days and minute or hour rows for the recent days. A folded day that the range touches
+  counts whole, like any other rollup bucket. A 30-day top-domains query reads about 150 000 rows
+  instead of every hourly row.
+- `timeseries` with a bucket under one day only has data for the last two to three days. A
+  day-or-longer bucket holds the days whose first second falls in it.
+- A top list over folded days is exact for names that rank in the top 5000 of every day it covers;
+  a name that stayed below the 5000th place on a day loses that day's count. Totals, summaries and
+  timeseries are exact.
+- This is a one-way change: the minute and hour detail of folded days is not kept. Restore a
+  backup to get it back.
+
 ## Searching
 
 Filter by time range, client, query-name substring, type, response code, answer source and DNSSEC
@@ -80,8 +99,9 @@ and the live tail: filters, a cursor-paged table, a detail drawer and a tail tog
 
 ## Retention
 
-A background task, once an hour, deletes raw rows older than the retention period, hourly top-N
-rollups that end before it, and expired sessions. Minute rollups are kept 400 days, or the
+A background task, once an hour, first folds completed days older than 48 hours into the daily
+rollups (see above), then deletes raw rows older than the retention period, hourly and daily top-N
+rollups that end before it, and expired sessions. Daily counter rollups are kept 400 days, or the
 retention period when that is longer (the stats range is capped at 366 days, so nothing reads
 older ones).
 

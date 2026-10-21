@@ -12,6 +12,11 @@ use crate::ObserveError;
 const PURGE_BATCH: usize = 50_000;
 /// Minute rollups are kept at least this long (the stats range is capped at 366 days).
 const MINUTE_ROLLUP_KEEP_MS: i64 = 400 * 24 * 3_600 * 1000;
+/// Completed UTC days older than this are folded into the daily rollups.
+const FOLD_AFTER_MS: i64 = 48 * 3_600 * 1000;
+/// Keys kept per (day, kind) in `stats_top_day`.
+const TOP_PER_DAY: i64 = 5000;
+const DAY_S: i64 = 86_400;
 /// Session lifetimes of `dnsy-auth` (`IDLE_TIMEOUT_SECS`, `ABSOLUTE_TIMEOUT_SECS`); keep in sync.
 const SESSION_IDLE_SECS: i64 = 30 * 60;
 const SESSION_ABSOLUTE_SECS: i64 = 12 * 60 * 60;
@@ -51,8 +56,8 @@ where
     }
 }
 
-/// Delete query-log rows older than `cutoff_ms`, hourly top-N rows that end before it, minute
-/// rollups older than the longer of the retention and 400 days, and expired sessions. Deletes
+/// Delete query-log rows older than `cutoff_ms`, hourly and daily top-N rows that end before it,
+/// minute and daily counter rollups older than the longer of the retention and 400 days, and expired sessions. Deletes
 /// run in batches of at most 50 000 rows per transaction. Returns the query-log rows removed.
 pub async fn purge_before(store: &Store, cutoff_ms: i64) -> Result<usize, ObserveError> {
     purge_at(store, cutoff_ms, now_ms(), PURGE_BATCH, || async {}).await
@@ -94,6 +99,24 @@ where
         store,
         "DELETE FROM stats_minute WHERE (minute, dimension, key) IN
              (SELECT minute, dimension, key FROM stats_minute WHERE minute < ?1 LIMIT ?2)",
+        minute_cutoff,
+        batch,
+        &mut between,
+    )
+    .await?;
+    delete_batched(
+        store,
+        "DELETE FROM stats_top_day WHERE (day, kind, key) IN
+             (SELECT day, kind, key FROM stats_top_day WHERE day < ?1 - 86400 LIMIT ?2)",
+        cutoff_ms.div_euclid(1000),
+        batch,
+        &mut between,
+    )
+    .await?;
+    delete_batched(
+        store,
+        "DELETE FROM stats_day WHERE (day, dimension, key) IN
+             (SELECT day, dimension, key FROM stats_day WHERE day < ?1 LIMIT ?2)",
         minute_cutoff,
         batch,
         &mut between,
@@ -190,9 +213,99 @@ async fn enforce_size_cap(
     Ok(removed)
 }
 
+/// Fold every completed UTC day that ended more than 48 hours before `now_ms` into
+/// `stats_day` (from `stats_minute`) and `stats_top_day` (the top 5000 keys per kind, from
+/// `stats_top_hour`), one write transaction per day, then delete the folded minute and hour
+/// rows in batches. A day that already has daily rows is not folded again, so a crash between
+/// the fold and the delete is repaired by the next pass without double counting or rebuilding
+/// from half-deleted rows. Returns the number of days folded.
+pub async fn fold_rollups(store: &Store, now_ms: i64) -> Result<usize, ObserveError> {
+    fold_at(store, now_ms, PURGE_BATCH, || async {}).await
+}
+
+async fn fold_at<F, Fut>(
+    store: &Store,
+    now_ms: i64,
+    batch: usize,
+    mut between: F,
+) -> Result<usize, ObserveError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let boundary = (now_ms - FOLD_AFTER_MS).div_euclid(1000).div_euclid(DAY_S) * DAY_S;
+    let mut folded = 0;
+    let mut next = 0_i64;
+    loop {
+        let first: Option<i64> = store
+            .read(move |c| {
+                Ok(c.query_row(
+                    "SELECT min(m) FROM (
+                         SELECT min(minute) AS m FROM stats_minute WHERE minute >= ?1 AND minute < ?2
+                         UNION ALL
+                         SELECT min(hour) FROM stats_top_hour WHERE hour >= ?1 AND hour < ?2)",
+                    params![next, boundary],
+                    |r| r.get(0),
+                )?)
+            })
+            .await?;
+        let Some(first) = first else { break };
+        let day = first.div_euclid(DAY_S) * DAY_S;
+        store
+            .write(move |tx| {
+                tx.execute(
+                    "INSERT INTO stats_day (day, dimension, key, count, latency_sum_us, latency_max_us)
+                     SELECT ?1, dimension, key, sum(count), sum(latency_sum_us), max(latency_max_us)
+                     FROM stats_minute WHERE minute >= ?1 AND minute < ?1 + 86400
+                       AND NOT EXISTS (SELECT 1 FROM stats_day WHERE day = ?1)
+                     GROUP BY dimension, key",
+                    [day],
+                )?;
+                tx.execute(
+                    "INSERT INTO stats_top_day (day, kind, key, count)
+                     SELECT ?1, kind, key, c FROM (
+                         SELECT kind, key, sum(count) AS c,
+                                row_number() OVER (PARTITION BY kind ORDER BY sum(count) DESC, key ASC) AS rn
+                         FROM stats_top_hour WHERE hour >= ?1 AND hour < ?1 + 86400
+                         GROUP BY kind, key)
+                     WHERE rn <= ?2 AND NOT EXISTS (SELECT 1 FROM stats_top_day WHERE day = ?1)",
+                    params![day, TOP_PER_DAY],
+                )?;
+                Ok(())
+            })
+            .await?;
+        folded += 1;
+        next = day + DAY_S;
+    }
+    delete_batched(
+        store,
+        "DELETE FROM stats_top_hour WHERE (hour, kind, key) IN
+             (SELECT hour, kind, key FROM stats_top_hour WHERE hour < ?1 LIMIT ?2)",
+        boundary,
+        batch,
+        &mut between,
+    )
+    .await?;
+    delete_batched(
+        store,
+        "DELETE FROM stats_minute WHERE (minute, dimension, key) IN
+             (SELECT minute, dimension, key FROM stats_minute WHERE minute < ?1 LIMIT ?2)",
+        boundary,
+        batch,
+        &mut between,
+    )
+    .await?;
+    Ok(folded)
+}
+
 async fn pass(store: &Store, keep: Duration, optimizer: &mut Optimizer) {
     let now = now_ms();
     let cutoff = now.saturating_sub(i64::try_from(keep.as_millis()).unwrap_or(i64::MAX));
+    match fold_rollups(store, now).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(days = n, "folded stats rollups into daily rows"),
+        Err(e) => tracing::warn!(error = %e, "stats rollup fold failed"),
+    }
     if let Err(e) = purge_before(store, cutoff).await {
         tracing::warn!(error = %e, "query log retention purge failed");
     }
@@ -437,6 +550,208 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(minutes(&store).await, [min(399), min(100)]);
+    }
+
+    async fn dump(store: &Store, sql: &'static str) -> Vec<String> {
+        store
+            .read(move |c| {
+                let mut st = c.prepare(sql)?;
+                let n = st.column_count();
+                let rows = st.query_map([], |r| {
+                    (0..n)
+                        .map(|i| Ok(format!("{:?}", r.get_ref(i)?)))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map(|v| v.join(","))
+                })?;
+                Ok(rows.collect::<Result<_, _>>()?)
+            })
+            .await
+            .unwrap()
+    }
+
+    /// Events on both sides of a UTC midnight: summary, top lists and the daily timeseries are
+    /// the same before and after the fold, and the folded minute and hour rows are gone.
+    #[tokio::test]
+    async fn fold_matches_the_raw_log_across_midnight() {
+        use crate::{AnswerSource, StatsService, TimeRange};
+        let (store, _d) = open_store();
+        let mut evs = Vec::new();
+        for (i, (name, off)) in [
+            ("a.example.", 3 * DAY_MS + DAY_MS - 1_000),
+            ("a.example.", 3 * DAY_MS + DAY_MS - 1_000),
+            ("b.example.", 3 * DAY_MS + DAY_MS - 1),
+            ("a.example.", 4 * DAY_MS),
+            ("c.example.", 4 * DAY_MS + 1_000),
+            ("c.example.", 4 * DAY_MS + 3_600_000),
+            ("c.example.", 9 * DAY_MS + 5_000),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut e = event(name, off);
+            e.latency_us = 100 * (u32::try_from(i).unwrap() + 1);
+            if i == 2 {
+                e.source = AnswerSource::Blocked { list: "ads".into() };
+            }
+            if i == 3 {
+                e.source = AnswerSource::Cache;
+            }
+            evs.push(e);
+        }
+        ingest(&store, evs).await;
+        let stats = StatsService::new(store.clone());
+        let range = TimeRange {
+            from_ms: 3 * DAY_MS,
+            to_ms: 10 * DAY_MS,
+        };
+        let day = Duration::from_hours(24);
+        let before = (
+            stats.summary(range).await.unwrap(),
+            stats.top_domains(range, 10).await.unwrap(),
+            stats.top_blocked(range, 10).await.unwrap(),
+            stats.top_clients(range, 10).await.unwrap(),
+            stats.timeseries(range, day).await.unwrap(),
+        );
+        assert_eq!(before.0.total, 7);
+
+        let now = 10 * DAY_MS + 3_600_000;
+        assert_eq!(fold_rollups(&store, now).await.unwrap(), 2);
+        let after = (
+            stats.summary(range).await.unwrap(),
+            stats.top_domains(range, 10).await.unwrap(),
+            stats.top_blocked(range, 10).await.unwrap(),
+            stats.top_clients(range, 10).await.unwrap(),
+            stats.timeseries(range, day).await.unwrap(),
+        );
+        assert_eq!(before, after);
+        // Day 3 and 4 are folded away, day 9 stays raw.
+        assert_eq!(
+            dump(
+                &store,
+                "SELECT DISTINCT day / 86400 FROM stats_day ORDER BY 1"
+            )
+            .await,
+            ["Integer(3)", "Integer(4)"]
+        );
+        assert_eq!(
+            dump(&store, "SELECT DISTINCT minute / 86400 FROM stats_minute").await,
+            ["Integer(9)"]
+        );
+        assert_eq!(
+            dump(&store, "SELECT DISTINCT hour / 86400 FROM stats_top_hour").await,
+            ["Integer(9)"]
+        );
+        // Midnight split: a.example. is 2 on day 3 and 1 on day 4.
+        assert_eq!(
+            dump(
+                &store,
+                "SELECT day / 86400, count FROM stats_top_day WHERE kind = 'qname' AND key = 'a.example.' ORDER BY day"
+            )
+            .await,
+            ["Integer(3),Integer(2)", "Integer(4),Integer(1)"]
+        );
+        // Only day 4 asked for: whole day, nothing of day 3.
+        let day4 = TimeRange {
+            from_ms: 4 * DAY_MS,
+            to_ms: 5 * DAY_MS,
+        };
+        assert_eq!(stats.summary(day4).await.unwrap().total, 3);
+    }
+
+    #[tokio::test]
+    async fn fold_is_idempotent_and_repairs_an_interrupted_delete() {
+        let (store, _d) = open_store();
+        ingest(
+            &store,
+            vec![
+                event("a.example.", 3 * DAY_MS + 5_000),
+                event("b.example.", 3 * DAY_MS + 7_200_000),
+            ],
+        )
+        .await;
+        let now = 10 * DAY_MS;
+        let raw_min = dump(&store, "SELECT * FROM stats_minute").await;
+        assert_eq!(fold_rollups(&store, now).await.unwrap(), 1);
+        let day = dump(&store, "SELECT * FROM stats_day").await;
+        let top = dump(&store, "SELECT * FROM stats_top_day").await;
+        assert_eq!(day.len(), 4, "total, rcode, source, dnssec");
+        assert!(raw_min.len() > day.len());
+        // Crash after the fold commit but before the deletes: the raw rows come back.
+        exec(
+            &store,
+            "INSERT INTO stats_minute SELECT day, dimension, key, count, latency_sum_us, latency_max_us FROM stats_day",
+        )
+        .await;
+        exec(
+            &store,
+            "INSERT INTO stats_top_hour SELECT day, kind, key, count FROM stats_top_day",
+        )
+        .await;
+        assert_eq!(fold_rollups(&store, now).await.unwrap(), 1);
+        assert_eq!(dump(&store, "SELECT * FROM stats_day").await, day);
+        assert_eq!(dump(&store, "SELECT * FROM stats_top_day").await, top);
+        assert_eq!(count_rows(&store, "stats_minute").await, 0);
+        assert_eq!(count_rows(&store, "stats_top_hour").await, 0);
+        // A clean re-run changes nothing.
+        assert_eq!(fold_rollups(&store, now).await.unwrap(), 0);
+        assert_eq!(dump(&store, "SELECT * FROM stats_day").await, day);
+    }
+
+    #[tokio::test]
+    async fn days_inside_the_48_hour_window_are_not_folded() {
+        let (store, _d) = open_store();
+        ingest(&store, vec![event("a.example.", 8 * DAY_MS + 5_000)]).await;
+        // Day 8 is complete at 9 d; it is folded once 48 h have passed since then (11 d).
+        for now in [
+            10 * DAY_MS + 3_600_000,
+            10 * DAY_MS + 86_399_000,
+            11 * DAY_MS - 1,
+        ] {
+            assert_eq!(fold_rollups(&store, now).await.unwrap(), 0, "{now}");
+        }
+        assert_eq!(count_rows(&store, "stats_day").await, 0);
+        assert_eq!(fold_rollups(&store, 11 * DAY_MS).await.unwrap(), 1);
+        assert_eq!(count_rows(&store, "stats_minute").await, 0);
+    }
+
+    /// The top 5000 per (day, kind) survive; ties break on the key. A key just below the cut on
+    /// every day is missing from the day rows, which bounds the approximation: a key's total can
+    /// only be under-counted by what it scored below the 5000th place of a day.
+    #[tokio::test]
+    async fn fold_keeps_the_top_5000_per_day_and_kind() {
+        let (store, _d) = open_store();
+        exec(
+            &store,
+            "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 5000)
+             INSERT INTO stats_top_hour (hour, kind, key, count)
+             SELECT 3 * 86400, 'qname', printf('k%05d', i), 1 + i / 100 FROM n;
+             INSERT INTO stats_top_hour VALUES (3 * 86400 + 3600, 'client', 'only', 1)",
+        )
+        .await;
+        assert_eq!(fold_rollups(&store, 10 * DAY_MS).await.unwrap(), 1);
+        let kept = dump(
+            &store,
+            "SELECT count(*), min(count), max(count) FROM stats_top_day WHERE kind = 'qname'",
+        )
+        .await;
+        assert_eq!(kept, ["Integer(5000),Integer(1),Integer(51)"]);
+        // 100 keys have count 1 and ties sort by key, so the last of them is the one dropped.
+        assert_eq!(
+            dump(
+                &store,
+                "SELECT count(*) FROM stats_top_day WHERE key = 'k00099'"
+            )
+            .await,
+            ["Integer(0)"]
+        );
+        assert_eq!(
+            dump(
+                &store,
+                "SELECT count(*) FROM stats_top_day WHERE kind = 'client'"
+            )
+            .await,
+            ["Integer(1)"]
+        );
     }
 
     #[tokio::test]

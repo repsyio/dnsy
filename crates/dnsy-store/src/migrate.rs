@@ -86,6 +86,16 @@ pub static MIGRATIONS: &[Migration] = &[
         sql: include_str!("../migrations/0011_querylog_rare_index.sql"),
     },
     Migration {
+        version: 12,
+        name: "stats_top_day",
+        sql: include_str!("../migrations/0012_stats_top_day.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "stats_day",
+        sql: include_str!("../migrations/0013_stats_day.sql"),
+    },
+    Migration {
         version: 14,
         name: "client_certs_autoincrement",
         sql: include_str!("../migrations/0014_client_certs_autoincrement.sql"),
