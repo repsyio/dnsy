@@ -89,6 +89,11 @@ pub enum UserCommand {
         #[arg(long)]
         password_stdin: bool,
     },
+    /// Disable a user: no login, sessions end, tokens are refused. The last active admin
+    /// cannot be disabled.
+    Disable { username: String },
+    /// Enable a disabled user again.
+    Enable { username: String },
     /// List users.
     List,
 }
@@ -129,6 +134,43 @@ pub enum DnssecCommand {
     /// Manage the keys of a zone.
     #[command(subcommand)]
     Keys(KeysCommand),
+    /// Work with a rollover in progress.
+    #[command(subcommand)]
+    Rollover(RolloverCommand),
+    /// Record that the registrar published a key's DS (lets a KSK or CSK rollover continue).
+    DsConfirmed {
+        zone: String,
+        /// The published KSK or CSK; needed only when the zone has several.
+        #[arg(long)]
+        key: Option<i64>,
+    },
+    /// The passphrase that encrypts the private keys.
+    #[command(subcommand)]
+    Passphrase(PassphraseCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RolloverCommand {
+    /// Abort the rollover of a zone: the incoming key is withdrawn and the active key stays.
+    Abort {
+        zone: String,
+        /// csk, ksk or zsk; omitted aborts every rollover of the zone.
+        #[arg(long)]
+        role: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PassphraseCommand {
+    /// Re-encrypt every private key under a new passphrase (all or none). The new passphrase
+    /// comes from the first line of stdin with `--new-passphrase-stdin`, else from
+    /// `DNSY_DNSSEC_NEW_PASSPHRASE`. Restart a running server afterwards with the new
+    /// passphrase configured (or use the API, which switches it live).
+    Change {
+        /// Read the new passphrase from the first line of stdin.
+        #[arg(long)]
+        new_passphrase_stdin: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -157,6 +199,26 @@ pub enum KeysCommand {
     },
     /// Print the DS records (SHA-256 and SHA-384) to give the registrar.
     Ds { zone: String },
+    /// Write an encrypted backup of the keys to a new file (mode 0600). The bundle
+    /// passphrase comes from the first line of stdin with `--passphrase-stdin`, else from
+    /// `DNSY_DNSSEC_BACKUP_PASSPHRASE`.
+    Export {
+        /// File to create; it must not exist.
+        file: PathBuf,
+        /// Only this zone's keys.
+        #[arg(long)]
+        zone: Option<String>,
+        /// Read the bundle passphrase from the first line of stdin.
+        #[arg(long)]
+        passphrase_stdin: bool,
+    },
+    /// Restore keys from a backup made by `export`; keys already present are skipped.
+    Import {
+        file: PathBuf,
+        /// Read the bundle passphrase from the first line of stdin.
+        #[arg(long)]
+        passphrase_stdin: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
