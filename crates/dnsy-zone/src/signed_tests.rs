@@ -944,6 +944,8 @@ async fn signed_responses_validate_secure() {
         let set = Arc::new(set);
         // RFC 5155 9.2: an NXDOMAIN whose next closer name is covered by an opt-out NSEC3
         // only shows the name may be an unsigned delegation, so it is Insecure.
+        // The same holds for a wildcard expansion whose next closer name is covered by an
+        // opt-out NSEC3 (RFC 5155 8.8).
         let nxdomain = if opt_out { Insecure } else { Secure };
         for (qname, qtype, expected) in [
             ("www.example.com.", RecordType::A, Secure),
@@ -954,9 +956,9 @@ async fn signed_responses_validate_secure() {
             ("nope.www.example.com.", RecordType::Aaaa, nxdomain),
             ("www.example.com.", RecordType::Txt, Secure),
             ("b.deep.example.com.", RecordType::A, Secure),
-            ("x.y.wild.example.com.", RecordType::Txt, Secure),
+            ("x.y.wild.example.com.", RecordType::Txt, nxdomain),
             ("x.wild.example.com.", RecordType::A, Secure),
-            ("a.cw.example.com.", RecordType::A, Secure),
+            ("a.cw.example.com.", RecordType::A, nxdomain),
             ("secure.example.com.", RecordType::Ds, Secure),
         ] {
             let q = Question {
