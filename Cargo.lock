@@ -750,6 +750,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "sha2",
+ "socket2",
  "tempfile",
  "tokio",
  "tokio-rustls",

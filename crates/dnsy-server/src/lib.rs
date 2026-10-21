@@ -8,11 +8,13 @@
 //!
 //! `DoT` reuses the TCP framing and limits behind rustls; see [`DotConfig`].
 //!
-//! Hardening: TCP connections are capped (excess connections are closed at once), every TCP read
+//! Hardening: TCP, `DoT` and `DoH` connections are capped per transport and per client (excess
+//! connections are closed at once), UDP requests in flight are capped globally and per client, every TCP read
 //! of a frame is bound by the idle timeout (slowloris), in-flight work is bounded per socket and
 //! per connection, malformed packets get a minimal FORMERR or are dropped, and UDP answers are
 //! truncated to the client's EDNS payload size (at most 1232, or 512 without EDNS).
 
+mod admission;
 mod doh;
 mod dot;
 mod query;
@@ -24,6 +26,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::admission::SlotLimit;
 use dnsy_engine::Handler;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -44,8 +47,18 @@ pub struct ServerConfig {
     pub doh: Option<DohConfig>,
     /// Close a TCP connection that sends no complete frame for this long.
     pub tcp_idle: Duration,
-    /// Maximum concurrent TCP connections; further connections are closed immediately.
+    /// Maximum concurrent connections per transport (TCP, `DoT`, `DoH` each have one pool shared
+    /// by all their listen addresses); further connections are closed immediately.
     pub max_tcp_conns: usize,
+    /// Maximum concurrent connections per client (`client_key`: IPv4 address, IPv6 `/64`) within
+    /// each transport's pool.
+    pub max_conns_per_client: usize,
+    /// UDP requests in flight across all UDP sockets; excess datagrams are dropped.
+    pub udp_in_flight: usize,
+    /// UDP requests in flight per client.
+    pub udp_in_flight_per_client: usize,
+    /// UDP sockets per listen address (`SO_REUSEPORT`, Linux only; one elsewhere).
+    pub udp_sockets_per_address: usize,
     /// How long shutdown waits for in-flight requests.
     pub drain: Duration,
 }
@@ -61,6 +74,10 @@ impl ServerConfig {
             doh: None,
             tcp_idle: Duration::from_millis(10_000),
             max_tcp_conns: 1024,
+            max_conns_per_client: 16,
+            udp_in_flight: 4096,
+            udp_in_flight_per_client: 64,
+            udp_sockets_per_address: 1,
             drain: Duration::from_secs(5),
         }
     }
@@ -72,6 +89,7 @@ pub struct Server {
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
     udp_addrs: Vec<SocketAddr>,
+    udp_sockets: usize,
     tcp_addrs: Vec<SocketAddr>,
     dot_addrs: Vec<SocketAddr>,
     doh_addrs: Vec<SocketAddr>,
@@ -86,21 +104,28 @@ impl Server {
         let (shutdown, rx) = watch::channel(false);
         let limits = tcp::Limits {
             idle: config.tcp_idle,
-            max_conns: config.max_tcp_conns,
             drain: config.drain,
         };
+        let pool = || SlotLimit::new(config.max_tcp_conns, config.max_conns_per_client);
+        let (tcp_conns, dot_conns, https_conns) = (pool(), pool(), pool());
+        let udp_slots = SlotLimit::new(config.udp_in_flight, config.udp_in_flight_per_client);
         let mut tasks = Vec::new();
+        let mut udp_sockets = 0;
         let mut udp_addrs = Vec::new();
         let mut tcp_addrs = Vec::new();
         for addr in &config.udp {
-            let socket = tokio::net::UdpSocket::bind(addr).await?;
-            udp_addrs.push(socket.local_addr()?);
-            tasks.push(tokio::spawn(udp::serve(
-                socket,
-                Arc::clone(&handler),
-                rx.clone(),
-                config.drain,
-            )));
+            let sockets = udp::bind(*addr, config.udp_sockets_per_address)?;
+            udp_addrs.push(sockets[0].local_addr()?);
+            udp_sockets += sockets.len();
+            for socket in sockets {
+                tasks.push(tokio::spawn(udp::serve(
+                    socket,
+                    Arc::clone(&handler),
+                    rx.clone(),
+                    config.drain,
+                    Arc::clone(&udp_slots),
+                )));
+            }
         }
         for addr in &config.tcp {
             let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -110,6 +135,7 @@ impl Server {
                 Arc::clone(&handler),
                 rx.clone(),
                 limits,
+                Arc::clone(&tcp_conns),
             )));
         }
         let mut dot_addrs = Vec::new();
@@ -129,6 +155,7 @@ impl Server {
                     Arc::clone(&handler),
                     rx.clone(),
                     limits,
+                    Arc::clone(&dot_conns),
                     dot.mtls().cloned(),
                 )));
             }
@@ -148,6 +175,7 @@ impl Server {
                     Arc::clone(&state),
                     rx.clone(),
                     limits,
+                    Arc::clone(&https_conns),
                 )));
             }
             tasks.push(dot::certs::watch_reloads(store, rx.clone())?);
@@ -156,6 +184,7 @@ impl Server {
             shutdown,
             tasks,
             udp_addrs,
+            udp_sockets,
             tcp_addrs,
             dot_addrs,
             doh_addrs: doh_bound,
@@ -166,6 +195,12 @@ impl Server {
     #[must_use]
     pub fn udp_addrs(&self) -> &[SocketAddr] {
         &self.udp_addrs
+    }
+
+    /// Number of UDP sockets bound (`udp_sockets_per_address` per address).
+    #[must_use]
+    pub fn udp_socket_count(&self) -> usize {
+        self.udp_sockets
     }
 
     /// Bound TCP addresses (useful with port 0).

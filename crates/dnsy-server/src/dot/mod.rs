@@ -21,6 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 
+use crate::admission::SlotLimit;
 use crate::tcp::{self, Flavor, Limits};
 
 /// ALPN protocol id for DNS over TLS (RFC 7858 section 3.1 / IANA).
@@ -111,6 +112,7 @@ pub(crate) async fn serve<H: Handler>(
     handler: Arc<H>,
     shutdown: watch::Receiver<bool>,
     limits: Limits,
+    slots: Arc<SlotLimit>,
     mtls: Option<Arc<mtls::MtlsVerifier>>,
 ) {
     let idle = limits.idle;
@@ -143,5 +145,5 @@ pub(crate) async fn serve<H: Handler>(
         transport: Transport::Dot,
         pad: true,
     };
-    tcp::serve_with(listener, handler, shutdown, limits, flavor, wrap).await;
+    tcp::serve_with(listener, handler, shutdown, limits, slots, flavor, wrap).await;
 }

@@ -296,3 +296,118 @@ async fn tcp_drop_sends_no_reply_but_keeps_connection() {
     assert_eq!(only.header.id, 2);
     server.shutdown().await;
 }
+
+/// Connects to `to` from the loopback address `from`.
+async fn connect_from(from: &str, to: std::net::SocketAddr) -> TcpStream {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket
+        .bind(std::net::SocketAddr::new(from.parse().unwrap(), 0))
+        .unwrap();
+    socket.connect(to).await.unwrap()
+}
+
+/// True when the server closed `s` (EOF or reset) within `wait`.
+async fn closed_within(s: &mut TcpStream, wait: Duration) -> bool {
+    let mut buf = [0; 1];
+    match tokio::time::timeout(wait, s.read(&mut buf)).await {
+        Ok(r) => r.unwrap_or(0) == 0,
+        Err(_) => false,
+    }
+}
+
+#[tokio::test]
+async fn tcp_cap_is_shared_across_listen_addresses() {
+    let lo: std::net::SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
+    let mut c = ServerConfig::new(vec![], vec![lo, lo]);
+    c.tcp_idle = Duration::from_secs(10);
+    c.max_tcp_conns = 1;
+    let server = Server::start(c, Arc::new(RefusedHandler)).await.unwrap();
+    let addrs = server.tcp_addrs().to_vec();
+    assert_eq!(addrs.len(), 2);
+    let mut first = TcpStream::connect(addrs[0]).await.unwrap();
+    let mut second = TcpStream::connect(addrs[1]).await.unwrap();
+    assert!(closed_within(&mut second, Duration::from_secs(2)).await);
+    assert!(!closed_within(&mut first, Duration::from_millis(200)).await);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn per_client_tcp_cap_leaves_room_for_other_clients() {
+    let mut c = config();
+    c.tcp_idle = Duration::from_secs(10);
+    let server = Server::start(c, Arc::new(RefusedHandler)).await.unwrap();
+    let addr = server.tcp_addrs()[0];
+    let mut held = Vec::new();
+    for _ in 0..16 {
+        held.push(connect_from("127.0.0.2", addr).await);
+    }
+    let mut seventeenth = connect_from("127.0.0.2", addr).await;
+    assert!(closed_within(&mut seventeenth, Duration::from_secs(2)).await);
+    // Another client still gets in and is answered.
+    let mut other = connect_from("127.0.0.3", addr).await;
+    send_frame(&mut other, &query(5, "a.example.", None)).await;
+    assert_eq!(read_frame(&mut other).await.unwrap().header.id, 5);
+    // The first sixteen were not disturbed.
+    for s in &mut held {
+        assert!(!closed_within(s, Duration::from_millis(20)).await);
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn udp_per_client_in_flight_cap_keeps_other_clients_served() {
+    let mut c = config();
+    c.udp_in_flight = 4;
+    c.udp_in_flight_per_client = 2;
+    let server = Server::start(c, Arc::new(Stub { answers: 1 }))
+        .await
+        .unwrap();
+    let target = server.udp_addrs()[0];
+    let flooder = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let slow = query(1, "slow.example.", None).encode(512).unwrap();
+    for _ in 0..20 {
+        flooder.send_to(&slow, target).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // A different source address is answered while the flooder holds its share.
+    let other = UdpSocket::bind(("127.0.0.2", 0)).await.unwrap();
+    other
+        .send_to(
+            &query(9, "fast.example.", None).encode(512).unwrap(),
+            target,
+        )
+        .await
+        .unwrap();
+    let mut buf = vec![0; 1500];
+    let n = tokio::time::timeout(Duration::from_millis(250), other.recv(&mut buf))
+        .await
+        .expect("other client is answered")
+        .unwrap();
+    assert_eq!(Message::decode(&buf[..n]).unwrap().header.id, 9);
+    // The flooder got at most its share of answers.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut answered = 0;
+    while flooder.try_recv(&mut buf).is_ok() {
+        answered += 1;
+    }
+    assert!(answered <= 2, "flooder answered {answered} times");
+    server.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn udp_sockets_per_address_binds_n_sockets() {
+    let mut c = config();
+    c.udp_sockets_per_address = 3;
+    let server = Server::start(c, Arc::new(RefusedHandler)).await.unwrap();
+    assert_eq!(server.udp_addrs().len(), 1);
+    assert_eq!(server.udp_socket_count(), 3);
+    assert_ne!(server.udp_addrs()[0].port(), 0);
+    for id in 0..6 {
+        let reply = udp_exchange(&server, &query(id, "a.example.", None).encode(512).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(Message::decode(&reply).unwrap().header.id, id);
+    }
+    server.shutdown().await;
+}

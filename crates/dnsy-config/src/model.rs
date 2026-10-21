@@ -51,12 +51,20 @@ pub struct Config {
 pub struct Server {
     /// Directory holding `dnsy.db` and other runtime state.
     pub data_dir: PathBuf,
+    /// UDP sockets per listen address, each with its own receive loop (`SO_REUSEPORT`). Defaults
+    /// to the available parallelism on Linux; other platforms always use one socket.
+    pub udp_sockets_per_address: usize,
 }
 
 impl Default for Server {
     fn default() -> Self {
         Self {
             data_dir: PathBuf::from("/var/lib/dnsy"),
+            udp_sockets_per_address: if cfg!(target_os = "linux") {
+                std::thread::available_parallelism().map_or(1, usize::from)
+            } else {
+                1
+            },
         }
     }
 }
@@ -159,6 +167,8 @@ pub struct Api {
     /// How long a login queues for a password-hashing slot before it is refused with 503
     /// (default 5000 ms).
     pub login_hash_wait_ms: u64,
+    /// Maximum concurrent API connections (default 256); further ones are closed at accept.
+    pub max_conns: u32,
 }
 
 /// `[api] secure_cookies`: the string `"auto"` or a boolean.
@@ -210,6 +220,7 @@ impl Default for Api {
             secure_cookies: SecureCookies::Auto,
             login_hash_per_client: 16,
             login_hash_wait_ms: 5000,
+            max_conns: 256,
         }
     }
 }
@@ -405,6 +416,13 @@ pub struct Limits {
     pub tcp_idle_ms: u64,
     /// Maximum concurrent TCP connections.
     pub max_tcp_conns: u32,
+    /// Maximum concurrent connections per client (IPv4 address, IPv6 `/64`) within each of the
+    /// TCP, `DoT` and `DoH` pools (default 16).
+    pub max_conns_per_client: u32,
+    /// UDP requests in flight across all UDP sockets (default 4096); excess datagrams are dropped.
+    pub udp_in_flight: u32,
+    /// UDP requests in flight per client (default 64).
+    pub udp_in_flight_per_client: u32,
 }
 
 impl Default for Limits {
@@ -414,6 +432,9 @@ impl Default for Limits {
             open_resolver: false,
             tcp_idle_ms: 10_000,
             max_tcp_conns: 1024,
+            max_conns_per_client: 16,
+            udp_in_flight: 4096,
+            udp_in_flight_per_client: 64,
         }
     }
 }

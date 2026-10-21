@@ -68,6 +68,20 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     if c.api.tls_cert.is_some() != c.api.tls_key.is_some() {
         return Err(invalid("api.tls_cert and api.tls_key must be set together"));
     }
+    let l = &c.limits;
+    if c.server.udp_sockets_per_address == 0
+        || c.api.max_conns == 0
+        || l.max_tcp_conns == 0
+        || l.max_conns_per_client == 0
+        || l.udp_in_flight == 0
+        || l.udp_in_flight_per_client == 0
+    {
+        return Err(invalid(
+            "server.udp_sockets_per_address, api.max_conns, limits.max_tcp_conns, \
+             limits.max_conns_per_client, limits.udp_in_flight and \
+             limits.udp_in_flight_per_client must be at least 1",
+        ));
+    }
     if c.resolver.timeout_ms == 0 || c.resolver.attempts == 0 {
         return Err(invalid(
             "resolver.timeout_ms and resolver.attempts must be at least 1",

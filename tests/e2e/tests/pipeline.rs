@@ -67,10 +67,12 @@ async fn slow_name_flood_does_not_starve_other_names() {
         RecordType::A,
         Reply::Answer(vec![a("fast.test.", 300, "203.0.113.11")]),
     );
-    // More identical slow queries than the listener has in-flight slots (1024), paced so the
-    // kernel receive buffer never overflows (that would drop the probes below, not test us).
+    // More identical slow queries than the listener has in-flight slots, paced so the kernel
+    // receive buffer never overflows (that would drop the probes below, not test us). The flood
+    // comes from another loopback address: one source is capped at `udp_in_flight_per_client`
+    // slots, and the probes below must not share that source with the flood.
     let started = Instant::now();
-    let flood = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let flood = UdpSocket::bind("127.0.0.2:0").await.unwrap();
     for batch in 0..30 {
         for _ in 0..50 {
             flood

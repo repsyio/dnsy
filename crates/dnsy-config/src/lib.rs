@@ -275,6 +275,42 @@ mod tests {
     }
 
     #[test]
+    fn admission_limits_have_defaults_and_reject_zero() {
+        let d = Config::default();
+        assert_eq!(
+            (
+                d.limits.max_conns_per_client,
+                d.limits.udp_in_flight,
+                d.limits.udp_in_flight_per_client,
+                d.api.max_conns
+            ),
+            (16, 4096, 64, 256)
+        );
+        assert!(d.server.udp_sockets_per_address >= 1);
+        let c = Config::from_toml(
+            "[server]\nudp_sockets_per_address = 2\n[limits]\nudp_in_flight = 8\n[api]\nmax_conns = 9",
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                c.server.udp_sockets_per_address,
+                c.limits.udp_in_flight,
+                c.api.max_conns
+            ),
+            (2, 8, 9)
+        );
+        for bad in [
+            "[server]\nudp_sockets_per_address = 0",
+            "[limits]\nmax_conns_per_client = 0",
+            "[limits]\nudp_in_flight = 0",
+            "[limits]\nudp_in_flight_per_client = 0",
+            "[api]\nmax_conns = 0",
+        ] {
+            assert!(Config::from_toml(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn secure_cookies_accepts_auto_and_booleans() {
         use crate::model::SecureCookies::{Always, Auto, Never};
         let parse = |v: &str| Config::from_toml(&format!("[api]\nsecure_cookies = {v}")).unwrap();

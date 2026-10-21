@@ -88,6 +88,16 @@ TCP and DoT listeners set `TCP_NODELAY` and write each length-prefixed answer in
 so a client reusing a connection no longer waits for a delayed ACK (about 41 ms per answer
 before). `just bench-micro` runs the criterion micro-benchmarks (codec, cache lookup).
 
+## Listener limits and UDP sockets
+
+Admission caps are documented in [Security](security.md). UDP sockets are created with a 4 MiB
+receive buffer (`SO_RCVBUF`; the kernel may clamp it to `net.core.rmem_max`, raise that sysctl for
+bursty traffic). On Linux `[server] udp_sockets_per_address` (default: available parallelism)
+binds that many sockets per UDP address with `SO_REUSEPORT`, each with its own receive loop; the
+kernel spreads clients across them by source address and port. Other platforms use one socket and
+ignore the key. Check for kernel drops with `nstat -az UdpRcvbufErrors` (or `netstat -su`,
+"receive buffer errors"): it should stay at zero under load. `ss -ulnp` shows the sockets.
+
 ## Building with the UI
 
 `just build` produces the release binary with the web UI embedded (see [Install](install.md)).
