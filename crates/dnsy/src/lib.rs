@@ -103,12 +103,51 @@ fn load_quiet(path: &Path) -> Result<Config> {
     Ok(config)
 }
 
-/// Opens (creating and migrating) `<data_dir>/dnsy.db`.
+/// Opens (creating and migrating) `<data_dir>/dnsy.db`. A missing data directory is created with
+/// mode 0700 and the database with 0600; existing ones keep their modes.
 pub(crate) fn open_store(config: &Config) -> Result<Store> {
-    std::fs::create_dir_all(&config.server.data_dir)?;
+    create_private_dir(&config.server.data_dir)?;
     Ok(Store::open(&db_path(config))?)
+}
+
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
 }
 
 pub(crate) fn db_path(config: &Config) -> std::path::PathBuf {
     config.server.data_dir.join("dnsy.db")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_data_dir_and_database_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.server.data_dir = tmp.path().join("state").join("dnsy");
+        let store = open_store(&config).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&config.server.data_dir), 0o700);
+        assert_eq!(mode(&db_path(&config)), 0o600);
+        drop(store);
+        // Reopening never loosens or tightens what the operator set.
+        std::fs::set_permissions(
+            &config.server.data_dir,
+            std::fs::Permissions::from_mode(0o750),
+        )
+        .unwrap();
+        open_store(&config).unwrap();
+        assert_eq!(mode(&config.server.data_dir), 0o750);
+    }
 }

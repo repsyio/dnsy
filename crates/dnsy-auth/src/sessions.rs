@@ -9,10 +9,14 @@ use sha2::{Digest, Sha256};
 
 use crate::{AuthError, User, UserError, UserService, unix_now};
 
-/// A session expires after this long without use.
+/// A session expires after this long without use. `dnsy-observe` retention deletes expired
+/// rows with copies of both lifetimes; keep them in sync.
 pub const IDLE_TIMEOUT_SECS: i64 = 30 * 60;
 /// A session expires this long after login regardless of use.
 pub const ABSOLUTE_TIMEOUT_SECS: i64 = 12 * 60 * 60;
+/// `last_seen_at` is only rewritten when it is older than this, so most requests need no write;
+/// the idle timeout is therefore accurate to this many seconds.
+pub const LAST_SEEN_GRANULARITY_SECS: i64 = 60;
 /// Failed logins allowed per username+IP within [`THROTTLE_WINDOW_SECS`].
 pub const MAX_FAILURES: i64 = 5;
 pub const THROTTLE_WINDOW_SECS: i64 = 15 * 60;
@@ -168,37 +172,55 @@ impl SessionService {
 
     pub(crate) async fn validate_at(&self, id: &str, now: i64) -> Result<Session, AuthError> {
         let hash = hash_id(id);
+        // The common case is a read on a reader connection; the writer is only taken to slide the
+        // idle timer (at most once per `LAST_SEEN_GRANULARITY_SECS`) or to delete an expired row.
+        let lookup = hash.clone();
+        let row: Option<(i64, i64, i64)> = self
+            .store
+            .read(move |c| {
+                Ok(c.query_row(
+                    "SELECT s.user_id, s.created_at, s.last_seen_at FROM sessions s
+                     JOIN users u ON u.id = s.user_id
+                     WHERE s.id_sha256 = ?1 AND u.disabled_at IS NULL",
+                    [&lookup],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?)
+            })
+            .await?;
+        let Some((user, created_at, last_seen_at)) = row else {
+            return Err(AuthError::InvalidSession);
+        };
+        if now - last_seen_at >= IDLE_TIMEOUT_SECS || now - created_at >= ABSOLUTE_TIMEOUT_SECS {
+            self.store
+                .write(move |tx| {
+                    tx.execute("DELETE FROM sessions WHERE id_sha256 = ?1", [&hash])?;
+                    Ok(())
+                })
+                .await?;
+            return Err(AuthError::InvalidSession);
+        }
+        if now - last_seen_at < LAST_SEEN_GRANULARITY_SECS {
+            return Ok(Session {
+                user: UserId(user),
+                created_at,
+                last_seen_at,
+            });
+        }
         self.store
             .write(move |tx| {
-                let row: Option<(i64, i64, i64)> = tx
-                    .query_row(
-                        "SELECT s.user_id, s.created_at, s.last_seen_at FROM sessions s
-                         JOIN users u ON u.id = s.user_id
-                         WHERE s.id_sha256 = ?1 AND u.disabled_at IS NULL",
-                        [&hash],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .optional()?;
-                let Some((user, created_at, last_seen_at)) = row else {
-                    return Ok(Err(AuthError::InvalidSession));
-                };
-                if now - last_seen_at >= IDLE_TIMEOUT_SECS
-                    || now - created_at >= ABSOLUTE_TIMEOUT_SECS
-                {
-                    tx.execute("DELETE FROM sessions WHERE id_sha256 = ?1", [&hash])?;
-                    return Ok(Err(AuthError::InvalidSession));
-                }
                 tx.execute(
                     "UPDATE sessions SET last_seen_at = ?2 WHERE id_sha256 = ?1",
                     params![hash, now],
                 )?;
-                Ok(Ok(Session {
-                    user: UserId(user),
-                    created_at,
-                    last_seen_at: now,
-                }))
+                Ok(())
             })
-            .await?
+            .await?;
+        Ok(Session {
+            user: UserId(user),
+            created_at,
+            last_seen_at: now,
+        })
     }
 
     /// End a session (logout). Unknown ids are ignored.
@@ -412,5 +434,30 @@ mod tests {
         s.login_at(&users, "alice", "pw", IP, None, 12)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn validate_writes_last_seen_only_when_it_is_stale() {
+        let (s, _u, user, _d) = setup().await;
+        let id = s.create_at(user, 1_000).await.unwrap();
+        let before = s.store.write_count();
+        // Stale (100 s): one write slides the timer.
+        let first = s.validate_at(&id, 1_100).await.unwrap();
+        assert_eq!(first.last_seen_at, 1_100);
+        // Within 60 s of that: served from a reader, nothing is written.
+        let second = s.validate_at(&id, 1_110).await.unwrap();
+        assert_eq!(second.last_seen_at, 1_100, "the stored value is reported");
+        assert_eq!(s.store.write_count() - before, 1, "two requests, one write");
+        // A request 60 s after the last write slides it again.
+        s.validate_at(&id, 1_160).await.unwrap();
+        assert_eq!(s.store.write_count() - before, 2);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_session_does_not_touch_the_writer() {
+        let (s, _u, _user, _d) = setup().await;
+        let before = s.store.write_count();
+        assert!(s.validate_at("bogus", 5).await.is_err());
+        assert_eq!(s.store.write_count(), before);
     }
 }

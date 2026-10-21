@@ -6775,7 +6775,9 @@
           "cache_hit_ratio",
           "stale_answers",
           "avg_latency_us",
-          "max_latency_us"
+          "max_latency_us",
+          "querylog_dropped",
+          "querylog_flush_errors"
         ],
         "properties": {
           "avg_latency_us": {
@@ -6852,6 +6854,18 @@
           "max_latency_us": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "querylog_dropped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Query-log events lost since the server started: the channel was full or a batch failed to\nwrite. Not limited to the requested range.",
+            "minimum": 0
+          },
+          "querylog_flush_errors": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Query-log batches that failed to write since the server started.",
             "minimum": 0
           },
           "stale_answers": {

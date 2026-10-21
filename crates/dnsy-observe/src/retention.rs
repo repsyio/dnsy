@@ -1,41 +1,163 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::future::Future;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dnsy_store::Store;
+use rusqlite::params;
 use tokio::task::JoinHandle;
 
 use crate::ObserveError;
 
-/// Delete query-log rows older than `cutoff_ms` and hourly top-N rows that end
-/// before it. Minute rollups are tiny and kept. Returns the query-log rows removed.
-pub async fn purge_before(store: &Store, cutoff_ms: i64) -> Result<usize, ObserveError> {
-    Ok(store
-        .write(move |tx| {
-            let rows = tx.execute("DELETE FROM query_log WHERE ts_ms < ?1", [cutoff_ms])?;
-            tx.execute(
-                "DELETE FROM stats_top_hour WHERE hour + 3600 <= ?1",
-                [cutoff_ms.div_euclid(1000)],
-            )?;
-            Ok(rows)
-        })
-        .await?)
+/// Rows deleted per transaction, so the single writer is never held for long and the query-log
+/// writer interleaves between batches.
+const PURGE_BATCH: usize = 50_000;
+/// Minute rollups are kept at least this long (the stats range is capped at 366 days).
+const MINUTE_ROLLUP_KEEP_MS: i64 = 400 * 24 * 3_600 * 1000;
+/// Session lifetimes of `dnsy-auth` (`IDLE_TIMEOUT_SECS`, `ABSOLUTE_TIMEOUT_SECS`); keep in sync.
+const SESSION_IDLE_SECS: i64 = 30 * 60;
+const SESSION_ABSOLUTE_SECS: i64 = 12 * 60 * 60;
+/// `PRAGMA optimize` runs at most this often from the retention task.
+const OPTIMIZE_EVERY: Duration = Duration::from_hours(24);
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// Purge once now and then every `interval`, keeping `retention` of history.
-/// Abort the returned handle to stop it.
+/// Delete in transactions of at most `batch` rows until fewer are found. `sql` takes the cutoff
+/// as `?1` and the batch size as `?2`; `between` runs after every full batch.
+async fn delete_batched<F, Fut>(
+    store: &Store,
+    sql: &'static str,
+    cutoff: i64,
+    batch: usize,
+    between: &mut F,
+) -> Result<usize, ObserveError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let limit = i64::try_from(batch).unwrap_or(i64::MAX);
+    let mut total = 0;
+    loop {
+        let n = store
+            .write(move |tx| Ok(tx.execute(sql, params![cutoff, limit])?))
+            .await?;
+        total += n;
+        if n < batch {
+            return Ok(total);
+        }
+        between().await;
+    }
+}
+
+/// Delete query-log rows older than `cutoff_ms`, hourly top-N rows that end before it, minute
+/// rollups older than the longer of the retention and 400 days, and expired sessions. Deletes
+/// run in batches of at most 50 000 rows per transaction. Returns the query-log rows removed.
+pub async fn purge_before(store: &Store, cutoff_ms: i64) -> Result<usize, ObserveError> {
+    purge_at(store, cutoff_ms, now_ms(), PURGE_BATCH, || async {}).await
+}
+
+async fn purge_at<F, Fut>(
+    store: &Store,
+    cutoff_ms: i64,
+    now_ms: i64,
+    batch: usize,
+    mut between: F,
+) -> Result<usize, ObserveError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let rows = delete_batched(
+        store,
+        "DELETE FROM query_log WHERE rowid IN
+             (SELECT rowid FROM query_log WHERE ts_ms < ?1 LIMIT ?2)",
+        cutoff_ms,
+        batch,
+        &mut between,
+    )
+    .await?;
+    delete_batched(
+        store,
+        "DELETE FROM stats_top_hour WHERE (hour, kind, key) IN
+             (SELECT hour, kind, key FROM stats_top_hour WHERE hour < ?1 - 3600 LIMIT ?2)",
+        cutoff_ms.div_euclid(1000),
+        batch,
+        &mut between,
+    )
+    .await?;
+    let minute_cutoff = cutoff_ms
+        .min(now_ms - MINUTE_ROLLUP_KEEP_MS)
+        .div_euclid(1000);
+    delete_batched(
+        store,
+        "DELETE FROM stats_minute WHERE (minute, dimension, key) IN
+             (SELECT minute, dimension, key FROM stats_minute WHERE minute < ?1 LIMIT ?2)",
+        minute_cutoff,
+        batch,
+        &mut between,
+    )
+    .await?;
+    let unix_secs = now_ms.div_euclid(1000);
+    store
+        .write(move |tx| {
+            tx.execute(
+                "DELETE FROM sessions WHERE last_seen_at < ?1 OR created_at < ?2",
+                params![
+                    unix_secs - SESSION_IDLE_SECS,
+                    unix_secs - SESSION_ABSOLUTE_SECS
+                ],
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(rows)
+}
+
+/// Runs `PRAGMA optimize` at most once per `every`, starting with the first call.
+struct Optimizer {
+    every: Duration,
+    last: Option<Instant>,
+}
+
+impl Optimizer {
+    fn daily() -> Self {
+        Self {
+            every: OPTIMIZE_EVERY,
+            last: None,
+        }
+    }
+
+    async fn maybe(&mut self, store: &Store) {
+        if self.last.is_some_and(|t| t.elapsed() < self.every) {
+            return;
+        }
+        self.last = Some(Instant::now());
+        if let Err(e) = store.optimize().await {
+            tracing::warn!(error = %e, "PRAGMA optimize failed");
+        }
+    }
+}
+
+async fn pass(store: &Store, keep: Duration, optimizer: &mut Optimizer) {
+    let cutoff = now_ms().saturating_sub(i64::try_from(keep.as_millis()).unwrap_or(i64::MAX));
+    if let Err(e) = purge_before(store, cutoff).await {
+        tracing::warn!(error = %e, "query log retention purge failed");
+    }
+    optimizer.maybe(store).await;
+}
+
+/// Purge once now and then every `interval`, keeping `retention` of history; also runs
+/// `PRAGMA optimize` once a day. Abort the returned handle to stop it.
 #[must_use]
 pub fn spawn_retention(store: Store, retention: Duration, interval: Duration) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
+        let mut optimizer = Optimizer::daily();
         loop {
             tick.tick().await;
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-            let cutoff =
-                now_ms.saturating_sub(i64::try_from(retention.as_millis()).unwrap_or(i64::MAX));
-            if let Err(e) = purge_before(&store, cutoff).await {
-                tracing::warn!(error = %e, "query log retention purge failed");
-            }
+            pass(&store, retention, &mut optimizer).await;
         }
     })
 }
@@ -50,16 +172,11 @@ pub fn spawn_retention_watch(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
+        let mut optimizer = Optimizer::daily();
         loop {
             tick.tick().await;
             let keep = *retention.borrow();
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-            let cutoff = now_ms.saturating_sub(i64::try_from(keep.as_millis()).unwrap_or(i64::MAX));
-            if let Err(e) = purge_before(&store, cutoff).await {
-                tracing::warn!(error = %e, "query log retention purge failed");
-            }
+            pass(&store, keep, &mut optimizer).await;
         }
     })
 }
@@ -68,6 +185,26 @@ pub fn spawn_retention_watch(
 mod tests {
     use super::*;
     use crate::testutil::{count_rows, event, ingest, open_store, wait_for_rows};
+
+    const DAY_MS: i64 = 24 * 3_600 * 1000;
+    const NOW: i64 = 1_000 * DAY_MS;
+
+    async fn exec(store: &Store, sql: &'static str) {
+        store
+            .write(move |t| Ok(t.execute_batch(sql)?))
+            .await
+            .unwrap();
+    }
+
+    async fn minutes(store: &Store) -> Vec<i64> {
+        store
+            .read(|c| {
+                let mut st = c.prepare("SELECT minute FROM stats_minute ORDER BY minute")?;
+                Ok(st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?)
+            })
+            .await
+            .unwrap()
+    }
 
     #[tokio::test]
     async fn retention_purges_old_rows() {
@@ -113,5 +250,159 @@ mod tests {
         tx.send(Duration::from_secs(60)).unwrap();
         wait_for_rows(&store, 0).await;
         h.abort();
+    }
+
+    /// 120k expired rows go in batches of 50k: at least three commits, and a concurrent writer
+    /// gets in between them instead of waiting for one long transaction.
+    #[tokio::test]
+    async fn purge_runs_in_batches_and_lets_the_writer_interleave() {
+        let (store, _d) = open_store();
+        exec(
+            &store,
+            "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 119999)
+             INSERT INTO query_log (ts_ms, client, transport, qname, qtype, rcode, source, dnssec, latency_us)
+             SELECT i, '192.0.2.1', 'udp', 'a.example.', 1, 0, 'upstream', 'unchecked', 1 FROM n;
+             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 119999)
+             INSERT INTO stats_top_hour (hour, kind, key, count)
+             SELECT 0, 'qname', 'k' || i, 1 FROM n",
+        )
+        .await;
+        let before = store.write_count();
+        let inserted = std::cell::Cell::new(0_u64);
+        let purged = purge_at(&store, 5_000_000, 5_000_000, PURGE_BATCH, || {
+            inserted.set(inserted.get() + 1);
+            let store = store.clone();
+            async move {
+                exec(
+                    &store,
+                    "INSERT INTO query_log (ts_ms, client, transport, qname, qtype, rcode, source, dnssec, latency_us)
+                     VALUES (9000000, '192.0.2.2', 'udp', 'new.example.', 1, 0, 'upstream', 'unchecked', 1)",
+                )
+                .await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(purged, 120_000);
+        assert_eq!(count_rows(&store, "stats_top_hour").await, 0);
+        assert!(
+            inserted.get() >= 4,
+            "the writer ran between batches: {}",
+            inserted.get()
+        );
+        let commits = store.write_count() - before - inserted.get();
+        assert!(commits >= 3, "one transaction per batch, got {commits}");
+        assert_eq!(
+            count_rows(&store, "query_log").await,
+            i64::try_from(inserted.get()).unwrap(),
+            "rows inserted between batches survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn top_hour_purge_is_a_range_search_on_the_primary_key() {
+        let (store, _d) = open_store();
+        let plan: String = store
+            .read(|c| {
+                let mut st = c.prepare(
+                    "EXPLAIN QUERY PLAN SELECT hour, kind, key FROM stats_top_hour WHERE hour < ?1 - 3600 LIMIT ?2",
+                )?;
+                let rows = st.query_map([5000_i64, 10], |r| r.get::<_, String>(3))?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?.join("\n"))
+            })
+            .await
+            .unwrap();
+        assert!(
+            plan.contains("SEARCH stats_top_hour USING PRIMARY KEY (hour<?)"),
+            "{plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn minute_rollups_are_kept_for_400_days() {
+        let (store, _d) = open_store();
+        let min = |ago_days: i64| (NOW - ago_days * DAY_MS) / 60_000 * 60;
+        for ago in [500, 399, 100] {
+            let m = min(ago);
+            store
+                .write(move |t| {
+                    Ok(t.execute(
+                        "INSERT INTO stats_minute VALUES (?1, 'total', '', 1, 1, 1)",
+                        [m],
+                    )
+                    .map(drop)?)
+                })
+                .await
+                .unwrap();
+        }
+        // 30 days of retention: only what is older than 400 days goes.
+        purge_at(&store, NOW - 30 * DAY_MS, NOW, PURGE_BATCH, || async {})
+            .await
+            .unwrap();
+        assert_eq!(minutes(&store).await, [min(399), min(100)]);
+        // Retention longer than 400 days wins.
+        purge_at(&store, NOW - 450 * DAY_MS, NOW, PURGE_BATCH, || async {})
+            .await
+            .unwrap();
+        assert_eq!(minutes(&store).await, [min(399), min(100)]);
+        purge_at(&store, NOW - 50 * DAY_MS, NOW, PURGE_BATCH, || async {})
+            .await
+            .unwrap();
+        assert_eq!(minutes(&store).await, [min(399), min(100)]);
+    }
+
+    #[tokio::test]
+    async fn retention_deletes_expired_sessions_only() {
+        let (store, _d) = open_store();
+        let now_s = NOW / 1000;
+        store
+            .write(move |t| {
+                t.execute("INSERT INTO users (id, username, role, password_hash) VALUES (1, 'u', 'admin', 'x')", [])?;
+                for (id, created, seen) in [
+                    (1_u8, now_s - 100, now_s - 10),            // live
+                    (2, now_s - 100, now_s - 31 * 60),          // idle
+                    (3, now_s - 13 * 3600, now_s - 10),         // past the absolute lifetime
+                ] {
+                    t.execute(
+                        "INSERT INTO sessions (id_sha256, user_id, created_at, last_seen_at) VALUES (?1, 1, ?2, ?3)",
+                        rusqlite::params![vec![id], created, seen],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        purge_at(&store, 0, NOW, PURGE_BATCH, || async {})
+            .await
+            .unwrap();
+        let left: Vec<Vec<u8>> = store
+            .read(|c| {
+                let mut st = c.prepare("SELECT id_sha256 FROM sessions")?;
+                Ok(st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(left, [vec![1_u8]]);
+    }
+
+    #[tokio::test]
+    async fn optimize_runs_once_per_interval() {
+        let (store, _d) = open_store();
+        let mut daily = Optimizer::daily();
+        let before = store.write_count();
+        daily.maybe(&store).await;
+        daily.maybe(&store).await;
+        assert_eq!(
+            store.write_count(),
+            before + 1,
+            "first call runs, second is within a day"
+        );
+        let mut always = Optimizer {
+            every: Duration::ZERO,
+            last: None,
+        };
+        always.maybe(&store).await;
+        always.maybe(&store).await;
+        assert_eq!(store.write_count(), before + 3);
     }
 }

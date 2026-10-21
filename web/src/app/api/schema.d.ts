@@ -1766,6 +1766,17 @@ export interface components {
             from: number;
             /** Format: int64 */
             max_latency_us: number;
+            /**
+             * Format: int64
+             * @description Query-log events lost since the server started: the channel was full or a batch failed to
+             *     write. Not limited to the requested range.
+             */
+            querylog_dropped: number;
+            /**
+             * Format: int64
+             * @description Query-log batches that failed to write since the server started.
+             */
+            querylog_flush_errors: number;
             /** Format: int64 */
             stale_answers: number;
             /** Format: int64 */

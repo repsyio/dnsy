@@ -313,6 +313,8 @@ async fn stats_top_domains_shape() {
     assert_eq!(s["by_source"]["upstream"], 3);
     assert_eq!(s["dnssec"]["unchecked"], 4);
     assert_eq!(s["avg_latency_us"], 1000);
+    assert_eq!(s["querylog_dropped"], 0);
+    assert_eq!(s["querylog_flush_errors"], 0);
 
     let (_, series) = f.get_json("/api/v1/stats/timeseries?bucket=60", &t).await;
     assert_eq!(series[0]["total"], 4);
@@ -566,4 +568,24 @@ async fn tokens_never_leak_through_log_or_stats() {
     f.ingest(vec![leaky]).await;
     let ev = next_event(&mut body).await;
     assert!(ev.contains("[redacted]") && !ev.contains(&secret), "{ev}");
+}
+
+#[tokio::test]
+async fn summary_reports_lost_query_log_events() {
+    let f = Fx::new(|s| s);
+    let t = f.viewer().await;
+    f.state
+        .store
+        .write(|tx| Ok(tx.execute_batch("DROP TABLE query_log")?))
+        .await
+        .unwrap();
+    f.ingest(vec![
+        event("a.example.", now_ms()),
+        event("b.example.", now_ms()),
+    ])
+    .await;
+    let (st, s) = f.get_json("/api/v1/stats/summary", &t).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(s["querylog_dropped"], 2);
+    assert_eq!(s["querylog_flush_errors"], 1);
 }

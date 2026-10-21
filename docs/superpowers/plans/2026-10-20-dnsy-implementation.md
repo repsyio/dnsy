@@ -208,6 +208,8 @@ impl FilterSet { pub fn check(&self, qname: &Name) -> Verdict; }
 | `0006_dnssec_keys.sql` | DNSY-25 | dnssec_keys (zone, role KSK/ZSK/CSK, algorithm, key_tag, state, timestamps, encrypted PKCS#8) |
 | `0007_blocklists.sql` | DNSY-27 | blocklists, custom_rules |
 | `0008_client_certs.sql` | DNSY-32 | client_certs |
+| `0010_querylog_client_index.sql` | DNSY-76 | index `query_log_client (client, ts_ms, id)` |
+| `0011_querylog_rare_index.sql` | DNSY-76 | partial index `query_log_rare (ts_ms, id)` for blocked/refused/error sources and rcodes other than NOERROR/NXDOMAIN |
 
 The runner's own table `schema_migrations(version, name, checksum, applied_at)` is created by DNSY-6. The runner applies every known migration missing from that table in version order (set-based, not "max version"), so two migrations merged in the same wave in either order still converge.
 

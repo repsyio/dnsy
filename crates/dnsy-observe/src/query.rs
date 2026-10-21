@@ -72,11 +72,26 @@ fn like_escape(s: &str) -> String {
     out
 }
 
-/// Keyset-paginated query-log search, ordered by `(ts_ms, id)` descending.
-pub async fn search(store: &Store, q: QueryLogQuery) -> Result<LogPage, ObserveError> {
-    let limit = q.limit.clamp(1, MAX_LIMIT);
+/// The predicate of `query_log_rare` (migration 0011), verbatim: SQLite uses a partial index only
+/// when the query's WHERE clause contains the index's predicate.
+const RARE_PREDICATE: &str = "(source IN ('blocked', 'refused', 'error') OR rcode NOT IN (0, 3))";
+
+fn is_rare(q: &QueryLogQuery) -> bool {
+    q.source.is_some_and(|s| {
+        matches!(
+            s,
+            SourceKind::Blocked | SourceKind::Refused | SourceKind::Error
+        )
+    }) || q.rcode.is_some_and(|r| !matches!(u16::from(r), 0 | 3))
+}
+
+/// The statement and its arguments for `q`.
+fn build(q: &QueryLogQuery, limit: usize) -> (String, Vec<Value>) {
     let mut clauses: Vec<&str> = Vec::new();
     let mut args: Vec<Value> = Vec::new();
+    if is_rare(q) {
+        clauses.push(RARE_PREDICATE);
+    }
     let mut add = |clause: &'static str, vals: &[Value]| {
         clauses.push(clause);
         args.extend_from_slice(vals);
@@ -84,7 +99,16 @@ pub async fn search(store: &Store, q: QueryLogQuery) -> Result<LogPage, ObserveE
     if let Some(v) = q.from_ms {
         add("ts_ms >= ?", &[v.into()]);
     }
-    if let Some(v) = q.to_ms {
+    // The cursor also bounds the time range from above (`ts_ms <= cursor.ts_ms`), so the planner
+    // starts at the cursor instead of walking every newer row. It is folded into the one upper
+    // bound: with `to_ms` present SQLite uses only one of two upper bounds and prefers `to_ms`.
+    let upper = match (q.to_ms, q.after) {
+        (Some(to), Some(c)) => Some(to.min(c.ts_ms.saturating_add(1))),
+        (Some(v), None) => Some(v),
+        (None, Some(c)) => Some(c.ts_ms.saturating_add(1)),
+        (None, None) => None,
+    };
+    if let Some(v) = upper {
         add("ts_ms < ?", &[v.into()]);
     }
     if let Some(v) = q.client {
@@ -107,6 +131,7 @@ pub async fn search(store: &Store, q: QueryLogQuery) -> Result<LogPage, ObserveE
         add("dnssec = ?", &[dnssec_str(v).to_owned().into()]);
     }
     if let Some(c) = q.after {
+        // The tie-break; the time bound above is what lets the index start at the cursor.
         add(
             "(ts_ms < ? OR (ts_ms = ? AND id < ?))",
             &[c.ts_ms.into(), c.ts_ms.into(), c.id.into()],
@@ -123,6 +148,13 @@ pub async fn search(store: &Store, q: QueryLogQuery) -> Result<LogPage, ObserveE
          FROM query_log {where_sql} ORDER BY ts_ms DESC, id DESC LIMIT {}",
         limit + 1
     );
+    (sql, args)
+}
+
+/// Keyset-paginated query-log search, ordered by `(ts_ms, id)` descending.
+pub async fn search(store: &Store, q: QueryLogQuery) -> Result<LogPage, ObserveError> {
+    let limit = q.limit.clamp(1, MAX_LIMIT);
+    let (sql, args) = build(&q, limit);
     let mut entries = store
         .read(move |c| {
             let mut stmt = c.prepare(&sql)?;
@@ -274,5 +306,213 @@ mod tests {
                 .as_deref(),
             Some("tok")
         );
+    }
+
+    /// 10 000 rows over 10 clients, a rare row every 97th; ts = i / 3 so timestamps repeat.
+    async fn generated(store: &Store) {
+        store
+            .write(|t| {
+                t.execute_batch(
+                    "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 9999)
+                     INSERT INTO query_log (ts_ms, client, transport, principal, qname, qtype, rcode,
+                                            source, source_detail, dnssec, latency_us)
+                     SELECT i / 3, '192.0.2.' || (i % 10), 'udp', NULL, 'h' || i || '.example.', 1,
+                            CASE WHEN i % 97 = 0 THEN 2 ELSE 0 END,
+                            CASE WHEN i % 97 = 1 THEN 'refused' ELSE 'upstream' END,
+                            NULL, 'unchecked', 10 FROM n;
+                     ANALYZE;",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn plan(store: &Store, q: &QueryLogQuery) -> String {
+        let (sql, args) = build(q, q.limit.clamp(1, MAX_LIMIT));
+        store
+            .read(move |c| {
+                let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                let rows = st.query_map(params_from_iter(args), |r| r.get::<_, String>(3))?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?.join("\n"))
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn cursor_page_plan_uses_index_bound() {
+        let (store, _d) = open_store();
+        generated(&store).await;
+        let q = QueryLogQuery {
+            limit: 50,
+            after: Some(Cursor {
+                ts_ms: 1500,
+                id: 4000,
+            }),
+            ..QueryLogQuery::default()
+        };
+        let p = plan(&store, &q).await;
+        assert!(
+            p.contains("SEARCH query_log USING INDEX query_log_ts"),
+            "{p}"
+        );
+        assert!(
+            p.contains("ts_ms<?"),
+            "the cursor must bound the index range: {p}"
+        );
+    }
+
+    /// The UI sends a range and a cursor together; SQLite uses only one upper bound, so the one
+    /// it gets must be the cursor's.
+    #[test]
+    fn the_cursor_is_the_upper_bound_even_with_a_range() {
+        let after = Some(Cursor {
+            ts_ms: 1500,
+            id: 4000,
+        });
+        let ts_bounds = |q: &QueryLogQuery| {
+            let (sql, args) = build(q, 10);
+            assert_eq!(sql.matches("ts_ms < ?").count(), 2, "{sql}");
+            args
+        };
+        let base = QueryLogQuery {
+            limit: 10,
+            after,
+            ..QueryLogQuery::default()
+        };
+        let args = ts_bounds(&base);
+        assert_eq!(args[0], Value::Integer(1501));
+        let wide = QueryLogQuery {
+            from_ms: Some(100),
+            to_ms: Some(900_000),
+            ..base.clone()
+        };
+        let args = ts_bounds(&wide);
+        assert_eq!(
+            args[1],
+            Value::Integer(1501),
+            "a later `to` must not win: {args:?}"
+        );
+        let narrow = QueryLogQuery {
+            to_ms: Some(1000),
+            ..base
+        };
+        assert_eq!(
+            ts_bounds(&narrow)[0],
+            Value::Integer(1000),
+            "an earlier `to` stays"
+        );
+    }
+
+    #[tokio::test]
+    async fn paging_ten_thousand_rows_matches_a_plain_ordered_scan() {
+        let (store, _d) = open_store();
+        generated(&store).await;
+        let expected: Vec<i64> = store
+            .read(|c| {
+                let mut st = c.prepare("SELECT id FROM query_log ORDER BY ts_ms DESC, id DESC")?;
+                Ok(st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(expected.len(), 10_000);
+        let mut seen = Vec::new();
+        let mut after = None;
+        loop {
+            let page = search(
+                &store,
+                QueryLogQuery {
+                    limit: 997,
+                    after,
+                    ..QueryLogQuery::default()
+                },
+            )
+            .await
+            .unwrap();
+            seen.extend(page.entries.iter().map(|e| e.id));
+            match page.next {
+                Some(c) => after = Some(c),
+                None => break,
+            }
+        }
+        assert_eq!(seen, expected);
+    }
+
+    #[tokio::test]
+    async fn client_filter_uses_the_client_index_without_a_sort() {
+        let (store, _d) = open_store();
+        generated(&store).await;
+        let p = plan(
+            &store,
+            &QueryLogQuery {
+                limit: 50,
+                client: Some("192.0.2.3".parse().unwrap()),
+                ..QueryLogQuery::default()
+            },
+        )
+        .await;
+        assert!(p.contains("USING INDEX query_log_client (client=?"), "{p}");
+        assert!(!p.contains("TEMP B-TREE"), "{p}");
+    }
+
+    #[tokio::test]
+    async fn rare_outcomes_use_the_partial_index() {
+        let (store, _d) = open_store();
+        generated(&store).await;
+        for f in [
+            (|q: &mut QueryLogQuery| q.source = Some(SourceKind::Refused))
+                as fn(&mut QueryLogQuery),
+            |q| q.source = Some(SourceKind::Blocked),
+            |q| q.source = Some(SourceKind::Error),
+            |q| q.rcode = Some(Rcode::ServFail),
+        ] {
+            let mut q = QueryLogQuery {
+                limit: 50,
+                ..QueryLogQuery::default()
+            };
+            f(&mut q);
+            let p = plan(&store, &q).await;
+            assert!(p.contains("USING INDEX query_log_rare"), "{q:?}: {p}");
+            assert!(!p.contains("TEMP B-TREE"), "{p}");
+        }
+        // Common values are not rewritten: the predicate would only add work.
+        let (sql, _) = build(
+            &QueryLogQuery {
+                source: Some(SourceKind::Upstream),
+                rcode: Some(Rcode::NxDomain),
+                ..QueryLogQuery::default()
+            },
+            10,
+        );
+        assert!(!sql.contains("NOT IN (0, 3)"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn rare_filters_return_the_same_rows_as_without_the_predicate() {
+        let (store, _d) = open_store();
+        generated(&store).await;
+        let page = search(
+            &store,
+            QueryLogQuery {
+                limit: 1000,
+                source: Some(SourceKind::Refused),
+                ..QueryLogQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        let expected: i64 = store
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM query_log WHERE source = 'refused'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(i64::try_from(page.entries.len()).unwrap(), expected);
+        assert!(expected > 100);
     }
 }

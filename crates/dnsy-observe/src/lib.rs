@@ -16,7 +16,7 @@ pub use event::{AnswerSource, QueryEvent, QueryEventSink, SourceKind, redact_cli
 pub use query::{Cursor, LogEntry, LogPage, QueryLogQuery, search};
 pub use retention::{purge_before, spawn_retention, spawn_retention_watch};
 pub use stats::{StatsService, Summary, TimePoint, TimeRange, TopEntry};
-pub use writer::{QueryLogWriter, WriterConfig};
+pub use writer::{QueryLogCounters, QueryLogWriter, WriterConfig, querylog_counters};
 
 /// Failure of an observe operation.
 #[derive(Debug, thiserror::Error)]

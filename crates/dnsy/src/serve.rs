@@ -50,6 +50,7 @@ fn spawn_prefetch(engine: &Arc<Engine>, config: &Config) -> Option<JoinHandle<()
 pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -> Result<()> {
     warn_unsafe_config(&config);
     let store = open_store(&config)?;
+    warn_loose_key_files(&config);
     let mut builder = EngineBuilder::from_config(&config, &store)
         .await?
         .build_time(crate::build_time());
@@ -149,8 +150,46 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
     {
         tracing::warn!("query log flush timed out");
     }
+    if let Err(e) = store.optimize().await {
+        tracing::warn!(error = %e, "PRAGMA optimize failed at shutdown");
+    }
     tracing::info!("stopped");
     Ok(())
+}
+
+/// TLS private keys the server reads, by configuration key, whose mode lets group or others read
+/// them (always empty off Unix).
+fn loose_key_files(config: &Config) -> Vec<(&'static str, &Path)> {
+    let keys = [
+        ("api.tls_key", config.api.tls_key.as_deref()),
+        ("dot.key", config.dot.key.as_deref()),
+        ("doh.key", config.doh.key.as_deref()),
+    ];
+    keys.into_iter()
+        .filter_map(|(name, path)| Some((name, path?)))
+        .filter(|(_, path)| is_group_or_world_readable(path))
+        .collect()
+}
+
+#[cfg(unix)]
+fn is_group_or_world_readable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o044 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_group_or_world_readable(_path: &Path) -> bool {
+    false
+}
+
+fn warn_loose_key_files(config: &Config) {
+    for (name, path) in loose_key_files(config) {
+        tracing::warn!(
+            key = name,
+            path = %path.display(),
+            "TLS private key is readable by group or others; run chmod 600"
+        );
+    }
 }
 
 /// Everything the API needs from the running server: the engine (live policy changes), validation
@@ -448,5 +487,31 @@ mod tests {
         let mut config = Config::default();
         config.cache.enabled = false;
         assert!(spawn_prefetch(&engine(&config), &config).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_or_world_readable_tls_keys_are_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let key = |name: &str, mode: u32| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, "key").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            p
+        };
+        let mut config = Config::default();
+        config.api.tls_key = Some(key("api.key", 0o600));
+        config.dot.key = Some(key("dot.key", 0o640));
+        config.doh.key = Some(key("doh.key", 0o604));
+        let loose: Vec<_> = loose_key_files(&config)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(loose, ["dot.key", "doh.key"]);
+        // Missing files and unset keys are not this check's business.
+        config.dot.key = Some(dir.path().join("absent.key"));
+        config.doh.key = None;
+        assert_eq!(loose_key_files(&config).len(), 0);
     }
 }
