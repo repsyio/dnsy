@@ -9,7 +9,7 @@ use axum::http::{Method, Request};
 use dnsy_config::Config;
 use dnsy_core::{DnssecStatus, Role, Scope};
 use dnsy_dnssec::{Clock as _, ManualClock, SystemClock};
-use dnsy_engine::{Engine, EngineBuilder};
+use dnsy_engine::{Engine, EngineBuilder, Services};
 use dnsy_proto::{Class, Header, Message, Opcode, Question, RData, Rcode, Record, RecordType};
 use dnsy_resolver::forward::DnssecPolicy as ResolverPolicy;
 use dnsy_resolver::groups::Exchange;
@@ -65,8 +65,11 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
     let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
     let zones = ZoneStore::open(dir.path().join("zones")).unwrap();
     let cfg = Config::default();
+    let mut services = Services::bare(&cfg);
+    services.zones = Some(Arc::clone(&zones));
     let engine = Arc::new(
         EngineBuilder::new(&cfg, NoUp)
+            .services(&services)
             .dnssec(
                 ResolverPolicy::from_options(&dnsy_engine::dnssec_options(&cfg.dnssec)).unwrap(),
             )
@@ -75,8 +78,7 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
     let clock = ManualClock::new(SystemClock.now());
     let mut state = ApiState::new(store.clone())
         .with_clock(Arc::new(clock.clone()))
-        .with_zones(Arc::clone(&zones))
-        .with_cache(Arc::clone(engine.cache()))
+        .with_services(&services)
         .with_validation(engine.clone());
     if wire_signing {
         let keys = KeyStore::open(
@@ -646,10 +648,12 @@ fn cache_entry(fx: &Fx) {
         do_bit: false,
         cd_bit: false,
     };
-    fx.engine
-        .cache()
+    fx.state
+        .cache
+        .as_ref()
+        .unwrap()
         .insert(key, &msg, DnssecStatus::Unchecked, Instant::now());
-    assert_eq!(fx.engine.cache().stats().entries, 1);
+    assert_eq!(fx.state.cache.as_ref().unwrap().stats().entries, 1);
 }
 
 #[tokio::test]
@@ -678,7 +682,11 @@ async fn validation_mode_patch_flushes_cache() {
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert_eq!(res.json()["validation"], "permissive");
-    assert_eq!(fx.engine.cache().stats().entries, 0, "mode change flushes");
+    assert_eq!(
+        fx.state.cache.as_ref().unwrap().stats().entries,
+        0,
+        "mode change flushes"
+    );
     assert_eq!(
         admin(&fx, Method::GET, url, None).await.json()["validation"],
         "permissive"
@@ -693,7 +701,7 @@ async fn validation_mode_patch_flushes_cache() {
         Some(json!({"validation": "permissive"})),
     )
     .await;
-    assert_eq!(fx.engine.cache().stats().entries, 1);
+    assert_eq!(fx.state.cache.as_ref().unwrap().stats().entries, 1);
 
     for bad in [
         json!({"validation": "loose"}),
@@ -715,7 +723,7 @@ async fn validation_mode_patch_flushes_cache() {
     .await;
     assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
-        fx.engine.cache().stats().entries,
+        fx.state.cache.as_ref().unwrap().stats().entries,
         1,
         "rejected patches change nothing"
     );
@@ -741,7 +749,11 @@ async fn nta_management_at_runtime() {
         json!(["broken.example.", "other.test."])
     );
     assert_eq!(res.json()["validation"], "strict", "mode untouched");
-    assert_eq!(fx.engine.cache().stats().entries, 0, "NTA change flushes");
+    assert_eq!(
+        fx.state.cache.as_ref().unwrap().stats().entries,
+        0,
+        "NTA change flushes"
+    );
     assert!(
         fx.engine
             .dnssec_policy()

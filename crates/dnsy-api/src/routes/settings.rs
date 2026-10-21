@@ -326,7 +326,7 @@ async fn apply(state: &ApiState, old: &Config, new: &Config) -> Result<(), ApiEr
     if new.filter.block_mode != old.filter.block_mode
         && let Some(engine) = &state.engine
     {
-        if let Some(manager) = engine.list_manager() {
+        if let Some(manager) = &state.lists {
             manager.set_block_mode(new.filter.block_mode);
             if let Err(e) = manager.reload().await {
                 manager.set_block_mode(old.filter.block_mode);
@@ -345,9 +345,9 @@ async fn apply(state: &ApiState, old: &Config, new: &Config) -> Result<(), ApiEr
             engine.set_rate_limit(new.limits.per_client_qps);
         }
     }
-    if let Some(engine) = &state.engine {
+    if let Some(cache) = &state.cache {
         let (old, new) = (&old.cache, &new.cache);
-        engine.cache().reconfigure(|c| {
+        cache.reconfigure(|c| {
             if new.min_ttl != old.min_ttl {
                 c.min_ttl = new.min_ttl;
             }

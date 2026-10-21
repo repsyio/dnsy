@@ -20,7 +20,9 @@ use dnsy_store::Store;
 use dnsy_zone::ZoneStore;
 use tempfile::TempDir;
 
-use crate::{Engine, EngineBuilder, Handler, RESPONSE_IP_LIST, RequestContext, ResponseIpPolicy};
+use crate::{
+    Engine, EngineBuilder, Handler, RESPONSE_IP_LIST, RequestContext, ResponseIpPolicy, Services,
+};
 
 mod dnssec;
 mod hardening;
@@ -341,7 +343,6 @@ async fn blocked_returns_nxdomain_with_ede() {
         &Config::default(),
         |b| b.filter(fb.build()),
     );
-    assert!(h.engine.list_manager().is_none());
     let r = h
         .engine
         .handle(ctx(), query("ads.example.", RecordType::A))
@@ -452,7 +453,6 @@ async fn no_upstreams_servfail_ede22() {
     assert_eq!(r.header.rcode, Rcode::ServFail);
     assert!(r.edns.is_none(), "no OPT for a client that sent none");
     engine.set_groups(Some(groups()));
-    assert!(engine.groups().is_some());
     let r = engine
         .handle(ctx(), query("www.example.", RecordType::A))
         .await;
@@ -718,7 +718,7 @@ async fn udp_upstream(silent: bool) -> SocketAddr {
     addr
 }
 
-async fn assembled(upstream: SocketAddr, timeout_ms: u64) -> (TempDir, Engine) {
+async fn assembled(upstream: SocketAddr, timeout_ms: u64) -> (TempDir, Engine, Services) {
     let dir = tempfile::tempdir().unwrap();
     let zones_dir = dir.path().join("zones");
     std::fs::create_dir_all(&zones_dir).unwrap();
@@ -733,15 +733,46 @@ async fn assembled(upstream: SocketAddr, timeout_ms: u64) -> (TempDir, Engine) {
         .add_custom_rule(dnsy_filter::RuleKind::Block, "ads.example")
         .await
         .unwrap();
+    let mut services = Services::open(&config, &store).await.unwrap();
+    assert!(services.take_querylog_task().is_some());
+    let client = dnsy_resolver::UpstreamClient::new(dnsy_resolver::UpstreamConfig {
+        timeout: Duration::from_millis(timeout_ms),
+        ..dnsy_resolver::UpstreamConfig::default()
+    })
+    .unwrap();
+    let mut builder = EngineBuilder::new(&config, client).services(&services);
+    builder = builder.dnssec(
+        dnsy_resolver::forward::DnssecPolicy::from_options(&crate::dnssec_options(&config.dnssec))
+            .unwrap(),
+    );
+    (dir, builder.build(), services)
+}
+
+#[tokio::test]
+async fn from_config_shim_takes_its_handles_from_services() {
+    let dir = tempfile::tempdir().unwrap();
+    let zones_dir = dir.path().join("zones");
+    std::fs::create_dir(&zones_dir).unwrap();
+    std::fs::write(zones_dir.join("home.test.json"), ZONE).unwrap();
+    let config = Config::from_toml(&format!(
+        "[zones]\ndir = {:?}\n[limits]\nopen_resolver = true\n",
+        zones_dir.display().to_string()
+    ))
+    .unwrap();
+    let store = Store::open(&dir.path().join("dnsy.db")).unwrap();
     let mut builder = EngineBuilder::from_config(&config, &store).await.unwrap();
     assert!(builder.take_querylog_task().is_some());
-    (dir, builder.build())
+    let engine = builder.build();
+    let local = engine
+        .handle(ctx(), query("nas.home.test.", RecordType::A))
+        .await;
+    assert!(local.header.aa);
 }
 
 #[tokio::test]
 async fn from_config_assembles_pipeline() {
     let upstream = udp_upstream(false).await;
-    let (_dir, engine) = assembled(upstream, 2000).await;
+    let (_dir, engine, services) = assembled(upstream, 2000).await;
     let local = engine
         .handle(ctx(), query("nas.home.test.", RecordType::A))
         .await;
@@ -764,20 +795,25 @@ async fn from_config_assembles_pipeline() {
             .iter()
             .all(|c| (ede::DNSSEC_BOGUS..=ede::NSEC_MISSING).contains(c))
     );
-    assert!(engine.zone_store().is_some());
-    assert!(engine.list_manager().is_some());
+    assert!(services.zones.is_some());
+    assert!(services.lists.is_some());
     let blocked = engine
         .handle(ctx(), query("ads.example.", RecordType::A))
         .await;
     assert_eq!(ede_codes(&blocked), [ede::FILTERED]);
-    let health = engine.groups().unwrap().health("default").unwrap();
+    let health = services
+        .groups
+        .load_full()
+        .unwrap()
+        .health("default")
+        .unwrap();
     assert_eq!(health[0].upstream.port, upstream.port());
 }
 
 #[tokio::test]
 async fn from_config_silent_upstream_servfails_within_deadline() {
     let upstream = udp_upstream(true).await;
-    let (_dir, engine) = assembled(upstream, 100).await;
+    let (_dir, engine, _services) = assembled(upstream, 100).await;
     let started = Instant::now();
     let r = engine
         .handle(ctx(), query("www.example.", RecordType::A))
@@ -790,14 +826,14 @@ async fn from_config_silent_upstream_servfails_within_deadline() {
 #[tokio::test]
 async fn from_config_serves_signed_zone_with_aa_never_ad() {
     let upstream = udp_upstream(false).await;
-    let (dir, engine) = assembled(upstream, 2000).await;
+    let (dir, engine, services) = assembled(upstream, 2000).await;
     let signed = ZONE.replace(
         "  ]}",
         "  ],\n  \"dnssec\":{\"enabled\":true,\"algorithm\":13,\"denial\":\"nsec\"}}",
     );
     std::fs::write(dir.path().join("zones").join("home.test.json"), signed).unwrap();
-    engine.zone_store().unwrap().reload().unwrap();
-    let signing = engine.zone_signing().unwrap();
+    services.zones.as_ref().unwrap().reload().unwrap();
+    let signing = services.signing.as_ref().unwrap();
     assert_eq!(signing.sign_due().await, 1);
 
     let mut q = query("nas.home.test.", RecordType::A);
@@ -825,7 +861,7 @@ async fn from_config_serves_signed_zone_with_aa_never_ad() {
             .chain(&r.answers)
             .all(|a| !matches!(a.rtype, RecordType::Rrsig | RecordType::Nsec))
     );
-    let keys = engine.zone_signing().unwrap().keys();
+    let keys = services.signing.as_ref().unwrap().keys();
     let home = Name::from_ascii("home.test.").unwrap();
     assert_eq!(keys.keys(&home).await.unwrap().len(), 1);
 }

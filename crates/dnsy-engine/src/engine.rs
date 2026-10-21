@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use dnsy_core::{DnssecStatus, Principal, Transport, Validation};
 use dnsy_filter::{
     Acl, AclAction, BlockMode, FilterSet, ListManager, RateLimiter, RateVerdict, Verdict,
@@ -36,7 +36,9 @@ use dnsy_resolver::{
     Cache, CacheKey, CacheLookup, Joined, RefreshGuard, Refreshes, Upstream, UpstreamClient,
     UpstreamError,
 };
-use dnsy_zone::{ZoneSigning, ZoneStore};
+use dnsy_zone::ZoneStore;
+
+use crate::services::GroupsHandle;
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::handler::{Admission, Handler, RequestContext};
@@ -103,9 +105,8 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) rate: ArcSwap<RateLimiter>,
     pub(crate) filter: Filters,
     pub(crate) response_ip: ArcSwap<ResponseIpPolicy>,
-    pub(crate) groups: ArcSwapOption<GroupSet>,
+    pub(crate) groups: GroupsHandle,
     pub(crate) zones: Option<Arc<ZoneStore>>,
-    pub(crate) zone_signing: Option<ZoneSigning>,
     pub(crate) cache: Arc<Cache>,
     pub(crate) exchange: E,
     pub(crate) sink: Option<Arc<dyn QueryEventSink>>,
@@ -230,29 +231,9 @@ fn principal_label(p: &Principal) -> String {
 }
 
 impl<E: Exchange> Engine<E> {
-    /// The cache, for flushing and statistics.
-    #[must_use]
-    pub fn cache(&self) -> &Arc<Cache> {
+    #[cfg(test)]
+    pub(crate) fn cache(&self) -> &Arc<Cache> {
         &self.cache
-    }
-
-    /// The zone store answering local zones, if any.
-    #[must_use]
-    pub fn zone_store(&self) -> Option<&Arc<ZoneStore>> {
-        self.zones.as_ref()
-    }
-
-    /// The signer of zones with `dnssec.enabled`, when wired by
-    /// [`crate::EngineBuilder::from_config`] (spawn its re-signing task; share its key store).
-    #[must_use]
-    pub fn zone_signing(&self) -> Option<&ZoneSigning> {
-        self.zone_signing.as_ref()
-    }
-
-    /// Current upstream groups (for health reporting).
-    #[must_use]
-    pub fn groups(&self) -> Option<Arc<GroupSet>> {
-        self.groups.load_full()
     }
 
     /// The current ACL snapshot.
@@ -269,16 +250,6 @@ impl<E: Exchange> Engine<E> {
     pub fn set_rate_limit(&self, qps: u32) {
         self.rate
             .store(Arc::new(RateLimiter::new(qps, RATE_LIMIT_KEYS)));
-    }
-
-    /// The blocklist manager, when the filter comes from persisted list sources (spawn its
-    /// `run` loop, refresh sources, reload after rule changes).
-    #[must_use]
-    pub fn list_manager(&self) -> Option<&ListManager> {
-        match &self.filter {
-            Filters::Lists(manager) => Some(manager),
-            Filters::Fixed(_) => None,
-        }
     }
 
     /// Changes how blocked names are answered. With persisted list sources, also call

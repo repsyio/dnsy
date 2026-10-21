@@ -10,8 +10,8 @@ use std::time::Duration;
 use dnsy_auth::{BootstrapCode, ClientCertService, SessionService, TokenService, UserService};
 use dnsy_core::{Role, UserId};
 use dnsy_dnssec::{Clock, SystemClock};
-use dnsy_engine::Engine;
-use dnsy_filter::{RuleStore, SourceStore};
+use dnsy_engine::{Engine, GroupsHandle, Services};
+use dnsy_filter::{ListManager, RuleStore, SourceStore};
 use dnsy_resolver::Cache;
 use dnsy_resolver::groups::GroupStore;
 use dnsy_store::Store;
@@ -41,6 +41,11 @@ pub struct ApiState {
     pub zones: Option<Arc<ZoneStore>>,
     /// The resolver cache; `None` answers cache endpoints with 503.
     pub cache: Option<Arc<Cache>>,
+    /// The blocklist manager; list routes fetch sources only with it.
+    pub lists: Option<ListManager>,
+    /// The live upstream groups the engine forwards through; the upstream routes read and swap
+    /// them.
+    pub live_groups: Option<GroupsHandle>,
     /// Show client addresses truncated to /24 (IPv4) or /48 (IPv6) (`querylog.redact_client_ip`).
     pub redact_client_ip: bool,
     /// Concurrent live-tail (SSE) connections, capped in total and per principal.
@@ -174,6 +179,8 @@ impl ApiState {
             cookie_secure: false,
             zones: None,
             cache: None,
+            lists: None,
+            live_groups: None,
             redact_client_ip: false,
             live_tail: Arc::new(LiveTails::new(
                 MAX_LIVE_TAILS,
@@ -260,6 +267,18 @@ impl ApiState {
         admin_reserve: usize,
     ) -> ApiState {
         self.live_tail = Arc::new(LiveTails::new(total, per_principal, admin_reserve));
+        self
+    }
+
+    /// Takes the cache, zones, signer, blocklist manager and live upstream groups from
+    /// `services`, the same handles the engine was built with.
+    #[must_use]
+    pub fn with_services(mut self, services: &Services) -> ApiState {
+        self.cache = Some(Arc::clone(&services.cache));
+        self.zones.clone_from(&services.zones);
+        self.signing.clone_from(&services.signing);
+        self.lists.clone_from(&services.lists);
+        self.live_groups = Some(Arc::clone(&services.groups));
         self
     }
 

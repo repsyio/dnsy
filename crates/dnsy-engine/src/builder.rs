@@ -6,31 +6,27 @@ use std::time::{Duration, Instant};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use dnsy_config::Config;
 use dnsy_filter::{
-    Acl, AclAction, BlockMode, FETCH_TIMEOUT, Fetcher, FilterError, FilterLimits, FilterSet,
-    FilterSetBuilder, ListManager, MAX_LIST_BYTES, RateLimiter, RefreshError, RuleStore,
-    SourceStore,
+    Acl, AclAction, BlockMode, FilterError, FilterLimits, FilterSet, FilterSetBuilder, ListManager,
+    RateLimiter, RefreshError, RuleStore,
 };
-use dnsy_observe::{QueryEventSink, QueryLogWriter, WriterConfig};
+use dnsy_observe::QueryEventSink;
 use dnsy_resolver::forward::{
     DnssecConfigError, DnssecOptions, DnssecPolicy, MAX_CONCURRENT_FETCHES, unix_now,
 };
-use dnsy_resolver::groups::{
-    Exchange, GroupError, GroupSet, GroupStore, GroupStoreError, SystemClock, ThreadRng,
-};
+use dnsy_resolver::groups::{Exchange, GroupError, GroupSet, GroupStoreError};
 use dnsy_resolver::{
     Cache, CacheOptions, PrefetchOptions, Refreshes, ServeStaleOptions, UpstreamClient,
     UpstreamConfig, UpstreamError,
 };
 use dnsy_store::Store;
-use dnsy_zone::{
-    KeyStore, KeyStoreError, ZoneError, ZoneSigning, ZoneStore, passphrase_from_environment,
-};
+use dnsy_zone::{KeyStoreError, ZoneError, ZoneStore};
 use std::sync::atomic::AtomicBool;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use crate::engine::{Engine, Filters, Now, PREFETCH_QUEUE, RATE_LIMIT_KEYS};
 use crate::response::ResponseIpPolicy;
+use crate::services::{GroupsHandle, Services};
 
 /// Why the engine could not be assembled.
 #[derive(Debug, thiserror::Error)]
@@ -100,9 +96,8 @@ pub struct EngineBuilder<E = UpstreamClient> {
     block_mode: BlockMode,
     response_ip: ResponseIpPolicy,
     zones: Option<Arc<ZoneStore>>,
-    zone_signing: Option<ZoneSigning>,
     cache: Arc<Cache>,
-    groups: Option<GroupSet>,
+    groups: GroupsHandle,
     exchange: E,
     sink: Option<Arc<dyn QueryEventSink>>,
     attempts: u32,
@@ -117,24 +112,16 @@ impl EngineBuilder<UpstreamClient> {
     /// Wires the full pipeline:
     /// - ACL rules (default allow) and the rate limit from the store, falling back to
     ///   `[limits] per_client_qps`;
-    /// - blocklists from the persisted list sources (seeded from `[filter] blocklists` on first
-    ///   start) answering in `[filter] block_mode`; the filter starts from the custom rules and
-    ///   fills as the caller runs [`dnsy_filter::ListManager::run`] (via [`Engine::list_manager`]);
-    /// - local zones from `[zones] dir` (the caller starts the watcher via
-    ///   [`Engine::zone_store`]); zones with `dnssec.enabled` are signed before this returns,
-    ///   with keys from the store's key table (passphrase from `DNSY_DNSSEC_PASSPHRASE` or
-    ///   `[dnssec] key_passphrase_file`); the caller spawns the re-signing task via
-    ///   [`Engine::zone_signing`];
-    /// - the cache from `[cache]`;
-    /// - upstream groups from the store, seeded from `[resolver] upstreams` on first start, and an
-    ///   upstream client with a per-attempt timeout of `timeout_ms`; overall deadline
+    /// - the store-backed services (blocklists, zones and signing, upstream groups, query-log
+    ///   writer) from [`Services::open`]; callers that need the handles (to run the background
+    ///   tasks, share them with the API) use [`Services`] directly and [`EngineBuilder::services`];
+    /// - an upstream client with a per-attempt timeout of `timeout_ms`; overall deadline
     ///   `timeout_ms * attempts`;
     /// - DNSSEC validation from `[dnssec]`: mode, trust anchors (inline and file), negative trust
     ///   anchors and clock skew; the clock-sanity floor defaults to
     ///   [`dnsy_resolver::forward::RELEASE_FLOOR_UNIX`] (the binary passes its build time with
     ///   [`EngineBuilder::build_time`]);
-    /// - the batched query-log writer when `[querylog] enabled` (take its task with
-    ///   [`EngineBuilder::take_querylog_task`] to await the final flush on shutdown).
+    /// - the query-log writer's task is available from [`EngineBuilder::take_querylog_task`].
     ///
     /// Must run inside a Tokio runtime.
     ///
@@ -142,11 +129,29 @@ impl EngineBuilder<UpstreamClient> {
     /// Unreadable zones directory, store failures, invalid stored groups, an unusable TLS
     /// setup for the upstream client, or bad trust anchors.
     pub async fn from_config(config: &Config, store: &Store) -> Result<Self, EngineError> {
+        let mut services = Services::open(config, store).await?;
+        let querylog_task = services.take_querylog_task();
+        let mut builder = Self::from_services(config, store, &services).await?;
+        builder.querylog_task = querylog_task;
+        Ok(builder)
+    }
+
+    /// Like [`EngineBuilder::from_config`], with the store-backed services already opened (the
+    /// binary shares them with the API and runs their background tasks).
+    ///
+    /// # Errors
+    /// Store failures reading the ACL rules, an unusable TLS setup for the upstream client, or
+    /// bad trust anchors.
+    pub async fn from_services(
+        config: &Config,
+        store: &Store,
+        services: &Services,
+    ) -> Result<Self, EngineError> {
         let client = UpstreamClient::new(UpstreamConfig {
             timeout: Duration::from_millis(config.resolver.timeout_ms),
             ..UpstreamConfig::default()
         })?;
-        let mut builder = Self::new(config, client);
+        let mut builder = Self::new(config, client).services(services);
         builder.dnssec = DnssecPolicy::from_options(&dnssec_options(&config.dnssec))?;
 
         let rules = RuleStore::new(store.clone());
@@ -162,60 +167,6 @@ impl EngineBuilder<UpstreamClient> {
         };
         if let Some(qps) = rules.rate_limit_qps().await? {
             builder.rate_qps = qps;
-        }
-
-        let sources = SourceStore::new(store.clone());
-        sources
-            .seed(&config.filter.blocklists, config.filter.refresh_interval)
-            .await?;
-        let lists = ListManager::new(
-            sources,
-            builder.block_mode,
-            FilterLimits::default(),
-            Fetcher::new(MAX_LIST_BYTES, FETCH_TIMEOUT),
-            Arc::new(dnsy_filter::SystemClock),
-        );
-        lists.reload().await?;
-        builder.filter = Filters::Lists(lists);
-
-        let zones = ZoneStore::open(&config.zones.dir)?;
-        let passphrase = passphrase_from_environment(
-            dnsy_config::PASSPHRASE_ENV,
-            config.dnssec.key_passphrase_file.as_deref(),
-        )?;
-        let keys = KeyStore::open(
-            store.clone(),
-            passphrase,
-            Arc::new(dnsy_dnssec::SystemClock),
-        );
-        let signing = ZoneSigning::new(Arc::clone(&zones), keys);
-        signing.sign_due().await;
-        builder.zones = Some(zones);
-        builder.zone_signing = Some(signing);
-
-        let groups = GroupStore::new(store.clone());
-        groups.seed_default(&config.resolver.upstreams).await?;
-        let specs = groups.list().await?;
-        if !specs.is_empty() {
-            builder.groups = Some(GroupSet::new(
-                specs,
-                Arc::new(SystemClock::new()),
-                Arc::new(ThreadRng),
-            )?);
-        }
-
-        if config.querylog.enabled {
-            let (writer, task) = QueryLogWriter::spawn(
-                store.clone(),
-                WriterConfig {
-                    redact_client_ip: config.querylog.redact_client_ip,
-                    sample: config.querylog.sample,
-                    max_size_mb: config.querylog.max_size_mb,
-                    ..WriterConfig::default()
-                },
-            );
-            builder.sink = Some(Arc::new(writer));
-            builder.querylog_task = Some(task);
         }
         Ok(builder)
     }
@@ -239,9 +190,8 @@ impl<E: Exchange> EngineBuilder<E> {
             block_mode: mode,
             response_ip: ResponseIpPolicy::default(),
             zones: None,
-            zone_signing: None,
             cache: Arc::new(Cache::new(cache_options(&config.cache))),
-            groups: None,
+            groups: Arc::new(ArcSwapOption::empty()),
             exchange,
             sink: None,
             attempts,
@@ -290,9 +240,27 @@ impl<E: Exchange> EngineBuilder<E> {
         self
     }
 
+    /// Sets the upstream groups (in the handle the builder holds, which [`Services`] shares).
     #[must_use]
-    pub fn groups(mut self, groups: GroupSet) -> Self {
-        self.groups = Some(groups);
+    pub fn groups(self, groups: GroupSet) -> Self {
+        self.groups.store(Some(Arc::new(groups)));
+        self
+    }
+
+    /// Takes the cache, upstream groups, zones, blocklists and query-log sink from `services`.
+    #[must_use]
+    pub fn services(mut self, services: &Services) -> Self {
+        self.cache = Arc::clone(&services.cache);
+        self.groups = Arc::clone(&services.groups);
+        if let Some(zones) = &services.zones {
+            self.zones = Some(Arc::clone(zones));
+        }
+        if let Some(lists) = &services.lists {
+            self.filter = Filters::Lists(lists.clone());
+        }
+        if let Some(sink) = &services.sink {
+            self.sink = Some(Arc::clone(sink));
+        }
         self
     }
 
@@ -350,9 +318,8 @@ impl<E: Exchange> EngineBuilder<E> {
             rate: ArcSwap::from_pointee(RateLimiter::new(self.rate_qps, RATE_LIMIT_KEYS)),
             filter: self.filter,
             response_ip: ArcSwap::from_pointee(self.response_ip),
-            groups: ArcSwapOption::from(self.groups.map(Arc::new)),
+            groups: self.groups,
             zones: self.zones,
-            zone_signing: self.zone_signing,
             cache: self.cache,
             exchange: self.exchange,
             sink: self.sink,

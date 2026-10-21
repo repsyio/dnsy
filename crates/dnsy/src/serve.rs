@@ -10,13 +10,10 @@ use dnsy_api::validation::ValidationControl;
 use dnsy_api::{ApiConfig, ApiState};
 use dnsy_auth::{ClientCertService, TokenService, UserService};
 use dnsy_config::{Config, Mtls};
-use dnsy_dnssec::RolloverTimings;
-use dnsy_engine::{Engine, EngineBuilder};
-use dnsy_proto::Name;
+use dnsy_engine::{Engine, EngineBuilder, Services};
 use dnsy_server::{
     Allowlist, DohConfig, DotConfig, MtlsMode, MtlsVerifier, Server, ServerConfig, TokenAuth,
 };
-use dnsy_zone::ZoneStore;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -25,8 +22,6 @@ use crate::cli::ServeArgs;
 use crate::http;
 use crate::{Error, Result, open_store};
 
-/// How often due zones are re-signed and key states advanced.
-const SIGN_INTERVAL: Duration = Duration::from_secs(60);
 /// How often the client-certificate allowlist is reloaded from the database.
 const ALLOWLIST_REFRESH: Duration = Duration::from_secs(30);
 /// How often the client CA bundle and CRL are re-read.
@@ -52,41 +47,35 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
     warn_unsafe_config(&config);
     let store = open_store(&config)?;
     warn_loose_key_files(&config);
-    let mut builder = EngineBuilder::from_config(&config, &store)
-        .await?
-        .build_time(crate::build_time());
-    let querylog_task = builder.take_querylog_task();
-    let engine = Arc::new(builder.build());
+    let mut services = Services::open(&config, &store).await?;
+    let querylog_task = services.take_querylog_task();
+    let engine = Arc::new(
+        EngineBuilder::from_services(&config, &store, &services)
+            .await?
+            .build_time(crate::build_time())
+            .build(),
+    );
     let mut background: Vec<JoinHandle<()>> = Vec::new();
 
     background.extend(spawn_prefetch(&engine, &config));
-    // Blocklists: refresh on schedule.
-    let lists = engine.list_manager().cloned();
-    if let Some(lists) = lists.clone() {
-        background.push(tokio::spawn(lists.run()));
-    }
-
-    // Zones: hot reload from disk, DNSSEC re-signing and key rollover timer.
-    let zones = engine.zone_store().cloned();
-    let _zone_watcher = zones.as_ref().map(ZoneStore::watch).transpose()?;
-    let signing = engine.zone_signing().cloned();
-    if let (Some(signing), Some(zones)) = (&signing, &zones) {
-        background.push(signing.clone().spawn(SIGN_INTERVAL));
-        let zones = Arc::clone(zones);
-        background.push(
-            signing
-                .keys()
-                .clone()
-                .spawn_timer(SIGN_INTERVAL, move |zone| rollover_timings(&zones, zone)),
-        );
-    }
+    // Blocklist refresh, zone hot reload, DNSSEC re-signing and key rollover.
+    let mut zone_background = services.spawn_background()?;
+    background.append(&mut zone_background.tasks);
 
     // DNS transports.
     let (server_config, mtls, allowlist) = server_config(&config, &store, &mut background)?;
     let server = Server::start(server_config, Arc::clone(&engine)).await?;
 
     // API.
-    let state = api_state(&config, &engine, &store, allowlist, &mut background).await?;
+    let state = api_state(
+        &config,
+        &engine,
+        &services,
+        &store,
+        allowlist,
+        &mut background,
+    )
+    .await?;
     let tls = match (&config.api.tls_cert, &config.api.tls_key) {
         (Some(cert), Some(key)) => Some(http::acceptor(cert, key)?),
         _ => None,
@@ -122,15 +111,7 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
         match signals.next().await {
             Event::Stop => break,
             Event::Reload => {
-                reload(
-                    &engine,
-                    config_path,
-                    zones.as_deref(),
-                    mtls.as_deref(),
-                    lists.as_ref(),
-                    signing.as_ref(),
-                )
-                .await;
+                reload(&engine, &services, config_path, mtls.as_deref()).await;
             }
         }
     }
@@ -147,6 +128,8 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
         task.abort();
         let _ = task.await;
     }
+    drop(zone_background);
+    drop(services);
     drop(engine);
     if let Some(task) = querylog_task
         && tokio::time::timeout(FLUSH_WAIT, task).await.is_err()
@@ -200,6 +183,7 @@ fn warn_loose_key_files(config: &Config) {
 async fn api_state(
     config: &Config,
     engine: &Arc<dnsy_engine::Engine>,
+    services: &Services,
     store: &dnsy_store::Store,
     allowlist: Option<Allowlist>,
     background: &mut Vec<JoinHandle<()>>,
@@ -210,14 +194,8 @@ async fn api_state(
         .with_validation(Arc::clone(engine) as Arc<dyn ValidationControl>)
         .with_dnssec_clock_flag(engine.dnssec_clock_flag())
         .with_cert_reload(cert_reload(allowlist, store))
-        .with_cache(Arc::clone(engine.cache()))
+        .with_services(services)
         .with_redact_client_ip(config.querylog.redact_client_ip);
-    if let Some(zones) = engine.zone_store() {
-        state = state.with_zones(Arc::clone(zones));
-    }
-    if let Some(signing) = engine.zone_signing() {
-        state = state.with_signing(signing.clone());
-    }
     if config.querylog.enabled {
         // Follows `PATCH /settings` changes of `querylog.retention_days`.
         background.push(dnsy_observe::spawn_retention_watch(
@@ -230,14 +208,6 @@ async fn api_state(
         state = state.with_bootstrap(Arc::new(code));
     }
     Ok(state)
-}
-
-/// Rollover timings of `zone` from its signing policy; `None` skips zones that no longer exist.
-fn rollover_timings(zones: &dnsy_zone::ZoneStore, zone: &str) -> Option<RolloverTimings> {
-    let name = Name::from_ascii(zone).ok()?.to_lowercase();
-    let snapshot = zones.snapshot();
-    let policy = snapshot.get(&name)?.dnssec.as_ref()?;
-    Some(policy.rollover_timings())
 }
 
 /// A configured `u32` limit as a `usize`.
@@ -331,32 +301,17 @@ fn tls_files(
 /// itself need a restart. TLS certificates reload on their own SIGHUP listener and file watcher.
 async fn reload(
     engine: &dnsy_engine::Engine,
+    services: &Services,
     config_path: &Path,
-    zones: Option<&dnsy_zone::ZoneStore>,
     mtls: Option<&MtlsVerifier>,
-    lists: Option<&dnsy_filter::ListManager>,
-    signing: Option<&dnsy_zone::ZoneSigning>,
 ) {
     tracing::info!("reloading (SIGHUP)");
-    if let Some(zones) = zones {
-        match zones.reload() {
-            Ok(()) => tracing::info!("zones reloaded"),
-            Err(e) => tracing::error!(error = %e, "zone reload failed; keeping previous zones"),
-        }
-    }
+    services.reload().await;
     if let Some(verifier) = mtls {
         match verifier.reload() {
             Ok(()) => tracing::info!("client CA bundle reloaded"),
             Err(e) => tracing::warn!(error = %e, "client CA reload failed; keeping previous"),
         }
-    }
-    if let Some(lists) = lists
-        && let Err(e) = lists.reload().await
-    {
-        tracing::warn!(error = %e, "blocklist reload failed; keeping previous");
-    }
-    if let Some(signing) = signing {
-        signing.sign_due().await;
     }
     reload_trust_anchors(engine, config_path);
 }
