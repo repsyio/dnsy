@@ -46,10 +46,11 @@ Dependency direction: `core` <- everything; `proto` <- `dnssec`, `zone`, `resolv
 | `just test` | `cargo nextest run --workspace` |
 | `just cov` | `cargo llvm-cov` gate: workspace lines >= 80%, `dnsy-proto` and `dnsy-dnssec` >= 90% |
 | `just e2e` | end-to-end suite |
+| `just e2e-ui` | browser end-to-end suite (Playwright, Chromium) against the real binary with the embedded UI |
 | `just web` | pnpm install, `ng lint`, `ng test --coverage`, `ng build` |
 | `just openapi` | regenerate `openapi/dnsy.json` |
 | `just docs` | rustdoc and mdBook into `target/site/` |
-| `just ci` | `check` + `test` + `cov` + `web`; the local merge gate |
+| `just ci` | `check` + `test` + `cov` + `web` + `e2e` + `e2e-ui`; the local merge gate |
 
 Required tools: `just`, `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `jq`. The toolchain is pinned in `rust-toolchain.toml`. Fast loop: `cargo nextest run -p <crate>`.
 

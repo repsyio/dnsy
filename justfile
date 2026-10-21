@@ -38,6 +38,13 @@ e2e:
 web:
     @if [ -f web/package.json ] && command -v node >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then cd web && pnpm install --frozen-lockfile && pnpm lint && pnpm ng test --coverage --no-watch && pnpm build && cd .. && just web-types-check; else echo "node/pnpm or web/ missing; skipping web"; fi
 
+# Browser end-to-end suite (Playwright, Chromium) against the real binary with the embedded UI.
+# Builds web/dist and `dnsy --features embed-ui`, installs Chromium when missing, type-checks and runs web/e2e.
+e2e-ui:
+    cd web && pnpm install --frozen-lockfile && pnpm build && pnpm exec playwright install chromium
+    cargo build -p dnsy --features embed-ui
+    cd web && DNSY_BIN="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/debug/dnsy" pnpm e2e
+
 # Regenerate web/src/app/api/schema.d.ts from openapi/dnsy.json.
 web-types:
     cd web && pnpm types && pnpm prettier --write src/app/api/schema.d.ts
@@ -74,7 +81,7 @@ docs:
     fi
 
 # Local merge gate until the pipelines epic exists.
-ci: check test cov web e2e
+ci: check test cov web e2e e2e-ui
 
 # Validate branding SVGs (wellformedness, viewBox, no external refs, size budget).
 check-svg:
