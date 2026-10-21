@@ -230,7 +230,7 @@ pub struct AbortRolloverInput {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportKeysInput {
-    /// Passphrase the bundle is encrypted under (at least 8 characters). It may differ from
+    /// Passphrase the bundle is encrypted under (at least 12 characters). It may differ from
     /// the key passphrase; keep it apart from the bundle.
     pub passphrase: String,
     /// Export only this zone's keys; omitted exports every zone's.
@@ -257,7 +257,7 @@ pub struct KeyBackup {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChangePassphraseInput {
-    /// The new key passphrase (at least 8 characters).
+    /// The new key passphrase (at least 12 characters).
     pub new_passphrase: String,
 }
 
@@ -810,7 +810,7 @@ async fn abort_rollover(
 // key backup and passphrase
 
 /// Shortest passphrase accepted for a bundle or the key store.
-const MIN_PASSPHRASE_LEN: usize = 8;
+const MIN_PASSPHRASE_LEN: usize = 12;
 
 fn passphrase(text: &str) -> Result<Passphrase, ApiError> {
     if text.chars().count() < MIN_PASSPHRASE_LEN {
@@ -822,11 +822,13 @@ fn passphrase(text: &str) -> Result<Passphrase, ApiError> {
 }
 
 /// Export the zone keys as a bundle encrypted under the given passphrase, for backup. The
-/// response holds ciphertext only; the passphrase and the keys are never logged.
+/// response holds ciphertext only; the passphrase and the keys are never logged. Refused with
+/// 403 when the API listener is plain HTTP.
 #[utoipa::path(post, path = "/dnssec/keys/export", tag = "dnssec", security(("bearer" = []), ("session" = [])),
     request_body = ExportKeysInput,
     responses(
         (status = 200, body = KeyBackup),
+        (status = 403, description = "Admin scope missing, or the API listener is plain HTTP", body = Problem, content_type = "application/problem+json"),
         (status = 404, body = Problem, content_type = "application/problem+json"),
         (status = 422, body = Problem, content_type = "application/problem+json"),
         (status = 503, body = Problem, content_type = "application/problem+json"),
@@ -837,6 +839,13 @@ async fn export_keys(
     Json(body): Json<ExportKeysInput>,
 ) -> Result<Json<KeyBackup>, ApiError> {
     let signing = signing(&state)?;
+    // The bundle holds every private key and its passphrase travels in the request body:
+    // never over a plain-HTTP hop.
+    if !state.cookie_secure {
+        return Err(ApiError::Forbidden(
+            "key export is refused on a plain-HTTP API listener; enable TLS or reach the API through a TLS-terminating proxy",
+        ));
+    }
     let bundle_pass = passphrase(&body.passphrase)?;
     let origin = match &body.zone {
         Some(z) => Some(existing(&state, z)?.1.origin.clone()),
