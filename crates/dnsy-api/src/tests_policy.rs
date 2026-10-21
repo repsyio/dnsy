@@ -104,7 +104,14 @@ async fn fx() -> Fx {
                 .0,
         );
     }
-    let app = build(state.clone(), ApiConfig { tls: false, ..ApiConfig::default() }, Router::new());
+    let app = build(
+        state.clone(),
+        ApiConfig {
+            tls: false,
+            ..ApiConfig::default()
+        },
+        Router::new(),
+    );
     let viewer = tokens.pop().unwrap();
     let operator = tokens.pop().unwrap();
     let admin = tokens.pop().unwrap();
@@ -1045,7 +1052,14 @@ async fn failed_allowlist_reload_is_an_error() {
         .state
         .clone()
         .with_cert_reload(Arc::new(|| Box::pin(async { Err("disk".to_owned()) })));
-    let app = build(state, ApiConfig { tls: false, ..ApiConfig::default() }, Router::new());
+    let app = build(
+        state,
+        ApiConfig {
+            tls: false,
+            ..ApiConfig::default()
+        },
+        Router::new(),
+    );
     let req = Request::builder()
         .method(Method::POST)
         .uri("/api/v1/client-certs")
@@ -1250,7 +1264,14 @@ async fn mutations_fail_closed_without_engine_or_cert_reload() {
         .await
         .unwrap()
         .0;
-    let app = build(state.clone(), ApiConfig { tls: false, ..ApiConfig::default() }, Router::new());
+    let app = build(
+        state.clone(),
+        ApiConfig {
+            tls: false,
+            ..ApiConfig::default()
+        },
+        Router::new(),
+    );
     let send = |method: Method, uri: &'static str, body: Option<Value>| {
         let app = app.clone();
         let token = token.clone();

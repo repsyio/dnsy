@@ -28,7 +28,13 @@ fn fixture_with(bootstrap: Option<Arc<BootstrapCode>>) -> Fixture {
     if let Some(code) = bootstrap {
         state = state.with_bootstrap(code);
     }
-    let app = router(state.clone(), ApiConfig { tls: false, ..ApiConfig::default() });
+    let app = router(
+        state.clone(),
+        ApiConfig {
+            tls: false,
+            ..ApiConfig::default()
+        },
+    );
     Fixture {
         state,
         app,
@@ -844,7 +850,13 @@ async fn secure_cookie_flag_follows_tls_config() {
     let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
     let state = ApiState::new(store);
     state.users.create("alice", PW, Role::Viewer).await.unwrap();
-    let app = router(state, ApiConfig { tls: true, ..ApiConfig::default() });
+    let app = router(
+        state,
+        ApiConfig {
+            tls: true,
+            ..ApiConfig::default()
+        },
+    );
     let r = req(
         Method::POST,
         "/api/v1/auth/login",
@@ -875,7 +887,10 @@ async fn secure_cookies_true_overrides_missing_tls() {
     let res = app.oneshot(r).await.unwrap();
     let cookies = set_cookies(&res);
     assert_eq!(cookies.len(), 2);
-    assert!(cookies.iter().all(|c| c.contains("; Secure")), "{cookies:?}");
+    assert!(
+        cookies.iter().all(|c| c.contains("; Secure")),
+        "{cookies:?}"
+    );
     assert!(
         res.headers()
             .contains_key(axum::http::header::STRICT_TRANSPORT_SECURITY)

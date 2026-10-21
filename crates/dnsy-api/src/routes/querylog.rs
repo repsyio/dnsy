@@ -13,14 +13,13 @@ use dnsy_observe::{Cursor, LogEntry, QueryLogQuery, SourceKind, redact_client_ip
 use dnsy_proto::{Rcode, RecordType};
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
-use tokio::sync::OwnedSemaphorePermit;
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::auth::{Read, RequireScope, Write};
 use crate::error::{ApiError, Problem};
-use crate::state::ApiState;
+use crate::state::{ApiState, LiveTailPermit};
 
 /// `Query` whose rejection is a problem+json 400.
 pub(crate) struct Params<T>(pub T);
@@ -412,7 +411,7 @@ struct Tail {
     last_id: i64,
     last_ts: Option<i64>,
     pending: VecDeque<Event>,
-    _permit: OwnedSemaphorePermit,
+    _permit: LiveTailPermit,
 }
 
 impl Tail {
@@ -472,18 +471,18 @@ impl Tail {
         (status = 429, description = "Too many live-tail connections", body = Problem, content_type = "application/problem+json"),
     ))]
 async fn stream_log(
-    _scope: RequireScope<Write>,
+    scope: RequireScope<Write>,
     State(state): State<ApiState>,
     Params(filter): Params<LogFilter>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let query = filter.to_query(&state)?;
-    let permit = state
-        .live_tail
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ApiError::Throttled {
-            retry_after_secs: 5,
-        })?;
+    let permit =
+        state
+            .live_tail
+            .acquire(scope.0.user, scope.0.role)
+            .ok_or(ApiError::Throttled {
+                retry_after_secs: 5,
+            })?;
     // Start after the newest existing row.
     let newest = search(
         &state.store,

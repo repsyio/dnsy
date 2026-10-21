@@ -32,7 +32,13 @@ impl Fx {
     }
 
     fn app(&self) -> Router {
-        router(self.state.clone(), ApiConfig { tls: false, ..ApiConfig::default() })
+        router(
+            self.state.clone(),
+            ApiConfig {
+                tls: false,
+                ..ApiConfig::default()
+            },
+        )
     }
 
     async fn token(&self, name: &str, role: Role, scopes: &[Scope]) -> String {
@@ -255,7 +261,7 @@ async fn sse_stream_emits_new_events() {
 
 #[tokio::test]
 async fn sse_requires_write_scope_and_is_capped() {
-    let f = Fx::new(|s| s.with_max_live_tails(1));
+    let f = Fx::new(|s| s.with_live_tail_limits(1, 1, 0));
     let viewer = f.viewer().await;
     let res = f
         .call(Method::GET, "/api/v1/querylog/stream", Some(&viewer))
@@ -518,7 +524,13 @@ async fn client_ips_are_redacted_when_configured() {
     g.ingest(vec![event("a.example.", now_ms())]).await;
     let mut state = g.state.clone();
     state.redact_client_ip = true;
-    let app = router(state, ApiConfig { tls: false, ..ApiConfig::default() });
+    let app = router(
+        state,
+        ApiConfig {
+            tls: false,
+            ..ApiConfig::default()
+        },
+    );
     let tk = g.viewer().await;
     let req = Request::builder()
         .uri("/api/v1/querylog")
@@ -588,4 +600,53 @@ async fn summary_reports_lost_query_log_events() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(s["querylog_dropped"], 2);
     assert_eq!(s["querylog_flush_errors"], 1);
+}
+
+#[tokio::test]
+async fn live_tail_cap_is_per_principal() {
+    let f = Fx::new(|s| s.with_live_tail_limits(8, 2, 0));
+    let a = f
+        .token("op-a", Role::Operator, &[Scope::ApiRead, Scope::ApiWrite])
+        .await;
+    let b = f
+        .token("op-b", Role::Operator, &[Scope::ApiRead, Scope::ApiWrite])
+        .await;
+    let uri = "/api/v1/querylog/stream";
+    let a1 = f.call(Method::GET, uri, Some(&a)).await;
+    let a2 = f.call(Method::GET, uri, Some(&a)).await;
+    assert_eq!(a1.status(), StatusCode::OK);
+    assert_eq!(a2.status(), StatusCode::OK);
+    let a3 = f.call(Method::GET, uri, Some(&a)).await;
+    assert_eq!(a3.status(), StatusCode::TOO_MANY_REQUESTS);
+    // Another principal is unaffected, and a closed stream frees its owner's slot.
+    assert_eq!(
+        f.call(Method::GET, uri, Some(&b)).await.status(),
+        StatusCode::OK
+    );
+    drop(a1);
+    assert_eq!(
+        f.call(Method::GET, uri, Some(&a)).await.status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn live_tail_keeps_a_reservation_for_admins() {
+    let f = Fx::new(|s| s.with_live_tail_limits(2, 2, 1));
+    let op = f
+        .token("op", Role::Operator, &[Scope::ApiRead, Scope::ApiWrite])
+        .await;
+    let admin = f
+        .token("root", Role::Admin, &[Scope::ApiRead, Scope::ApiWrite])
+        .await;
+    let uri = "/api/v1/querylog/stream";
+    let _first = f.call(Method::GET, uri, Some(&op)).await;
+    assert_eq!(
+        f.call(Method::GET, uri, Some(&op)).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        f.call(Method::GET, uri, Some(&admin)).await.status(),
+        StatusCode::OK
+    );
 }
