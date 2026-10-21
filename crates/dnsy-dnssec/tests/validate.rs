@@ -753,7 +753,7 @@ fn revoked_zsk_world(revoke: bool) -> (World, Message) {
         .serve(msg("example.", Dnskey, Rcode::NoError, signed_keys, vec![]));
 
     let rrset = vec![a("www.example.")];
-    let mut sig = match w
+    let signed = w
         .example
         .zsk
         .sign_rrset(
@@ -762,11 +762,9 @@ fn revoked_zsk_world(revoke: bool) -> (World, Message) {
             fixture::INCEPTION,
             fixture::EXPIRATION,
         )
-        .unwrap()
-        .data
-    {
-        RData::Rrsig(s) => s,
-        _ => unreachable!(),
+        .unwrap();
+    let RData::Rrsig(mut sig) = signed.data else {
+        unreachable!()
     };
     sig.key_tag = zsk.key_tag();
     let input = dnsy_proto::canonical::rrset_signing_input(&sig, &rrset);

@@ -180,7 +180,7 @@ async fn fetch_scrubs_unrelated_records_before_caching() {
     let got = f.fetch(q("example.", RecordType::Dnskey)).await.unwrap();
     assert_eq!(got.answers.len(), 1);
     assert_eq!(got.answers[0].rtype, RecordType::Dnskey);
-    assert!(got.authority.is_empty());
+    assert_eq!(got.authority.len(), 0);
 
     // A CD=1 client asking for the same name is served the cache entry: it must hold the
     // scrubbed message, not the upstream's extras.
@@ -194,7 +194,7 @@ async fn fetch_scrubs_unrelated_records_before_caching() {
     match rig.cache.get(&key, Instant::now()) {
         CacheLookup::Fresh { msg, .. } => {
             assert_eq!(msg.answers.len(), 1);
-            assert!(msg.authority.is_empty(), "{:?}", msg.authority);
+            assert_eq!(msg.authority.len(), 0, "{:?}", msg.authority);
             assert!(msg.answers.iter().all(|r| r.name == n("example.")));
         }
         other => panic!("fetch result not memoised: {other:?}"),

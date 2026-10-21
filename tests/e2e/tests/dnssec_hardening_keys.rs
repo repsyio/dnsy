@@ -80,7 +80,7 @@ async fn unopenable_keys_fail_readiness_instead_of_serving_unsigned() {
     // The zone is not served unsigned: SERVFAIL, never the data without signatures.
     let answer = udp_exchange(addr("udp"), &q).await;
     assert_eq!(answer.header.rcode, Rcode::ServFail);
-    assert!(answer.answers.is_empty());
+    assert_eq!(answer.answers.len(), 0);
 
     let http = reqwest::Client::new();
     let res = http
