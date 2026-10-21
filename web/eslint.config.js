@@ -35,6 +35,24 @@ module.exports = defineConfig([
     },
   },
   {
+    // Features talk to each other only through `shared`, `core` and `api`.
+    files: ['src/app/features/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex: '^\\.\\./[^./]',
+              message:
+                'Import across features is not allowed; move shared code under src/app/shared.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.html'],
     extends: [angular.configs.templateRecommended, angular.configs.templateAccessibility],
     rules: {},

@@ -18,12 +18,13 @@ import {
   MascotNotFoundComponent,
   MascotSuccessComponent,
 } from '../../shared/mascot';
-import { ConfirmDialog } from './confirm-dialog';
-import { ZoneDnssecTab } from '../dnssec/zone-dnssec-tab';
+import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
+import { ZoneDnssecTab } from './zone-dnssec-tab';
 import { RecordEditor } from './record-editor';
 import { RECORD_TYPES } from './record-validation';
 import type { RecordDraft } from './record-validation';
-import { ZonesService, downloadText } from './zones.service';
+import { ZonesService } from './zones.service';
+import { downloadText } from '../../shared/util/util';
 import type { RecordInput, RecordView, ZoneDetail } from './zones.service';
 
 const PAGE_SIZE = 50;

@@ -1,17 +1,19 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { ApiError } from '../../core/api-error';
 import { ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
 import { MascotLoadingComponent } from '../../shared/mascot';
-import { formatEpoch, messageOf } from '../admin-shared/util';
-import { MIN_PASSWORD, passwordStrength } from './password-strength';
+import { formatEpoch, messageOf } from '../../shared/util/util';
+import { MIN_PASSWORD, passwordStrength } from '../../shared/util/password-strength';
 
 /** Current user, password change, session info and sign out. */
 @Component({
   selector: 'app-profile-page',
-  imports: [MascotLoadingComponent],
+  imports: [MascotLoadingComponent, ReactiveFormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <h1 class="mb-6 text-2xl font-bold text-cyan">Profile</h1>
@@ -57,9 +59,13 @@ import { MIN_PASSWORD, passwordStrength } from './password-strength';
             type="password"
             autocomplete="new-password"
             aria-describedby="pp-hints"
-            [value]="next()"
-            (input)="next.set(val($event))"
+            [formControl]="nextCtl"
           />
+          @if (nextCtl.invalid && nextCtl.dirty) {
+            <p class="field-error mt-1" role="alert">
+              The new password needs at least {{ minPassword }} characters.
+            </p>
+          }
           <div id="pp-hints" class="mb-4 mt-1 text-xs text-muted" aria-live="polite">
             <p>Strength: {{ strength().label }}</p>
             @for (h of strength().hints; track h) {
@@ -106,7 +112,12 @@ export class ProfilePage {
   private readonly router = inject(Router);
 
   protected readonly current = signal('');
-  protected readonly next = signal('');
+  protected readonly minPassword = MIN_PASSWORD;
+  protected readonly nextCtl = new FormControl('', {
+    nonNullable: true,
+    validators: [Validators.required, Validators.minLength(MIN_PASSWORD)],
+  });
+  protected readonly next = toSignal(this.nextCtl.valueChanges, { initialValue: '' });
   protected readonly confirm = signal('');
   protected readonly error = signal<string | null>(null);
   protected readonly done = signal(false);
@@ -122,8 +133,7 @@ export class ProfilePage {
     event.preventDefault();
     this.done.set(false);
     if (!this.current()) return this.error.set('Enter your current password.');
-    if (this.next().length < MIN_PASSWORD)
-      return this.error.set(`The new password needs at least ${MIN_PASSWORD} characters.`);
+    if (this.nextCtl.invalid) return this.nextCtl.markAsDirty();
     if (this.next() !== this.confirm()) return this.error.set('The passwords do not match.');
     this.error.set(null);
     this.busy.set(true);
@@ -135,7 +145,7 @@ export class ProfilePage {
         }),
       );
       this.current.set('');
-      this.next.set('');
+      this.nextCtl.reset();
       this.confirm.set('');
       this.done.set(true);
     } catch (e) {

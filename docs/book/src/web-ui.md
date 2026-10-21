@@ -85,12 +85,30 @@ checked in. Regenerate after an API change with `just openapi` followed by `just
 
 | Command                | What it does                                                                                                                                                                   |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `just web`             | `pnpm install --frozen-lockfile`, lint (`ng lint` and Prettier), unit tests with coverage (>= 80%), production build, types drift check. Skipped when node or pnpm is missing. |
+| `just web`             | `pnpm install --frozen-lockfile`, `pnpm dedupe --check`, lint (`ng lint` and Prettier), unit tests with coverage (>= 80%), production build, types drift check. Skipped when node or pnpm is missing. |
 | `just web-types`       | regenerate the API types                                                                                                                                                       |
 | `cd web && pnpm start` | dev server on `http://localhost:4200` (proxy API calls to a running dnsy yourself)                                                                                             |
 
-The production build enforces an initial bundle budget of 300 kB (warning) and 400 kB (error), raw.
-The three.js login scene (DNSY-46) must stay in a lazy chunk.
+The production build enforces an initial bundle budget of 320 kB (warning) and 400 kB (error), raw,
+and an `anyComponentStyle` budget of 4 kB (warning) and 8 kB (error); `ng build` emits no budget
+warning. Measured initial total: 304.00 kB raw, 83.14 kB transferred, made of the framework chunk
+(151.64 kB), `main` (101.92 kB), `styles` (28.46 kB) and one shared chunk (21.36 kB). The three.js
+login scene (DNSY-46) must stay in a lazy chunk (546.80 kB, loaded only by `/login`).
+
+### Code layout
+
+Feature folders under `web/src/app/features/` never import each other: ESLint
+`no-restricted-imports` rejects `../<other-feature>/` imports. Shared code lives in
+`web/src/app/shared/` (`ui/` for `Dialog` and `ConfirmDialog`; `util/` for `copy.ts`, `util.ts`
+and `password-strength.ts`; `mascot/`), `web/src/app/core/` (API client, auth, the DNSSEC service
+and logic used by both the zones and DNSSEC pages) and `web/src/app/api/`. Test helpers are in
+`web/src/testing/`.
+
+### Dependencies
+
+`typescript-eslint` follows the version `angular-eslint` resolves, `@angular/compiler` is a dev
+dependency (the build compiles ahead of time), `pnpm.peerDependencyRules` accepts TypeScript 6 and
+`pnpm.overrides.vite >= 8.3.3` keeps `pnpm audit` clean.
 
 ## Mascot components
 
@@ -151,10 +169,12 @@ registered when Angular runs in dev mode, so production builds answer with the 4
 - **CSP:** works under `default-src 'self'`: no workers, blobs, `data:` URIs, eval or inline
   styles; the mascot texture is a same-origin file.
 - **Form:** labelled username and password fields, errors in a `role=alert` region, the Nox
-  loading mascot while the request runs. A 429 locks the form and counts down `retry_after_secs`.
+  loading mascot while the request runs. A 401 reads "Invalid username or password" (the same text for
+  unknown users), a 503 (password checks saturated) reads "The server is busy", and a 429 locks the
+  form and counts down `retry_after_secs`.
 - **First admin:** the API has no "no users yet" endpoint, so the page cannot detect it. The link
   "First run? Set up the admin account" switches the form to setup mode (one-time code printed at
-  server start, username, password of 8+ characters), which calls `POST /auth/bootstrap` and then
+  server start, username, password of 8+ characters, enforced with `Validators.minLength(8)`), which calls `POST /auth/bootstrap` and then
   signs in. A 409 (admin exists) returns to the sign-in form.
 
 ## Zones and records
@@ -240,6 +260,8 @@ from the stats API:
 - **Top lists**: top domains, top blocked and top clients (10 each) with proportional bars.
 - **Auto-refresh**: every 30 seconds, with a Pause/Resume button. Switching range reloads at once and
   discards responses for a range that is no longer selected.
+- **Dropped events**: a badge appears when `/stats/summary` reports `querylog_dropped > 0`, so a
+  full or failing query log writer is visible.
 - **States**: the loading, empty (no queries in the range) and error (with Retry) mascots; an alert
   banner when `GET /dnssec/status` reports an untrusted clock (validation suspended).
 

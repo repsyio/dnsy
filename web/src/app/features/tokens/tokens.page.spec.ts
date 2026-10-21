@@ -1,7 +1,7 @@
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { AuthService } from '../../core/auth.service';
-import { click, clickByText, mount, problem, type } from '../admin-shared/testing';
+import { click, clickByText, mount, problem, type } from '../../../testing/testing';
 import { scopesForRole } from './tokens.service';
 import { TokensPage } from './tokens.page';
 

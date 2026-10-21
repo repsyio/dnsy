@@ -38,6 +38,13 @@
     </div>
   }
 
+  @if (d.summary.querylog_dropped > 0) {
+    <div class="panel mb-6 border-orange text-orange" role="status" data-testid="dropped-badge">
+      {{ dropped(d.summary.querylog_dropped) }} query-log events were dropped, so the log is
+      incomplete. See the server log.
+    </div>
+  }
+
   <section aria-label="Summary" class="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
     @for (t of tiles(); track t.id) {
       <div class="panel" [attr.data-tile]="t.id">

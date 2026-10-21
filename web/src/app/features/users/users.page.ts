@@ -5,8 +5,8 @@ import {
   MascotErrorComponent,
   MascotLoadingComponent,
 } from '../../shared/mascot';
-import { formatEpoch, messageOf } from '../admin-shared/util';
-import { ConfirmDialog } from '../zones/confirm-dialog';
+import { formatEpoch, messageOf } from '../../shared/util/util';
+import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { UserDialog, UserDialogMode, UserFormValue } from './user-dialog';
 import { UserInfo, UsersService } from './users.service';
 

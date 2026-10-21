@@ -1,12 +1,13 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { forkJoin } from 'rxjs';
+import { AuthService } from '../../core/auth.service';
 import {
   MascotEmptyComponent,
   MascotErrorComponent,
   MascotLoadingComponent,
 } from '../../shared/mascot';
-import { formatEpoch, messageOf } from '../admin-shared/util';
-import { ConfirmDialog } from '../zones/confirm-dialog';
+import { formatEpoch, messageOf } from '../../shared/util/util';
+import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { FilteringService } from './filtering.service';
 import type { Blocklist, Format, Rule, RuleKind } from './filtering.service';
 
@@ -79,6 +80,17 @@ const FORMATS: Format[] = ['auto', 'hosts', 'domains', 'adblock'];
             <div class="flex items-end">
               <button class="btn w-full" type="submit" [disabled]="busy()">Add source</button>
             </div>
+            @if (isAdmin()) {
+              <label class="flex items-center gap-2 text-sm sm:col-span-6" for="bl-private">
+                <input
+                  id="bl-private"
+                  type="checkbox"
+                  [checked]="listAllowPrivate()"
+                  (change)="listAllowPrivate.set(checked($event))"
+                />
+                Allow private targets and local files (admin only)
+              </label>
+            }
           </form>
           @if (listError(); as e) {
             <p class="field-error mb-3" role="alert">{{ e }}</p>
@@ -256,6 +268,7 @@ const FORMATS: Format[] = ['auto', 'hosts', 'domains', 'adblock'];
 })
 export class FilteringPage {
   private readonly svc = inject(FilteringService);
+  private readonly auth = inject(AuthService);
 
   protected readonly formats = FORMATS;
   protected readonly lists = signal<Blocklist[]>([]);
@@ -271,6 +284,8 @@ export class FilteringPage {
   protected readonly listName = signal('');
   protected readonly listLocation = signal('');
   protected readonly listFormat = signal<Format>('auto');
+  protected readonly listAllowPrivate = signal(false);
+  protected readonly isAdmin = computed(() => this.auth.user()?.role === 'admin');
   protected readonly ruleKind = signal<RuleKind>('block');
   protected readonly ruleDomain = signal('');
 
@@ -280,6 +295,10 @@ export class FilteringPage {
 
   protected val(e: Event): string {
     return (e.target as HTMLInputElement).value;
+  }
+
+  protected checked(e: Event): boolean {
+    return (e.target as HTMLInputElement).checked;
   }
 
   protected asFormat(v: string): Format {
@@ -315,18 +334,26 @@ export class FilteringPage {
     }
     this.listError.set(null);
     this.busy.set(true);
-    this.svc.addBlocklist({ name, location, format: this.listFormat() }).subscribe({
-      next: (l) => {
-        this.busy.set(false);
-        this.lists.update((all) => [...all, l]);
-        this.listName.set('');
-        this.listLocation.set('');
-      },
-      error: (e: unknown) => {
-        this.busy.set(false);
-        this.listError.set(messageOf(e, 'Could not add the source.'));
-      },
-    });
+    this.svc
+      .addBlocklist({
+        name,
+        location,
+        format: this.listFormat(),
+        allow_private: this.listAllowPrivate(),
+      })
+      .subscribe({
+        next: (l) => {
+          this.busy.set(false);
+          this.lists.update((all) => [...all, l]);
+          this.listName.set('');
+          this.listLocation.set('');
+          this.listAllowPrivate.set(false);
+        },
+        error: (e: unknown) => {
+          this.busy.set(false);
+          this.listError.set(messageOf(e, 'Could not add the source.'));
+        },
+      });
   }
 
   protected toggle(l: Blocklist): void {

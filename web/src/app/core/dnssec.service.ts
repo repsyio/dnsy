@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
-import type { components } from '../../api/schema';
-import { ApiService } from '../../core/api.service';
+import type { components } from '../api/schema';
+import { ApiService } from './api.service';
 
 type Schemas = components['schemas'];
 export type DnssecView = Schemas['DnssecView'];

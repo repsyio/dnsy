@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { Type } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { apiInterceptor } from '../../core/api.interceptor';
+import { apiInterceptor } from '../app/core/api.interceptor';
 
 /** Mount `page` with the typed HTTP stack and a request controller. */
 export function mount<T>(page: Type<T>) {

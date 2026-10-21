@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { MascotErrorComponent, MascotLoadingComponent } from '../../shared/mascot';
-import { messageOf } from '../admin-shared/util';
+import { messageOf } from '../../shared/util/util';
 import { SettingsService } from './settings.service';
 import type { BlockMode, Settings } from './settings.service';
 

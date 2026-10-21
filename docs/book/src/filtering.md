@@ -100,7 +100,8 @@ file:
 - **Blocklist sources**: add a source by name, URL or file path and format (`auto`, `hosts`,
   `domains`, `adblock`); the table shows the entry count, the last fetch time and status, and lets
   you enable or disable a source, refresh it now (the outcome and entry count are shown) or remove
-  it after confirming.
+  it after confirming. Admins also see an "Allow private targets and local files" checkbox that
+  sends `allow_private`, needed for file paths and private addresses.
 - **Custom rules**: add a `block` or `allow` rule for a domain (it covers the name and everything below it); remove a rule after
   confirming. Allow rules win over blocklists, as described above.
 

@@ -5,9 +5,9 @@ import {
   MascotErrorComponent,
   MascotLoadingComponent,
 } from '../../shared/mascot';
-import { formatEpoch, messageOf } from '../admin-shared/util';
-import { ConfirmDialog } from '../zones/confirm-dialog';
-import { copyText, dohUrl } from './copy';
+import { formatEpoch, messageOf } from '../../shared/util/util';
+import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
+import { copyText, dohUrl } from '../../shared/util/copy';
 import { SecretDialog } from './secret-dialog';
 import { CreatedToken, TokenInfo, TokensService, scopesForRole } from './tokens.service';
 

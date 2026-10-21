@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
-import { Dialog } from '../zones/dialog';
-import { MIN_PASSWORD, passwordStrength } from '../profile/password-strength';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
+import { Dialog } from '../../shared/ui/dialog';
+import { MIN_PASSWORD, passwordStrength } from '../../shared/util/password-strength';
 import { ROLES } from './users.service';
 
 export type UserDialogMode = 'create' | 'role' | 'password';
@@ -13,7 +15,7 @@ export interface UserFormValue {
 /** One form for the three user edits: create, change role, reset password. */
 @Component({
   selector: 'app-user-dialog',
-  imports: [Dialog],
+  imports: [Dialog, ReactiveFormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <app-dialog [heading]="heading()" (closed)="cancelled.emit()">
@@ -38,9 +40,13 @@ export interface UserFormValue {
             type="password"
             autocomplete="new-password"
             aria-describedby="ud-strength"
-            [value]="password()"
-            (input)="password.set(val($event))"
+            [formControl]="passwordCtl"
           />
+          @if (passwordCtl.invalid && passwordCtl.dirty) {
+            <p class="field-error mt-1" role="alert">
+              The password needs at least {{ minPassword }} characters.
+            </p>
+          }
           <p id="ud-strength" class="mb-4 mt-1 text-xs text-muted" aria-live="polite">
             Strength: {{ strength().label }}
             @if (strength().hints.length > 0) {
@@ -91,7 +97,12 @@ export class UserDialog {
 
   protected readonly roles = ROLES;
   protected readonly username = signal('');
-  protected readonly password = signal('');
+  protected readonly minPassword = MIN_PASSWORD;
+  protected readonly passwordCtl = new FormControl('', {
+    nonNullable: true,
+    validators: [Validators.required, Validators.minLength(MIN_PASSWORD)],
+  });
+  protected readonly password = toSignal(this.passwordCtl.valueChanges, { initialValue: '' });
   protected readonly role = signal<string | null>(null);
   protected readonly localError = signal<string | null>(null);
   protected readonly strength = computed(() => passwordStrength(this.password()));
@@ -121,8 +132,8 @@ export class UserDialog {
       this.localError.set('Enter a username.');
       return;
     }
-    if (mode !== 'role' && this.password().length < MIN_PASSWORD) {
-      this.localError.set(`The password needs at least ${MIN_PASSWORD} characters.`);
+    if (mode !== 'role' && this.passwordCtl.invalid) {
+      this.passwordCtl.markAsDirty();
       return;
     }
     this.localError.set(null);
