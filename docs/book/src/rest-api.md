@@ -1,7 +1,7 @@
 # REST API
 
-The API lives under `/api/v1`. The generated reference is served by the running site at
-[/api/](../api/); the machine-readable OpenAPI 3.1 document is served at `/api/openapi.json` and
+The API lives under `/api/v1`. The rendered reference (Redoc) is on the docs site at
+[/rest-api/](../rest-api/); the machine-readable OpenAPI 3.1 document is served at `/api/openapi.json` and
 checked in as `openapi/dnsy.json`.
 
 ## Probes
