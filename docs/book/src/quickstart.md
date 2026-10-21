@@ -55,10 +55,12 @@
 | `dnsy serve [--ready-file F]` | run the DNS listeners and the API; `--ready-file` writes the bound addresses as JSON (useful with port 0) |
 | `dnsy config check` | validate the configuration |
 | `dnsy migrate [--status]` | apply database migrations, or only report them |
-| `dnsy user create\|reset-password\|list` | manage users (`--password-stdin`, else `DNSY_PASSWORD`, else generated) |
+| `dnsy user create\|reset-password\|disable\|enable\|list` | manage users (`--password-stdin`, else `DNSY_PASSWORD`, else generated); a disabled user cannot log in and their sessions and tokens stop working |
 | `dnsy token create --user U --name N --scope S [--expires-days D]` | issue a token |
 | `dnsy zone export <name> [--signed]` | print a zone as BIND text; `--signed` includes DNSSEC records |
 | `dnsy dnssec keys list\|generate\|rollover\|ds <zone>` | inspect and manage signing keys, print DS records for the registrar |
+| `dnsy dnssec ds-confirmed <zone>`, `dnsy dnssec rollover abort <zone>` | confirm the registrar published the new DS; abort a rollover that has not switched keys |
+| `dnsy dnssec keys export\|import <file>`, `dnsy dnssec passphrase change` | encrypted key backup and restore; re-encrypt all keys under a new passphrase |
 | `dnsy cache flush [<name>] [--subtree]` | flush a running server's cache through the API (`--token` or `DNSY_TOKEN`, `--url` to override) |
 | `dnsy openapi` | print the OpenAPI document |
 | `dnsy version` | print the version and build time |

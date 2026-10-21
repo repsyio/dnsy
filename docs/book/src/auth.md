@@ -21,6 +21,14 @@ The web UI uses a server-side session with a 256-bit random id (stored hashed). 
 after 30 minutes without use or 12 hours after login, whichever comes first. Logging in again
 discards the presented session and issues a new id.
 
+## Disabling users
+
+`PATCH /users/{id}` with `{"disabled": true}` disables an account: login fails like a wrong
+password, the user's sessions are deleted at once and their API and DoH tokens are refused (401)
+until `{"disabled": false}`; old sessions stay gone. The last active admin cannot be disabled,
+demoted or deleted (409), so an installation cannot lock itself out; a disabled admin does not
+count as one. `dnsy user disable|enable <username>` does the same offline.
+
 ## Login throttling
 
 After 5 failed logins for the same username and client IP within 15 minutes, further attempts

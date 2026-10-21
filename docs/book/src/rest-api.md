@@ -37,7 +37,7 @@ Credentials are never logged: request tracing records only method, path, status 
 | `POST /api/v1/auth/bootstrap` | none | `{code, username, password}`; creates the first admin with the one-time code printed at startup. 401 for a wrong or expired code, 409 once any user exists |
 | `PUT /api/v1/auth/me/password` | session | `{current_password, new_password}`; ends every session of the user and returns fresh cookies for this client |
 | `GET/POST /api/v1/users` | admin | list, create `{username, password, role}` |
-| `GET/PATCH/DELETE /api/v1/users/{id}` | admin | PATCH takes `role` and/or `password`. 409 when it would remove or demote the last admin |
+| `GET/PATCH/DELETE /api/v1/users/{id}` | admin | PATCH takes `role`, `password` and/or `disabled`. `disabled: true` blocks login, ends the user's sessions and makes their tokens fail (401) until `disabled: false`; users show `disabled` and `disabled_at`. 409 when it would remove, demote or disable the last active admin |
 | `GET/POST /api/v1/tokens` | read / session | list own tokens (admins: all); create `{name, scopes, expires_at?}` |
 | `DELETE /api/v1/tokens/{id}` | read | revoke an own token (admins: any); other users' tokens answer 404 |
 
@@ -103,15 +103,18 @@ without the engine. Every route that changes something needs the `admin` scope (
 
 | Endpoint | Scope | Purpose |
 | --- | --- | --- |
-| `GET /api/v1/zones/{name}/dnssec` | read | policy (`enabled`, `algorithm`, `key_layout`, `denial`, `nsec3`, validity, refresh, DNSKEY TTL), keys that are not removed, `next_resign`, `rollover` and `keys_encrypted` |
-| `PUT /api/v1/zones/{name}/dnssec` | admin | `{enabled, ...}`: enable, disable or change the policy; fields left out keep their value. Writes the zone file's `dnssec` block. Enabling creates the keys and signs the zone before the response. Algorithms other than 13 and 15, bad NSEC3 parameters and bad validity settings are 422 |
+| `GET /api/v1/zones/{name}/dnssec` | read | policy (`enabled`, `algorithm`, `key_layout`, `denial`, `nsec3`, validity, refresh, DNSKEY TTL), `propagation_delay`, keys that are not removed, `next_resign`, `rollover` (`state` plus `rollovers`, every role under way) and `keys_encrypted` |
+| `PUT /api/v1/zones/{name}/dnssec` | admin | `{enabled, ...}`: enable, disable or change the policy; fields left out keep their value. Writes the zone file's `dnssec` block. Enabling creates the keys and signs the zone before the response, and is idempotent: repeating it never adds keys. `propagation_delay` (seconds, 0 to 604800, default 3600) is part of the policy. Algorithms other than 13 and 15, bad NSEC3 parameters and bad validity settings are 422 |
 | `GET /api/v1/zones/{name}/dnssec/keys` | read | all keys of the zone, removed ones included (public metadata only) |
 | `POST /api/v1/zones/{name}/dnssec/keys` | admin | `{role, algorithm?}` generates a key in state `generated`; 201. The zone needs signing enabled (409) |
 | `POST /api/v1/zones/{name}/dnssec/keys/{id}/rollover` | admin | `{algorithm?}` (body optional) starts a rollover of an active key's role; 202 with the incoming key. 409 when that role already has a rollover or the key is not active |
 | `POST /api/v1/zones/{name}/dnssec/keys/{id}/ds-confirmed` | admin | records that the key's DS is at the parent; 204. Lets a KSK or CSK rollover proceed |
+| `POST /api/v1/zones/{name}/dnssec/rollover/abort` | admin | `{role?}` (body optional) withdraws the incoming key of that role, or of every role, and keeps the active key; 200 with the zone's DNSSEC state. 409 when no rollover is in progress (or the new key already became active) |
+| `POST /api/v1/dnssec/keys/export` | admin | `{passphrase, zone?}` returns `{bundle}`, the zone keys (all zones when `zone` is omitted) as base64 of a bundle encrypted under `passphrase` (at least 8 characters; 422 otherwise). `dnsy dnssec keys import` restores it |
+| `POST /api/v1/dnssec/passphrase` | admin | `{new_passphrase}` re-encrypts every stored key under the new passphrase in one transaction (all or none) and switches the server to it; 200 `{keys_reencrypted}`. Update `DNSY_DNSSEC_PASSPHRASE` or the passphrase file before the next start. The secrets are never logged or returned |
 | `GET /api/v1/zones/{name}/dnssec/ds` | read | DS records (SHA-256 then SHA-384) and DNSKEY records of the published and active KSKs and CSKs. JSON, or `Accept: text/plain` for zone-file lines |
-| `GET /api/v1/settings/dnssec` | read | `validation` (`off`, `permissive`, `strict`), `negative_trust_anchors`, and the read-only `trust_anchors` (owner, key tag, algorithm, digest type, digest) |
-| `PATCH /api/v1/settings/dnssec` | admin | `{validation?, negative_trust_anchors?}`; applied at once. A change flushes the resolver cache. The list replaces the old one; the root cannot be an anchor (422) |
+| `GET /api/v1/settings/dnssec` | read | `validation` (`off`, `permissive`, `strict`), `negative_trust_anchors` (names) and `negative_trust_anchor_entries` (`name`, `expires_at`; expired anchors are left out), and the read-only `trust_anchors` (owner, key tag, algorithm, digest type, digest) |
+| `PATCH /api/v1/settings/dnssec` | admin | `{validation?, negative_trust_anchors?}`; applied at once. A change flushes the resolver cache. The list replaces the old one; an entry is a name or `{name, expires_at}` (Unix time in the future, after which the anchor stops applying; 422 otherwise). The root cannot be an anchor (422) |
 | `GET /api/v1/dnssec/status` | read | validation mode, `clock_trusted`, answer counts by DNSSEC status for the last 24 hours, `secure`, `bogus`, `signed_zones` |
 
 Key responses carry `id`, `role`, `algorithm`, `key_tag`, `state` and the state timestamps
