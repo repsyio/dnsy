@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dnsy_store::{Store, StoreError};
@@ -35,12 +35,44 @@ impl Default for WriterConfig {
     }
 }
 
+#[derive(Default)]
+struct Counters {
+    dropped: AtomicU64,
+    flush_errors: AtomicU64,
+}
+
+/// The counters of the most recently started writer: one query log per process, readable by the
+/// API without a handle on the writer.
+static CURRENT: Mutex<Option<Arc<Counters>>> = Mutex::new(None);
+
+/// Events lost by the query log since the writer started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueryLogCounters {
+    /// Events dropped because the channel was full or a flush failed.
+    pub dropped: u64,
+    /// Batches that failed to write.
+    pub flush_errors: u64,
+}
+
+/// Loss counters of the running query-log writer (zero when none was started).
+#[must_use]
+pub fn querylog_counters() -> QueryLogCounters {
+    let current = CURRENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    current.map_or_else(QueryLogCounters::default, |c| QueryLogCounters {
+        dropped: c.dropped.load(Ordering::Relaxed),
+        flush_errors: c.flush_errors.load(Ordering::Relaxed),
+    })
+}
+
 /// Non-blocking sink feeding a batched SQLite writer task. Cloning shares the
-/// channel and the dropped counter.
+/// channel and the loss counters.
 #[derive(Clone)]
 pub struct QueryLogWriter {
     tx: mpsc::Sender<QueryEvent>,
-    dropped: Arc<AtomicU64>,
+    counters: Arc<Counters>,
 }
 
 impl QueryLogWriter {
@@ -49,7 +81,11 @@ impl QueryLogWriter {
     #[must_use]
     pub fn spawn(store: Store, config: WriterConfig) -> (QueryLogWriter, JoinHandle<()>) {
         let (writer, rx) = Self::channel(config.channel_capacity);
-        let task = tokio::spawn(run(store, config, rx));
+        *CURRENT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::clone(&writer.counters));
+        let task = tokio::spawn(run(store, config, rx, Arc::clone(&writer.counters)));
         (writer, task)
     }
 
@@ -57,27 +93,38 @@ impl QueryLogWriter {
         let (tx, rx) = mpsc::channel(capacity);
         let writer = QueryLogWriter {
             tx,
-            dropped: Arc::new(AtomicU64::new(0)),
+            counters: Arc::new(Counters::default()),
         };
         (writer, rx)
     }
 
-    /// Events dropped because the channel was full.
+    /// Events dropped because the channel was full or their batch failed to write.
     #[must_use]
     pub fn dropped(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+        self.counters.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Batches that failed to write.
+    #[must_use]
+    pub fn flush_errors(&self) -> u64 {
+        self.counters.flush_errors.load(Ordering::Relaxed)
     }
 }
 
 impl QueryEventSink for QueryLogWriter {
     fn record(&self, ev: QueryEvent) {
         if self.tx.try_send(ev).is_err() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
-async fn run(store: Store, config: WriterConfig, mut rx: mpsc::Receiver<QueryEvent>) {
+async fn run(
+    store: Store,
+    config: WriterConfig,
+    mut rx: mpsc::Receiver<QueryEvent>,
+    counters: Arc<Counters>,
+) {
     let max_batch = config.max_batch.max(1);
     while let Some(first) = rx.recv().await {
         let deadline = Instant::now() + config.flush_interval;
@@ -91,6 +138,8 @@ async fn run(store: Store, config: WriterConfig, mut rx: mpsc::Receiver<QueryEve
         let redact = config.redact_client_ip;
         let n = batch.len();
         if let Err(e) = store.write(move |tx| flush(tx, &batch, redact)).await {
+            counters.flush_errors.fetch_add(1, Ordering::Relaxed);
+            counters.dropped.fetch_add(n as u64, Ordering::Relaxed);
             tracing::warn!(error = %e, dropped = n, "query log flush failed");
         }
     }
@@ -252,5 +301,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(client, "192.0.2.0");
+    }
+
+    #[tokio::test]
+    async fn failed_flushes_are_counted() {
+        let (store, _d) = open_store();
+        store
+            .write(|t| Ok(t.execute_batch("DROP TABLE query_log")?))
+            .await
+            .unwrap();
+        let (w, task) = QueryLogWriter::spawn(store.clone(), WriterConfig::default());
+        for _ in 0..3 {
+            w.record(event("a.example.", 1));
+        }
+        let counters = Arc::clone(&w.counters);
+        drop(w);
+        task.await.unwrap();
+        assert_eq!(counters.flush_errors.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            counters.dropped.load(Ordering::Relaxed),
+            3,
+            "every event of the failed batch is lost"
+        );
+        assert_eq!(
+            querylog_counters(),
+            QueryLogCounters {
+                dropped: 3,
+                flush_errors: 1
+            }
+        );
     }
 }
