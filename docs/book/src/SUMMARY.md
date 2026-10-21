@@ -3,6 +3,7 @@
 [Introduction](introduction.md)
 
 - [Install](install.md)
+- [Releases](release.md)
 - [Quickstart](quickstart.md)
 - [Configuration reference](configuration.md)
 - [Zones](zones.md)

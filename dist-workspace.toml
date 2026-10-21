@@ -1,0 +1,40 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for cargo-dist (https://opensource.axo.dev/cargo-dist/). Regenerate .github/workflows/release.yml
+# with `dist generate` after editing; see docs/book/src/release.md.
+[dist]
+# The version of cargo-dist to use (pinned; CI installs exactly this release).
+cargo-dist-version = "0.33.1"
+# CI backend to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# Release only the `dnsy` binary, with the web UI compiled in (web/dist is built in build-setup.yml first).
+precise-builds = true
+features = ["embed-ui"]
+# Checksum every artifact (sha256) and publish a unified sha256.sum
+checksum = "sha256"
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Do not build on pull requests (CI does that); releases only run on version tags
+pr-run-mode = "skip"
+allow-dirty = ["ci"]
+# Build prerequisites for every build job: node, pnpm, the web UI, musl-tools
+github-build-setup = "build-setup.yml"
+# Extra jobs: run the embed-ui tests before any artifact is built
+plan-jobs = ["./release-verify"]
+# Native arm64 Linux runners (no cross-compilation)
+[dist.github-custom-runners]
+aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
+aarch64-unknown-linux-musl = "ubuntu-24.04-arm"

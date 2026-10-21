@@ -12,6 +12,10 @@ build = "build.rs"
 # Embed the web UI from web/dist (build it first: `just build`).
 embed-ui = ["dnsy-api/embed-ui"]
 
+[package.metadata.dist]
+# `publish = false` hides the package from cargo-dist; opt back in (dist-workspace.toml).
+dist = true
+
 [[bin]]
 name = "dnsy"
 path = "src/main.rs"

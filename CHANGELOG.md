@@ -16,6 +16,10 @@ All notable changes to DNSY are documented here. The format follows
 
 ### Added
 
+- Release pipeline: pushing a `v*` tag builds `dnsy` with the web UI embedded for Linux (gnu and musl,
+  x86_64 and aarch64), macOS (x86_64 and aarch64) and Windows (x86_64) with cargo-dist, and publishes
+  archives, SHA-256 checksums and shell and PowerShell installers to a GitHub Release. See
+  `docs/book/src/release.md`.
 - DNS over UDP and TCP with EDNS0, Extended DNS Errors, truncation, TCP pipelining and bounded
   connection handling.
 - DNS over TLS with optional or required mTLS (client CA plus a certificate allowlist) and DNS over
