@@ -62,15 +62,26 @@ pub fn wire(m: &Message) -> Vec<u8> {
     m.encode(65_535).expect("encode query")
 }
 
-/// Sends raw bytes over UDP; `None` when nothing came back within `wait`.
+/// Sends raw bytes over UDP; `None` when nothing came back within `wait`. Only a datagram from
+/// `addr` that echoes the query id is a reply: the client socket is unconnected on a shared
+/// loopback, so a late answer meant for an earlier owner of the same ephemeral port (another
+/// test, another process) must not be mistaken for ours.
 pub async fn udp_raw(addr: SocketAddr, bytes: &[u8], wait: Duration) -> Option<Vec<u8>> {
     let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind client");
     socket.send_to(bytes, addr).await.expect("send");
     let mut buf = vec![0u8; 65_535];
-    match tokio::time::timeout(wait, socket.recv_from(&mut buf)).await {
-        Ok(Ok((n, _))) => Some(buf[..n].to_vec()),
-        _ => None,
-    }
+    let id = bytes.get(..2);
+    let reply = async {
+        loop {
+            let Ok((n, from)) = socket.recv_from(&mut buf).await else {
+                return None;
+            };
+            if from == addr && buf.get(..2) == id {
+                return Some(buf[..n].to_vec());
+            }
+        }
+    };
+    tokio::time::timeout(wait, reply).await.ok().flatten()
 }
 
 /// One UDP exchange; panics when there is no reply within the default deadline.
@@ -288,5 +299,31 @@ async fn finish(b: reqwest::RequestBuilder) -> DohResponse {
         status,
         headers,
         body,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn udp_raw_ignores_datagrams_that_are_not_the_servers_reply() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let stranger = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        let answering = tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            let (n, client) = server.recv_from(&mut buf).await.unwrap();
+            // A foreign datagram first (someone else's late answer to a recycled port), the
+            // server echoing a different id second, then the real reply.
+            stranger.send_to(&buf[..n], client).await.unwrap();
+            let mut wrong_id = buf[..n].to_vec();
+            wrong_id[0] ^= 0xff;
+            server.send_to(&wrong_id, client).await.unwrap();
+            server.send_to(b"\x12\x34reply", client).await.unwrap();
+        });
+        let got = udp_raw(addr, b"\x12\x34query", Duration::from_secs(5)).await;
+        answering.await.unwrap();
+        assert_eq!(got.as_deref(), Some(&b"\x12\x34reply"[..]));
     }
 }

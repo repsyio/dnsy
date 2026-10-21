@@ -740,7 +740,7 @@ async fn an_invalid_file_on_disk_is_reported_and_the_old_zone_keeps_serving() {
     assert_eq!(
         first_a(&r).as_deref(),
         Some("192.0.2.7"),
-        "the last good version still answers"
+        "the last good version still answers: {r:?}"
     );
     assert!(api.get("/zones/example.test.", admin).await.ok(200)["load_error"].is_string());
     // Fixing the file clears the error.
