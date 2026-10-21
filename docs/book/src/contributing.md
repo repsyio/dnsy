@@ -102,8 +102,6 @@ with `upstream.on`. `validate_answer` runs the `dnsy-dnssec` validator on a serv
 The clock guard test patches the build timestamp in a copy of the binary (`Opts::binary`), since a
 child process cannot be given another clock.
 
-validation smoke test), `lifecycle` (SIGHUP, SIGTERM) and `interop`.
-
 ## Browser end-to-end tests
 
 The Playwright suite in `web/e2e` drives the real UI in Chromium against a real `dnsy` (built with
