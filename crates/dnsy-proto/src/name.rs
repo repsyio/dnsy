@@ -12,7 +12,41 @@ const MAX_WIRE: usize = 255;
 /// Equality and hashing are ASCII case-insensitive; ordering is the RFC 4034 6.1 canonical order.
 #[derive(Clone)]
 pub struct Name {
-    wire: Vec<u8>,
+    wire: WireBuf,
+}
+
+/// Names up to this many wire octets (most real ones) live inline, without a heap allocation.
+const INLINE: usize = 32;
+
+/// Owned wire octets: inline up to [`INLINE`], boxed beyond.
+#[derive(Clone)]
+enum WireBuf {
+    Inline { len: u8, buf: [u8; INLINE] },
+    Heap(Box<[u8]>),
+}
+
+impl WireBuf {
+    fn new(bytes: &[u8]) -> WireBuf {
+        match u8::try_from(bytes.len()) {
+            Ok(len) if bytes.len() <= INLINE => {
+                let mut buf = [0; INLINE];
+                buf[..bytes.len()].copy_from_slice(bytes);
+                WireBuf::Inline { len, buf }
+            }
+            _ => WireBuf::Heap(bytes.into()),
+        }
+    }
+}
+
+impl std::ops::Deref for WireBuf {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            WireBuf::Inline { len, buf } => &buf[..usize::from(*len)],
+            WireBuf::Heap(b) => b,
+        }
+    }
 }
 
 /// Iterator over the labels of a [`Name`], leftmost first, excluding the root.
@@ -38,7 +72,7 @@ impl<'a> Iterator for Labels<'a> {
 impl Name {
     /// The root name `.`.
     pub fn root() -> Name {
-        Name { wire: vec![0] }
+        Name::from_wire_unchecked(&[0])
     }
 
     /// Builds a name from raw labels (leftmost first, no root label).
@@ -47,7 +81,8 @@ impl Name {
         I: IntoIterator,
         I::Item: AsRef<[u8]>,
     {
-        let mut wire = Vec::new();
+        let mut wire = [0u8; MAX_WIRE];
+        let mut used = 0;
         for label in labels {
             let label = label.as_ref();
             if label.is_empty() {
@@ -57,14 +92,22 @@ impl Name {
                 .ok()
                 .filter(|l| usize::from(*l) <= MAX_LABEL)
                 .ok_or(NameError::LabelTooLong)?;
-            wire.push(len);
-            wire.extend_from_slice(label);
-            if wire.len() + 1 > MAX_WIRE {
+            if used + label.len() + 2 > MAX_WIRE {
                 return Err(NameError::NameTooLong);
             }
+            wire[used] = len;
+            wire[used + 1..=used + label.len()].copy_from_slice(label);
+            used += label.len() + 1;
         }
-        wire.push(0);
-        Ok(Name { wire })
+        // `wire` is zero-initialised, so the root octet is already in place.
+        Ok(Name::from_wire_unchecked(&wire[..=used]))
+    }
+
+    /// Wraps already validated wire octets (length-prefixed labels ending in the root octet).
+    pub(crate) fn from_wire_unchecked(wire: &[u8]) -> Name {
+        Name {
+            wire: WireBuf::new(wire),
+        }
     }
 
     /// Parses presentation text. A trailing dot is optional; `.` is the root.
@@ -154,9 +197,9 @@ impl Name {
         if self.is_root() {
             return None;
         }
-        Some(Name {
-            wire: self.wire[usize::from(self.wire[0]) + 1..].to_vec(),
-        })
+        Some(Name::from_wire_unchecked(
+            &self.wire[usize::from(self.wire[0]) + 1..],
+        ))
     }
 
     /// True when `self` equals `other` or lies below it.
@@ -174,9 +217,12 @@ impl Name {
     /// A copy with ASCII letters lowercased.
     #[must_use]
     pub fn to_lowercase(&self) -> Name {
-        Name {
-            wire: self.wire.to_ascii_lowercase(),
+        let mut lower = self.clone();
+        match &mut lower.wire {
+            WireBuf::Inline { len, buf } => buf[..usize::from(*len)].make_ascii_lowercase(),
+            WireBuf::Heap(b) => b.make_ascii_lowercase(),
         }
+        lower
     }
 }
 
@@ -190,7 +236,7 @@ impl Eq for Name {}
 
 impl Hash for Name {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        for b in &self.wire {
+        for b in self.wire.iter() {
             state.write_u8(b.to_ascii_lowercase());
         }
     }

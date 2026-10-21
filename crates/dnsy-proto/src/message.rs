@@ -111,14 +111,16 @@ impl Message {
         let (header, counts) = Header::decode(buf).map_err(|_| DecodeError::ShortHeader)?;
         let mut r = WireReader::new(buf);
         r.read_bytes(HEADER_LEN)?;
-        // Collecting through `Result` keeps allocation proportional to what actually parsed,
-        // not to the (attacker-controlled) counts.
-        let questions = (0..counts.questions)
-            .map(|_| read_question(&mut r))
-            .collect::<Result<Vec<_>, _>>()?;
+        // Capacity comes from the counts but never exceeds what the remaining octets could hold
+        // (a question takes at least 5, a record at least 11), so a forged count cannot make the
+        // allocation larger than the packet justifies.
+        let mut questions = Vec::with_capacity(reserve(counts.questions, r.remaining(), 5));
+        for _ in 0..counts.questions {
+            questions.push(read_question(&mut r)?);
+        }
         let mut edns = None;
         let mut section = |n: u16, lift_opt: bool| {
-            let mut records = Vec::new();
+            let mut records = Vec::with_capacity(reserve(n, r.remaining(), 11));
             for _ in 0..n {
                 match read_record(&mut r, lift_opt)? {
                     Parsed::Record(rec) => records.push(rec),
@@ -162,7 +164,7 @@ impl Message {
             u16::try_from(s.len()).map_err(|_| EncodeError::TooManyRecords)?;
         }
 
-        let mut w = WireWriter::new();
+        let mut w = WireWriter::with_capacity(self.size_hint(max_len));
         w.write_bytes(&[0; HEADER_LEN]);
         for q in &self.questions {
             w.write_name(&q.name);
@@ -171,41 +173,44 @@ impl Message {
         }
         let questions_end = w.len();
 
-        let body: Vec<(usize, &Record)> = [&self.answers, &self.authority, &self.additional]
+        let mut body: Vec<Entry<'_>> =
+            Vec::with_capacity(self.answers.len() + self.authority.len() + self.additional.len());
+        for (s, records) in [&self.answers, &self.authority, &self.additional]
             .into_iter()
             .enumerate()
-            .flat_map(|(s, records)| records.iter().map(move |r| (s, r)))
-            .filter(|(s, r)| !is_opt(*s, r))
-            .collect();
-        let rcode = u16::from(self.header.rcode);
-        let mut ends = Vec::with_capacity(body.len());
-        for (_, rec) in &body {
-            write_record(&mut w, rec, true)?;
-            ends.push(w.len());
+        {
+            for rec in records.iter().filter(|r| !is_opt(s, r)) {
+                write_record(&mut w, rec, true)?;
+                body.push(Entry {
+                    section: s,
+                    rec,
+                    end: w.len(),
+                });
+            }
         }
-        let mut opt = WireWriter::new();
+        let body_end = w.len();
+        let rcode = u16::from(self.header.rcode);
         let mut opt_count = 0u16;
         if let Some(edns) = &self.edns {
             let ext = u8::try_from(rcode >> 4).map_err(|_| EncodeError::BadRcode)?;
-            edns.encode(ext, &mut opt)?;
+            edns.encode(ext, &mut w)?;
             opt_count = 1;
         } else if rcode > 0xF {
             return Err(EncodeError::BadRcode);
         }
-        let opt = opt.finish();
-        let full = w.finish();
+        let opt_len = w.len() - body_end;
 
-        // `last[i]` is the index of the final member of record i's RRset within its section;
-        // a prefix of `k` records holds only whole RRsets when every `last[i] < k` for i < k.
-        let mut last_of: HashMap<(usize, &Name, RecordType, Class), usize> = HashMap::new();
-        for (i, (s, rec)) in body.iter().enumerate() {
-            last_of.insert((*s, &rec.name, rec.rtype, rec.class), i);
-        }
+        // A prefix of `k` records holds only whole sets when `rrset_end(i) < k` for every i < k.
         let mut keep = 0;
         let mut reach = 0;
-        for (i, (s, rec)) in body.iter().enumerate() {
-            reach = reach.max(last_of[&(*s, &rec.name, rec.rtype, rec.class)]);
-            if ends[i] + opt.len() > max_len {
+        let last_of = (body.len() > SCAN_LIMIT).then(|| rrset_ends(&body));
+        for i in 0..body.len() {
+            let end = match &last_of {
+                Some(ends) => ends[i],
+                None => rrset_end(&body, i),
+            };
+            reach = reach.max(end);
+            if body[i].end + opt_len > max_len {
                 break;
             }
             if reach == i {
@@ -215,9 +220,9 @@ impl Message {
         let cut = if keep == 0 {
             questions_end
         } else {
-            ends[keep - 1]
+            body[keep - 1].end
         };
-        if cut + opt.len() > max_len {
+        if cut + opt_len > max_len {
             return Err(EncodeError::DoesNotFit);
         }
 
@@ -226,8 +231,8 @@ impl Message {
             additional: opt_count,
             ..Counts::default()
         };
-        for (s, _) in &body[..keep] {
-            match *s {
+        for e in &body[..keep] {
+            match e.section {
                 ANSWER => counts.answers += 1,
                 AUTHORITY => counts.authority += 1,
                 _ => counts.additional += 1,
@@ -235,13 +240,31 @@ impl Message {
         }
         let mut header = self.header;
         header.rcode = Rcode::from(rcode & 0xF);
-        header.tc |= body[keep..].iter().any(|(s, _)| *s != ADDITIONAL);
+        header.tc |= body[keep..].iter().any(|e| e.section != ADDITIONAL);
 
-        let mut out = Vec::with_capacity(cut + opt.len());
-        out.extend_from_slice(&header.encode(counts));
-        out.extend_from_slice(&full[HEADER_LEN..cut]);
-        out.extend_from_slice(&opt);
+        // The message was written straight into the output buffer: drop the records that do not
+        // fit by sliding the OPT record down over them.
+        let mut out = w.finish();
+        out.copy_within(body_end..body_end + opt_len, cut);
+        out.truncate(cut + opt_len);
+        out[..HEADER_LEN].copy_from_slice(&header.encode(counts));
         Ok(out)
+    }
+
+    /// A capacity that fits most encodings in one allocation without exceeding `max_len`.
+    fn size_hint(&self, max_len: usize) -> usize {
+        let owners = self
+            .questions
+            .iter()
+            .map(|q| q.name.wire_len() + 4)
+            .chain(
+                [&self.answers, &self.authority, &self.additional]
+                    .into_iter()
+                    .flatten()
+                    .map(|r| r.name.wire_len().min(2) + 10 + 16),
+            )
+            .sum::<usize>();
+        (HEADER_LEN + owners + 16).min(max_len).min(1 << 14)
     }
 
     /// An empty response to `query`: same id, opcode, RD, CD and questions, QR set, NOERROR.
@@ -340,6 +363,49 @@ impl Message {
         response.header.rcode = Rcode::FormErr;
         response.encode(usize::from(u16::MAX)).ok()
     }
+}
+
+/// A record of the message body together with the offset just past its encoding.
+struct Entry<'a> {
+    section: usize,
+    rec: &'a Record,
+    end: usize,
+}
+
+/// Bodies up to this many records find record set boundaries by scanning; larger ones use a map.
+const SCAN_LIMIT: usize = 64;
+
+fn same_rrset(a: &Entry<'_>, b: &Entry<'_>) -> bool {
+    a.section == b.section
+        && a.rec.rtype == b.rec.rtype
+        && a.rec.class == b.rec.class
+        && a.rec.name == b.rec.name
+}
+
+/// Index of the last member of record `i`'s record set. Sets are contiguous in practice, so the
+/// search runs backwards from the end of the section and usually stops within a few records.
+fn rrset_end(body: &[Entry<'_>], i: usize) -> usize {
+    (i + 1..body.len())
+        .rev()
+        .find(|&j| same_rrset(&body[i], &body[j]))
+        .unwrap_or(i)
+}
+
+/// `rrset_end` for every record, through a map (for large bodies).
+fn rrset_ends(body: &[Entry<'_>]) -> Vec<usize> {
+    let mut last_of: HashMap<(usize, &Name, RecordType, Class), usize> =
+        HashMap::with_capacity(body.len());
+    for (i, e) in body.iter().enumerate() {
+        last_of.insert((e.section, &e.rec.name, e.rec.rtype, e.rec.class), i);
+    }
+    body.iter()
+        .map(|e| last_of[&(e.section, &e.rec.name, e.rec.rtype, e.rec.class)])
+        .collect()
+}
+
+/// Capacity for `count` entries of at least `min_size` octets each in `remaining` octets.
+fn reserve(count: u16, remaining: usize, min_size: usize) -> usize {
+    usize::from(count).min(remaining / min_size)
 }
 
 fn is_opt(section: usize, rec: &Record) -> bool {

@@ -256,6 +256,119 @@ fn writer_never_points_past_0x4000() {
     assert_eq!(w.finish()[..2], [0xAB, 0xCD]);
 }
 
+#[test]
+fn name_storage_crosses_the_inline_boundary() {
+    // 31, 32 and 33 octets straddle the inline capacity; 255 is the maximum.
+    for total in [2usize, 31, 32, 33, 100, 255] {
+        let mut labels = Vec::new();
+        let mut used = 1;
+        while used + 1 < total {
+            let len = (total - used - 1).min(40);
+            labels.push(
+                "aB".repeat(len / 2)
+                    .into_bytes()
+                    .into_iter()
+                    .chain(vec![b'c'; len % 2])
+                    .collect::<Vec<u8>>(),
+            );
+            used += len + 1;
+        }
+        let name = Name::from_labels(&labels).unwrap();
+        assert_eq!(name.wire_len(), used);
+        let lower = name.to_lowercase();
+        assert_eq!(name, lower);
+        assert_eq!(lower.as_wire(), name.as_wire().to_ascii_lowercase());
+        let mut w = WireWriter::new();
+        w.write_name(&name);
+        let bytes = w.finish();
+        assert_eq!(WireReader::new(&bytes).read_name().unwrap(), name);
+        assert_eq!(name.clone().as_wire(), name.as_wire());
+        if let Some(parent) = name.parent() {
+            assert_eq!(
+                parent.as_wire(),
+                &name.as_wire()[usize::from(name.as_wire()[0]) + 1..]
+            );
+        }
+    }
+}
+
+#[test]
+fn reader_name_limits_match_from_labels() {
+    // A 255 octet name read from the wire is accepted, one more octet is not.
+    let label = [b'a'; 63];
+    let mut ok = Vec::new();
+    for _ in 0..3 {
+        ok.push(63);
+        ok.extend_from_slice(&label);
+    }
+    ok.push(61);
+    ok.extend_from_slice(&[b'b'; 61]);
+    ok.push(0);
+    assert_eq!(ok.len(), 255);
+    assert_eq!(WireReader::new(&ok).read_name().unwrap().wire_len(), 255);
+    let mut too_long = ok.clone();
+    too_long[3 * 64] = 62;
+    too_long.insert(3 * 64 + 1, b'b');
+    assert_eq!(
+        WireReader::new(&too_long).read_name(),
+        Err(NameError::NameTooLong.into())
+    );
+}
+
+#[test]
+fn writer_compresses_through_pointer_chains_case_insensitively() {
+    let mut w = WireWriter::new();
+    w.write_name(&n("www.example.com"));
+    w.write_name(&n("mail.EXAMPLE.com")); // mail + pointer to example.com
+    w.write_name(&n("ftp.Mail.example.COM")); // ftp + pointer to "mail" (itself ending in a pointer)
+    w.write_name(&n("WWW.example.com"));
+    let buf = w.finish();
+    assert_eq!(buf.len(), 17 + 7 + 6 + 2);
+    assert_eq!(buf[buf.len() - 2..], [0xC0, 0x00]);
+    assert_eq!(buf[24..30], [3, b'f', b't', b'p', 0xC0, 17]);
+    let mut r = WireReader::new(&buf);
+    assert_eq!(r.read_name().unwrap(), n("www.example.com"));
+    assert_eq!(r.read_name().unwrap(), n("mail.example.com"));
+    assert_eq!(r.read_name().unwrap(), n("ftp.mail.example.com"));
+    assert_eq!(r.read_name().unwrap(), n("www.example.com"));
+}
+
+#[test]
+fn writer_probing_is_bounded_when_every_suffix_collides() {
+    // A zero mask gives every suffix the same hash, the worst case a crafted set of colliding
+    // names could produce. Each lookup may then compare at most MAX_PROBES entries.
+    let mut w = WireWriter::new();
+    w.hash_mask = 0;
+    let names: Vec<Name> = (0..1500)
+        .map(|i| n(&format!("host{i}.zone{}.example.com", i % 7)))
+        .collect();
+    let mut lookups = 0;
+    for name in &names {
+        lookups += usize::from(name.label_count());
+        w.write_name(name);
+    }
+    assert!(w.probes <= lookups * 8, "{} probes", w.probes);
+    let buf = w.finish();
+    let mut r = WireReader::new(&buf);
+    for name in &names {
+        assert_eq!(&r.read_name().unwrap(), name);
+    }
+    assert_eq!(r.remaining(), 0);
+}
+
+#[test]
+fn writer_output_does_not_depend_on_the_hash_seed() {
+    // The per-process hash key only picks table slots; the compression layout is fixed.
+    let mut w = WireWriter::new();
+    for name in ["a.example.com", "B.EXAMPLE.COM", "x.b.example.com"] {
+        w.write_name(&n(name));
+    }
+    let mut want = b"\x01a\x07example\x03com\x00".to_vec();
+    want.extend_from_slice(&[1, b'B', 0xC0, 2]);
+    want.extend_from_slice(&[1, b'x', 0xC0, 15]);
+    assert_eq!(w.finish(), want);
+}
+
 /// Small deterministic generator so `dnsy-proto` stays dependency free.
 struct Rng(u64);
 
