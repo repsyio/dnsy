@@ -190,6 +190,9 @@ pub(crate) async fn serve<H: Handler>(
             tracing::debug!(%client, "doh connection limit reached; closing");
             continue;
         };
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::debug!(%client, error = %e, "doh set_nodelay failed");
+        }
         let acceptor = acceptor.clone();
         let state = Arc::clone(&state);
         let shutdown = shutdown.clone();

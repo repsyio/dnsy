@@ -102,6 +102,22 @@ with `upstream.on`. `validate_answer` runs the `dnsy-dnssec` validator on a serv
 The clock guard test patches the build timestamp in a copy of the binary (`Opts::binary`), since a
 child process cannot be given another clock.
 
+## Benchmarks
+
+The crate `tests/bench` (`dnsy-bench`, not published, excluded from `just test` and the coverage
+gate like `dnsy-e2e`) holds the performance tools:
+
+- `just bench`: the scenario runner (`bench` binary). It starts the release `dnsy` (through
+  `DNSY_BIN`) with the e2e harness and a scripted upstream and prints QPS, p50 and p99 for UDP
+  hit and miss, TCP and DoH.
+- `loadgen`: a closed-loop load generator for any server over UDP or TCP (`--clients`,
+  `--pipeline`, `--count` names cycled for cache hits, `--unique` for misses).
+- `fakeup`: a fast multi-task UDP upstream answering every name (`nx*` gets NXDOMAIN).
+- `just bench-micro`: criterion micro-benchmarks (`benches/micro.rs`).
+
+Performance stories paste the `just bench` table into their PR. Run it on an otherwise idle
+machine and pin CPUs with `taskset` when comparing before and after.
+
 ## Browser end-to-end tests
 
 The Playwright suite in `web/e2e` drives the real UI in Chromium against a real `dnsy` (built with
@@ -171,7 +187,7 @@ just cov-web    # ng test --coverage (Vitest, v8)
 
 ### What is measured
 
-- **Rust:** line coverage from `cargo llvm-cov nextest --workspace --exclude dnsy-e2e`, that is
+- **Rust:** line coverage from `cargo llvm-cov nextest --workspace --exclude dnsy-e2e --exclude dnsy-bench`, that is
   unit and integration tests. The end-to-end suites (`just e2e`, `just e2e-ui`) are **not**
   counted: they spawn the real binary, so the instrumentation would have to follow child processes,
   and a gate that depends on timing-sensitive wire tests would be flaky. The e2e suites are

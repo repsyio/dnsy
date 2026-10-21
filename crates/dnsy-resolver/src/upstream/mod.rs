@@ -166,6 +166,7 @@ impl UpstreamClient {
                 Attempt::Udp => udp_exchange(addr, &wire, query).await,
                 Attempt::Tcp => {
                     let mut stream = TcpStream::connect(addr).await?;
+                    stream.set_nodelay(true)?;
                     framed_exchange(&mut stream, &wire, query).await
                 }
             }
@@ -207,6 +208,7 @@ impl UpstreamClient {
             .map_err(|e| UpstreamError::Tls(e.to_string()))?;
         let fut = async {
             let tcp = TcpStream::connect(addr).await?;
+            tcp.set_nodelay(true)?;
             let mut stream = self
                 .tls
                 .connect(name, tcp)
