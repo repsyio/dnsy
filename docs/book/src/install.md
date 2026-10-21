@@ -3,6 +3,11 @@
 DNSY is one binary, `dnsy`. It needs no runtime dependencies: SQLite is bundled and TLS uses
 `rustls`.
 
+## Prebuilt binaries
+
+Every tagged release publishes archives and installers for Linux, macOS and Windows with the web
+UI embedded; see [Releases](release.md) for the targets, installers and checksum verification.
+
 ## From source
 
 ```sh

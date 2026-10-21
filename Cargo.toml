@@ -78,3 +78,8 @@ overflow-checks = true
 # Keep unwind: the server has no catch_unwind, and abort would turn any panic reachable from
 # hostile input into a whole-resolver outage instead of one failed connection task.
 panic = "unwind"
+
+# Profile used by cargo-dist for release artifacts (dist-workspace.toml). It adds nothing: every
+# setting, including `panic = "unwind"`, comes from [profile.release] above.
+[profile.dist]
+inherits = "release"
