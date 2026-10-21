@@ -27,7 +27,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
         (keydown)="onKey($event)"
       >
         <div class="mb-4 flex items-start justify-between gap-3">
-          <h2 id="qlog-drawer-title" class="break-all text-lg text-cyan">{{ record().qname }}</h2>
+          <h2 id="qlog-drawer-title" class="break-all section-title">{{ record().qname }}</h2>
           <button class="btn" type="button" (click)="close()">Close</button>
         </div>
         <dl class="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-2 text-sm">

@@ -1,0 +1,100 @@
+/* DNSY theme for the book (Ares red, dark only). Tokens come from branding/tokens.css; `just docs`
+   publishes branding/ at the site root, so this file (served at /docs/theme/) reaches it at ../../branding/.
+   Depth comes from 0.5px hairlines and spacing, never halos or shadows. */
+@import url("../../branding/tokens.css");
+
+.navy, .light, .rust, .coal, .ayu {
+  --bg: var(--dnsy-bg);
+  --fg: var(--dnsy-text);
+  --sidebar-bg: var(--dnsy-surface);
+  --sidebar-fg: var(--dnsy-text);
+  --sidebar-non-existant: var(--dnsy-muted);
+  --sidebar-active: var(--dnsy-red);
+  --sidebar-spacer: var(--dnsy-line);
+  --sidebar-header-border-color: var(--dnsy-line);
+  --scrollbar: var(--dnsy-muted);
+  --icons: var(--dnsy-muted);
+  --icons-hover: var(--dnsy-text);
+  --links: var(--dnsy-red);
+  --inline-code-color: var(--dnsy-text);
+  --theme-popup-bg: var(--dnsy-surface);
+  --theme-popup-border: var(--dnsy-line);
+  --theme-hover: var(--dnsy-line);
+  --quote-bg: var(--dnsy-surface);
+  --quote-border: var(--dnsy-line);
+  --warning-border: var(--dnsy-amber);
+  --blockquote-note-color: var(--dnsy-text);
+  --blockquote-tip-color: var(--dnsy-secure);
+  --blockquote-important-color: var(--dnsy-red);
+  --blockquote-warning-color: var(--dnsy-amber);
+  --blockquote-caution-color: var(--dnsy-amber);
+  --mono-font: var(--dnsy-font-mono);
+  --table-border-color: var(--dnsy-line);
+  --table-header-bg: var(--dnsy-surface);
+  --table-alternate-bg: var(--dnsy-bg);
+  --searchbar-border-color: var(--dnsy-muted);
+  --searchbar-bg: var(--dnsy-bg);
+  --searchbar-fg: var(--dnsy-text);
+  --searchbar-shadow-color: transparent;
+  --searchresults-header-fg: var(--dnsy-muted);
+  --searchresults-border-color: var(--dnsy-line);
+  --searchresults-li-bg: var(--dnsy-surface);
+  --search-mark-bg: var(--dnsy-amber);
+  --color-scheme: dark;
+}
+
+html { font-family: var(--dnsy-font-body); }
+body { background-color: var(--dnsy-bg); color: var(--dnsy-text); }
+.content main { background: var(--dnsy-bg); padding: 1rem 1.5rem; }
+
+h1, h2, h3, h4, .menu-title {
+  font-family: var(--dnsy-font-display);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dnsy-text);
+}
+.content h1 { font-size: 1.35rem; }
+.content h2 { font-size: 1.05rem; margin-top: 2.2em; }
+.content h3 { font-size: 0.9rem; }
+.content h4 { font-size: 0.8rem; }
+.content h1 a, .content h2 a, .content h3 a, .content h4 a { color: inherit; }
+
+a:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--dnsy-red);
+  outline-offset: 2px;
+}
+
+#menu-bar { border-bottom: 0.5px solid var(--dnsy-line); box-shadow: none; }
+.menu-title {
+  font-size: 1rem;
+  letter-spacing: 0.22em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.menu-title::before {
+  content: "";
+  width: 1.75rem;
+  height: 1.75rem;
+  background: url("../../branding/mascot/nox-idle.svg") center / contain no-repeat;
+}
+
+.sidebar { border-right: 0.5px solid var(--dnsy-line); }
+.chapter li.chapter-item a.active { color: var(--dnsy-red); }
+
+code, pre { font-family: var(--dnsy-font-mono); }
+:not(pre) > code { color: var(--dnsy-text); background: var(--dnsy-surface); border: 0.5px solid var(--dnsy-line); border-radius: 2px; }
+pre { border: 0.5px solid var(--dnsy-line); border-radius: 2px; }
+table { border-collapse: collapse; }
+table td, table th { border: 0; border-bottom: 0.5px solid var(--dnsy-line); }
+table th {
+  color: var(--dnsy-muted);
+  font-weight: 500;
+  font-size: 0.8em;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: left;
+}
+blockquote { border-left: 2px solid var(--dnsy-red); border-top: 0; border-bottom: 0; }
+img { max-width: 100%; }

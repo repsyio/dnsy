@@ -1,11 +1,11 @@
 <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
-  <h1 class="text-2xl font-bold text-cyan">Dashboard</h1>
+  <h1 class="page-title">Dashboard</h1>
   <div class="flex flex-wrap items-center gap-3">
     <div role="group" aria-label="Time range" class="flex gap-2">
       @for (r of ranges; track r.key) {
         <button
           type="button"
-          [class]="range().key === r.key ? 'btn bg-cyan/20' : 'btn'"
+          [class]="range().key === r.key ? 'btn bg-red/20' : 'btn'"
           [attr.aria-pressed]="range().key === r.key"
           [attr.data-range]="r.key"
           (click)="selectRange(r.key)"
@@ -28,18 +28,14 @@
 
 @if (data(); as d) {
   @if (d.clockTrusted === false) {
-    <div
-      class="panel mb-6 border-orange text-orange shadow-glow-orange"
-      role="alert"
-      data-testid="clock-banner"
-    >
+    <div class="panel mb-6 border-amber text-amber" role="alert" data-testid="clock-banner">
       The system clock is before the build time: DNSSEC validation is suspended until it is
       corrected.
     </div>
   }
 
   @if (d.summary.querylog_dropped > 0) {
-    <div class="panel mb-6 border-orange text-orange" role="status" data-testid="dropped-badge">
+    <div class="panel mb-6 border-amber text-amber" role="status" data-testid="dropped-badge">
       {{ dropped(d.summary.querylog_dropped) }} query-log events were dropped, so the log is
       incomplete. See the server log.
     </div>
@@ -50,10 +46,10 @@
       <div class="panel" [attr.data-tile]="t.id">
         <div class="text-xs uppercase tracking-widest text-muted">{{ t.label }}</div>
         <div
-          class="mt-2 font-display text-2xl tabular-nums"
-          [class.text-cyan]="!t.tone || t.tone === 'normal'"
+          class="mt-2 text-2xl font-medium tabular-nums"
+          [class.text-text]="!t.tone || t.tone === 'normal'"
           [class.text-secure]="t.tone === 'secure'"
-          [class.text-bogus]="t.tone === 'bogus'"
+          [class.text-amber]="t.tone === 'bogus'"
         >
           {{ t.value }}
         </div>
@@ -72,7 +68,7 @@
     @if (chart(); as c) {
       <section class="panel mb-6" aria-labelledby="qps-heading">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h2 id="qps-heading" class="text-sm text-cyan">Queries over time</h2>
+          <h2 id="qps-heading" class="section-title">Queries over time</h2>
           <button
             type="button"
             class="btn"
@@ -124,7 +120,7 @@
                 [attr.x2]="chartBox.width - chartBox.right"
                 [attr.y1]="t.pos"
                 [attr.y2]="t.pos"
-                class="stroke-cyan/20"
+                class="stroke-line"
               />
               <text
                 [attr.x]="chartBox.left - 6"
@@ -145,10 +141,10 @@
                 {{ t.label }}
               </text>
             }
-            <path [attr.d]="c.totalArea" class="fill-cyan/10 stroke-none" />
+            <path [attr.d]="c.totalArea" class="fill-red/10 stroke-none" />
             <path
               [attr.d]="c.totalPath"
-              class="fill-none stroke-cyan"
+              class="fill-none stroke-red"
               stroke-width="1.5"
               data-testid="total-line"
             />
@@ -161,7 +157,7 @@
             />
           </svg>
           <p class="mt-2 flex gap-4 text-xs text-muted">
-            <span><span class="text-cyan">&#9644;</span> Queries</span>
+            <span><span class="text-red">&#9644;</span> Queries</span>
             <span><span class="text-secure">&#9644;</span> Answered from cache</span>
           </p>
         }
@@ -175,7 +171,7 @@
 
     <div class="grid gap-4 lg:grid-cols-3">
       <app-top-list heading="Top domains" [items]="d.topDomains" />
-      <app-top-list heading="Top blocked" [items]="d.topBlocked" accent="orange" />
+      <app-top-list heading="Top blocked" [items]="d.topBlocked" accent="amber" />
       <app-top-list heading="Top clients" [items]="d.topClients" />
     </div>
   }

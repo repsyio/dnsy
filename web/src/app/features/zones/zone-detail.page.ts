@@ -51,7 +51,7 @@ interface Conflict {
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <p class="mb-2 text-sm"><a class="text-cyan underline" routerLink="/zones">All zones</a></p>
+    <p class="mb-2 text-sm"><a class="text-red underline" routerLink="/zones">All zones</a></p>
 
     @switch (status()) {
       @case ('loading') {
@@ -70,7 +70,7 @@ interface Conflict {
       @default {
         @if (zone(); as z) {
           <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <h1 class="break-all text-2xl font-bold text-cyan">{{ z.name }}</h1>
+            <h1 class="break-all page-title">{{ z.name }}</h1>
             <div class="flex flex-wrap gap-3">
               <button class="btn" type="button" [disabled]="exporting()" (click)="download(false)">
                 Download BIND
@@ -95,20 +95,20 @@ interface Conflict {
           </div>
 
           @if (z.load_error) {
-            <p class="panel mb-4 border-orange text-sm text-orange" role="alert">
+            <p class="panel mb-4 border-amber text-sm text-amber" role="alert">
               Zone file not served: {{ z.load_error }}
             </p>
           }
 
           @if (actionError()) {
-            <p class="panel mb-4 border-orange text-sm text-orange" role="alert">
+            <p class="panel mb-4 border-amber text-sm text-amber" role="alert">
               {{ actionError() }}
             </p>
           }
 
           @if (conflict(); as c) {
-            <div class="panel mb-4 border-orange" role="alert">
-              <p class="mb-3 text-sm text-orange">
+            <div class="panel mb-4 border-amber" role="alert">
+              <p class="mb-3 text-sm text-amber">
                 This zone was changed elsewhere since you loaded it, so your change was not saved.
               </p>
               <div class="flex flex-wrap gap-3">
@@ -123,7 +123,7 @@ interface Conflict {
           <div
             role="tablist"
             aria-label="Zone sections"
-            class="mb-4 flex gap-2 border-b border-cyan/30"
+            class="mb-4 flex gap-2 border-b-[0.5px] border-line"
           >
             <button
               id="tab-records"
@@ -183,7 +183,7 @@ interface Conflict {
             </div>
 
             @if (editing() === 'new') {
-              <div class="mb-4 border border-cyan/30 p-4">
+              <div class="mb-4 hairline border-line p-4">
                 <app-record-editor
                   label="New record"
                   [busy]="busy()"
@@ -221,7 +221,7 @@ interface Conflict {
                   <tbody>
                     @for (r of records(); track r.id) {
                       @if (editing() === r.id) {
-                        <tr class="border-t border-cyan/20">
+                        <tr class="border-t-[0.5px] border-line">
                           <td colspan="5" class="py-3">
                             <app-record-editor
                               [label]="'Edit ' + r.type + ' record ' + r.name"
@@ -234,14 +234,14 @@ interface Conflict {
                           </td>
                         </tr>
                       } @else {
-                        <tr class="border-t border-cyan/20">
+                        <tr class="border-t-[0.5px] border-line">
                           <td class="break-all py-2 pr-4">{{ r.name }}</td>
                           <td class="py-2 pr-4">{{ r.type }}</td>
                           <td class="py-2 pr-4">{{ r.ttl }}</td>
                           <td class="break-all py-2 pr-4">{{ r.value }}</td>
                           <td class="whitespace-nowrap py-2">
                             <button
-                              class="mr-3 cursor-pointer text-cyan underline"
+                              class="mr-3 cursor-pointer text-red underline"
                               type="button"
                               [attr.aria-label]="'Edit ' + r.type + ' record ' + r.name"
                               (click)="startEdit(r)"
@@ -249,7 +249,7 @@ interface Conflict {
                               Edit
                             </button>
                             <button
-                              class="cursor-pointer text-orange underline"
+                              class="cursor-pointer text-amber underline"
                               type="button"
                               [attr.aria-label]="'Delete ' + r.type + ' record ' + r.name"
                               (click)="deleting.set(r)"

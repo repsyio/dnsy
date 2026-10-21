@@ -48,7 +48,7 @@ export const PENDING_CAP = 500;
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <h1 class="text-2xl font-bold text-cyan">Query log</h1>
+      <h1 class="page-title">Query log</h1>
       <div class="flex flex-wrap items-center gap-2">
         @if (tailOn()) {
           <span class="text-xs uppercase tracking-wider text-muted" role="status">{{
@@ -177,13 +177,13 @@ export const PENDING_CAP = 500;
     </form>
 
     @if (tailOn() && paused() && pending().length > 0) {
-      <p class="mb-2 text-sm text-orange" role="status">
+      <p class="mb-2 text-sm text-amber" role="status">
         Paused: {{ pending().length }} new
         {{ pending().length === 1 ? 'query' : 'queries' }} waiting.
       </p>
     }
     @if (lagged() > 0) {
-      <p class="mb-2 text-sm text-orange" role="status">
+      <p class="mb-2 text-sm text-amber" role="status">
         The live tail fell behind {{ lagged() }} {{ lagged() === 1 ? 'time' : 'times' }}; some rows
         were skipped.
       </p>
@@ -220,12 +220,12 @@ export const PENDING_CAP = 500;
                 </thead>
                 <tbody>
                   @for (r of records(); track r.id) {
-                    <tr class="border-t border-cyan/20">
+                    <tr class="border-t-[0.5px] border-line">
                       <td class="whitespace-nowrap py-2 pr-4 text-muted">{{ time(r) }}</td>
                       <td class="py-2 pr-4">
                         <button
                           type="button"
-                          class="break-all text-left text-cyan underline"
+                          class="break-all text-left text-red underline"
                           [attr.aria-label]="'Details for ' + r.qname"
                           (click)="open(r)"
                         >

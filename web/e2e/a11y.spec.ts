@@ -45,13 +45,13 @@ for (const [path, h1] of PAGES) {
 test.describe('signed out', () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
-  test('the login page has no serious violations (3D scene)', async ({ page }) => {
+  test('the login page has no serious violations (animated blob)', async ({ page }) => {
     await page.goto('/login');
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
     expect(await serious(page)).toEqual([]);
   });
 
-  test('the login page has no serious violations (static fallback, setup mode)', async ({
+  test('the login page has no serious violations (reduced motion, setup mode)', async ({
     page,
   }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });

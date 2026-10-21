@@ -17,9 +17,7 @@ const out = resolve(process.argv[2] ?? 'screenshots');
 const base = process.argv[3] ?? 'http://127.0.0.1:15380';
 mkdirSync(out, { recursive: true });
 
-const browser = await chromium.launch({
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
-});
+const browser = await chromium.launch();
 const context = await browser.newContext({
   viewport: { width: 1280, height: 800 },
   deviceScaleFactor: 1,
@@ -27,10 +25,10 @@ const context = await browser.newContext({
 const page = await context.newPage();
 const shot = (name) => page.screenshot({ path: join(out, `${name}.png`) });
 
-// Login scene (three.js). Give the render loop a moment to draw the grid and the owl.
+// Login page: give the blob a few seconds to morph and let red pulses cross it.
 await page.goto(`${base}/login`);
 await page.getByLabel('Username').waitFor();
-await page.waitForTimeout(2500);
+await page.waitForTimeout(4000);
 await shot('login');
 
 await page.getByLabel('Username').fill('admin');

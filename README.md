@@ -14,14 +14,14 @@ commented out on purpose so the README does not show broken images today.
 -->
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-00e5ff)](LICENSE)
 
-<img src="docs/book/src/images/login.png" alt="The DNSY login page: a 3D Tron-style grid with the Nox owl" width="720">
+<img src="docs/book/src/images/login.png" alt="The DNSY login page: the sign-in form beside a white wireframe sphere with red pulses" width="720">
 
 </div>
 
 DNSY answers for your own zones, forwards everything else to the upstream resolvers you choose
 with caching, load balancing and DNSSEC validation, filters ads and unwanted domains, and serves
 plain DNS, DNS over TLS (with mTLS) and DNS over HTTPS (with tokens). You run it as one
-binary with an embedded SQLite database, and manage it through a REST API or a Tron-styled web UI
+binary with an embedded SQLite database, and manage it through a REST API or an Ares-styled web UI
 guarded by **Nox**, the owl. The DNS layer, including all of DNSSEC, is written in this repository:
 no DNS library, only `ring` for raw crypto primitives.
 
@@ -39,8 +39,8 @@ no DNS library, only `ring` for raw crypto primitives.
   per-client rate limiting, response-IP policy.
 - **Logging and stats**: a searchable query log with live tail, rollups and a dashboard.
 - **REST API and OpenAPI 3.1** for everything the UI does.
-- **Tron-style web UI** with a 3D login scene, a dashboard, a zone editor with a DNSSEC tab, the
-  query log and admin pages.
+- **Ares-styled web UI** (black, white hairlines, one red) with an animated login page, a
+  dashboard, a zone editor with a DNSSEC tab, the query log and admin pages.
 - **JSON zone files** with hot reload, **BIND export** (also signed), and an embedded **SQLite**
   database for users, tokens, rules, keys and the log.
 - **One TOML config file**, overridable per key from the environment, validated with

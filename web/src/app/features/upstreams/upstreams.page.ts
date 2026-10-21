@@ -21,7 +21,7 @@ type Pending =
   imports: [ConfirmDialog, MascotEmptyComponent, MascotErrorComponent, MascotLoadingComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">Upstreams</h1>
+    <h1 class="mb-6 page-title">Upstreams</h1>
 
     @if (actionError(); as e) {
       <p class="field-error mb-4" role="alert">{{ e }}</p>
@@ -40,7 +40,7 @@ type Pending =
       }
       @default {
         <section class="panel mb-6" aria-labelledby="ng-h">
-          <h2 id="ng-h" class="mb-4 text-lg text-cyan">New group</h2>
+          <h2 id="ng-h" class="mb-4 section-title">New group</h2>
           <form class="grid grid-cols-1 gap-3 sm:grid-cols-6" novalidate (submit)="create($event)">
             <div class="sm:col-span-2">
               <label class="field-label" for="grp-name">Name</label>
@@ -90,7 +90,7 @@ type Pending =
         @for (g of groups(); track g.name) {
           <section class="panel mb-6" [attr.aria-labelledby]="'g-' + g.name">
             <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <h2 [id]="'g-' + g.name" class="text-lg text-cyan">
+              <h2 [id]="'g-' + g.name" class="section-title">
                 {{ g.name }}
                 @if (g.default) {
                   <span class="badge badge-ok ml-2">default</span>
@@ -143,7 +143,7 @@ type Pending =
                   </thead>
                   <tbody>
                     @for (m of g.members; track m.index) {
-                      <tr class="border-t border-cyan/20">
+                      <tr class="border-t-[0.5px] border-line">
                         <td class="py-2 pr-4 break-all">{{ m.upstream }}</td>
                         <td class="py-2 pr-4">{{ m.weight }}</td>
                         <td class="py-2 pr-4">

@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 import { isDnssecStatus, sourceLabel } from './query-log.model';
 
-/** DNSSEC status: a lock in `--dnsy-secure` for secure, `--dnsy-bogus` for bogus, muted otherwise. */
+/** DNSSEC status: a lock in `--dnsy-secure` for secure, `--dnsy-amber` for bogus, muted otherwise. */
 @Component({
   selector: 'app-dnssec-badge',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -34,9 +34,9 @@ export class DnssecBadge {
       case 'secure':
         return 'border-secure text-secure';
       case 'bogus':
-        return 'border-bogus text-bogus';
+        return 'border-amber text-amber';
       case 'indeterminate':
-        return 'border-orange text-orange';
+        return 'border-amber text-amber';
       default:
         return 'border-muted text-muted';
     }
@@ -57,13 +57,13 @@ export class SourceBadge {
       case 'blocked':
       case 'refused':
       case 'error':
-        return 'border-bogus text-bogus';
+        return 'border-amber text-amber';
       case 'cache_stale':
-        return 'border-orange text-orange';
+        return 'border-amber text-amber';
       case 'cache':
         return 'border-secure text-secure';
       default:
-        return 'border-cyan text-cyan';
+        return 'border-text text-text';
     }
   });
 }

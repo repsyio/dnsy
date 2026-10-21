@@ -23,7 +23,7 @@ import { UserInfo, UsersService } from './users.service';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
-      <h1 class="text-2xl font-bold text-cyan">Users</h1>
+      <h1 class="page-title">Users</h1>
       <button class="btn" type="button" (click)="open('create')">Create user</button>
     </div>
     @if (notice(); as n) {
@@ -57,7 +57,7 @@ import { UserInfo, UsersService } from './users.service';
                 </thead>
                 <tbody>
                   @for (u of users(); track u.id) {
-                    <tr class="border-t border-cyan/20">
+                    <tr class="border-t-[0.5px] border-line">
                       <td class="py-2 pr-4 break-all">
                         {{ u.username }}
                         @if (isSelf(u)) {

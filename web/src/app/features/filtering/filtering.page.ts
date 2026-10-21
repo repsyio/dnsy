@@ -21,7 +21,7 @@ const FORMATS: Format[] = ['auto', 'hosts', 'domains', 'adblock'];
   imports: [ConfirmDialog, MascotEmptyComponent, MascotErrorComponent, MascotLoadingComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">Filtering</h1>
+    <h1 class="mb-6 page-title">Filtering</h1>
 
     @if (notice(); as n) {
       <p class="mb-4 text-sm text-secure" role="status">{{ n }}</p>
@@ -43,7 +43,7 @@ const FORMATS: Format[] = ['auto', 'hosts', 'domains', 'adblock'];
       }
       @default {
         <section class="panel mb-6" aria-labelledby="lists-h">
-          <h2 id="lists-h" class="mb-4 text-lg text-cyan">Blocklist sources</h2>
+          <h2 id="lists-h" class="mb-4 section-title">Blocklist sources</h2>
           <form class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-6" (submit)="addList($event)">
             <div class="sm:col-span-2">
               <label class="field-label" for="bl-name">Name</label>
@@ -114,7 +114,7 @@ const FORMATS: Format[] = ['auto', 'hosts', 'domains', 'adblock'];
                 </thead>
                 <tbody>
                   @for (l of lists(); track l.id) {
-                    <tr class="border-t border-cyan/20 align-top">
+                    <tr class="border-t-[0.5px] border-line align-top">
                       <td class="py-2 pr-4">
                         {{ l.name }}
                         <div class="break-all text-xs text-muted">
@@ -172,7 +172,7 @@ const FORMATS: Format[] = ['auto', 'hosts', 'domains', 'adblock'];
         </section>
 
         <section class="panel" aria-labelledby="rules-h">
-          <h2 id="rules-h" class="mb-4 text-lg text-cyan">Custom rules</h2>
+          <h2 id="rules-h" class="mb-4 section-title">Custom rules</h2>
           <form class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-6" (submit)="addRule($event)">
             <div>
               <label class="field-label" for="rule-kind">Action</label>
@@ -220,7 +220,7 @@ const FORMATS: Format[] = ['auto', 'hosts', 'domains', 'adblock'];
                 </thead>
                 <tbody>
                   @for (r of rules(); track r.id) {
-                    <tr class="border-t border-cyan/20">
+                    <tr class="border-t-[0.5px] border-line">
                       <td class="py-2 pr-4">
                         <span
                           class="badge"

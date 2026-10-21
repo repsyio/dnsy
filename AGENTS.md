@@ -8,7 +8,7 @@ Never add Claude Code attribution anywhere. No `Co-Authored-By` trailer, no `Cla
 
 ## Purpose
 
-DNSY is a single-binary Rust DNS server: UDP/TCP, DoT (with mTLS), DoH (with tokens), forwarding with load balancing, a full-featured cache, DNSSEC validation and zone signing, filtering, JSON zones, query log and stats, a REST API, and a Tron-styled Angular web UI. Spec: `docs/superpowers/specs/2026-10-20-dnsy-design.md`. Plan and Jira story table: `docs/superpowers/plans/2026-10-20-dnsy-implementation.md`. Both are the contract; pinned interfaces, migration numbers and file ownership are fixed.
+DNSY is a single-binary Rust DNS server: UDP/TCP, DoT (with mTLS), DoH (with tokens), forwarding with load balancing, a full-featured cache, DNSSEC validation and zone signing, filtering, JSON zones, query log and stats, a REST API, and an Ares-styled Angular web UI. Spec: `docs/superpowers/specs/2026-10-20-dnsy-design.md`. Plan and Jira story table: `docs/superpowers/plans/2026-10-20-dnsy-implementation.md`. Both are the contract; pinned interfaces, migration numbers and file ownership are fixed.
 
 ## Layout
 

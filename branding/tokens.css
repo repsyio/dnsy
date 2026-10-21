@@ -1,47 +1,52 @@
 /* DNSY design tokens: single source for the web UI, docs and landing page. */
 @font-face {
-  font-family: "Orbitron";
-  font-weight: 500;
-  font-display: swap;
-  src: url("fonts/orbitron-latin-500-normal.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Orbitron";
-  font-weight: 700;
-  font-display: swap;
-  src: url("fonts/orbitron-latin-700-normal.woff2") format("woff2");
-}
-@font-face {
-  font-family: "JetBrains Mono";
+  font-family: "Michroma";
   font-weight: 400;
   font-display: swap;
-  src: url("fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+  src: url("fonts/michroma-latin-400-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: "JetBrains Mono";
+  font-family: "Geist";
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/geist-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/geist-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
   font-weight: 600;
   font-display: swap;
-  src: url("fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+  src: url("fonts/geist-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/geist-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/geist-mono-latin-500-normal.woff2") format("woff2");
 }
 
 :root {
-  --dnsy-bg: #05080d;
-  --dnsy-surface: #0b121b;
-  --dnsy-cyan: #19e6ff;
-  --dnsy-cyan-glow: rgb(25 230 255 / 45%);
-  --dnsy-orange: #ff8a1f;
-  --dnsy-text: #d7f6ff;
-  --dnsy-muted: #6f8a99;
-  --dnsy-grid: rgb(25 230 255 / 12%);
-  --dnsy-secure: #2dff9a;
-  --dnsy-bogus: #ff3b5c;
+  --dnsy-bg: #050505;
+  --dnsy-surface: #0d0d0d;
+  --dnsy-text: #f2f2f2;
+  --dnsy-muted: #8c8c8c;
+  --dnsy-line: #2a2a2a;
+  --dnsy-red: #ff2e2e;
+  --dnsy-amber: #ffb020;
+  --dnsy-secure: #3ddc97;
 
-  --dnsy-font-display: "Orbitron", "Eurostile", sans-serif;
-  --dnsy-font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
-  --dnsy-font-body: var(--dnsy-font-mono);
-
-  --dnsy-glow-sm: 0 0 6px var(--dnsy-cyan-glow);
-  --dnsy-glow-md: 0 0 12px var(--dnsy-cyan-glow), 0 0 2px var(--dnsy-cyan);
-  --dnsy-glow-lg: 0 0 24px var(--dnsy-cyan-glow), 0 0 6px var(--dnsy-cyan);
-  --dnsy-glow-orange: 0 0 12px rgb(255 138 31 / 45%);
+  --dnsy-font-display: "Michroma", "Eurostile", "Arial", sans-serif;
+  --dnsy-font-body: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --dnsy-font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", monospace;
 }

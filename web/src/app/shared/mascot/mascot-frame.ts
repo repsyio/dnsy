@@ -10,8 +10,9 @@ import {
 import { injectReducedMotion } from './reduced-motion';
 
 /**
- * Nox, drawn inline so global CSS keyframes (styles/mascot.css) can animate its parts. The art
- * follows branding/mascot/nox-*.svg; the standalone files stay the static source of truth.
+ * Nox, drawn inline so the global rules in mascot.css can colour and animate its parts from the
+ * brand tokens. The art follows branding/mascot/nox-*.svg in the 200x200 design space (the files
+ * scale it into their 64x64 viewBox); the standalone files stay the static source of truth.
  */
 @Component({
   selector: 'dnsy-mascot-frame',
@@ -20,175 +21,60 @@ import { injectReducedMotion } from './reduced-motion';
     <figure class="m-0 flex flex-col items-center gap-3 text-center">
       <svg
         xmlns="http://www.w3.org/2000/svg"
-        viewBox="0 0 64 64"
+        viewBox="0 0 200 200"
         role="img"
         [attr.aria-label]="label()"
         class="nox"
         [class]="svgClass()"
         [class.nox-static]="reduced()"
       >
-        <g class="nox-bob">
+        <g
+          class="nox-head"
+          [attr.transform]="state() === 'not-found' ? 'rotate(-9 100 100)' : null"
+        >
           <path
-            class="nox-body"
-            d="M12 8 L24 16 H40 L52 8 V34 L44 52 L32 58 L20 52 L12 34 Z"
-            fill="#05080d"
-            stroke="#19e6ff"
-            stroke-width="2.5"
-            stroke-linejoin="round"
+            class="nox-ln"
+            d="M100 34 L146 20 L162 70 L152 140 L100 178 L48 140 L38 70 L54 20 Z"
+          />
+          <path
+            class="nox-ln nox-dash"
+            d="M100 46 L138 34 L150 72 L141 133 L100 163 L59 133 L50 72 L62 34 Z"
           />
           @switch (state()) {
             @case ('loading') {
-              <circle cx="23" cy="28" r="6" fill="none" stroke="#19e6ff" stroke-width="2" />
-              <circle
-                cx="41"
-                cy="28"
-                r="6"
-                fill="#19e6ff"
-                fill-opacity=".25"
-                stroke="#19e6ff"
-                stroke-width="2"
-              />
-              <g class="nox-scan">
-                <circle cx="23" cy="28" r="2.4" fill="#19e6ff" />
-                <circle cx="41" cy="28" r="2.4" fill="#19e6ff" />
-              </g>
+              <path class="nox-ln" d="M44 80 L100 98 L156 80" />
+              <path class="nox-eye nox-dim" d="M62 101.5 H88 M112 101.5 H138" />
+              <rect class="nox-sweep" x="62" y="100.5" width="9" height="2" />
+              <path class="nox-beak" d="M93 108 L100 116 L107 108" />
             }
             @case ('empty') {
-              <circle
-                class="nox-dash"
-                cx="23"
-                cy="28"
-                r="6"
-                fill="none"
-                stroke="#19e6ff"
-                stroke-width="2"
-                stroke-dasharray="3 3"
-              />
-              <circle
-                class="nox-dash"
-                cx="41"
-                cy="28"
-                r="6"
-                fill="none"
-                stroke="#19e6ff"
-                stroke-width="2"
-                stroke-dasharray="3 3"
-              />
+              <path class="nox-ln" d="M44 86 L100 96 L156 86" />
+              <path class="nox-eye" d="M68 108 H84 M116 108 H132" />
+              <path class="nox-beak" d="M93 114 L100 122 L107 114" />
             }
             @case ('error') {
-              <path
-                class="nox-flash"
-                d="M18 23 L28 33 M28 23 L18 33 M36 23 L46 33 M46 23 L36 33"
-                fill="none"
-                stroke="#ff3b5c"
-                stroke-width="2.5"
-                stroke-linecap="round"
-              />
+              <path class="nox-ln" d="M44 74 L100 100 L156 74" />
+              <path class="nox-eye nox-flicker" d="M62 97 L88 105 M112 105 L138 97" />
+              <path class="nox-beak" d="M93 110 L100 118 L107 110" />
             }
             @case ('success') {
-              <path
-                d="M17 31 Q23 22 29 31 M35 31 Q41 22 47 31"
-                fill="none"
-                stroke="#2dff9a"
-                stroke-width="2.5"
-                stroke-linecap="round"
-              />
+              <path class="nox-ln" d="M44 80 L100 98 L156 80" />
+              <path class="nox-eye" d="M62 105 L75 98 L88 105 M112 105 L125 98 L138 105" />
+              <path class="nox-beak" d="M93 110 L100 118 L107 110" />
             }
             @case ('offline') {
-              <path
-                class="nox-breathe"
-                d="M17 29 Q23 34 29 29 M35 29 Q41 34 47 29"
-                fill="none"
-                stroke="#19e6ff"
-                stroke-width="2.5"
-                stroke-linecap="round"
-              />
+              <path class="nox-ln" d="M44 80 L100 98 L156 80" />
+              <path class="nox-eye nox-broken" d="M62 101.5 H88 M112 101.5 H138" />
+              <path class="nox-beak" d="M93 108 L100 116 L107 108" />
             }
             @case ('not-found') {
-              <circle cx="23" cy="28" r="6" fill="none" stroke="#19e6ff" stroke-width="2" />
-              <circle
-                cx="41"
-                cy="28"
-                r="6"
-                fill="#19e6ff"
-                fill-opacity=".25"
-                stroke="#19e6ff"
-                stroke-width="2"
-              />
-              <g class="nox-scan">
-                <circle cx="23" cy="28" r="2.4" fill="#19e6ff" />
-                <circle cx="41" cy="28" r="2.4" fill="#19e6ff" />
-              </g>
-              <text
-                class="nox-flash font-display"
-                x="32"
-                y="20"
-                text-anchor="middle"
-                font-weight="700"
-                font-size="11"
-                fill="#ff8a1f"
-              >
-                404
-              </text>
+              <path class="nox-ln" d="M44 80 L100 98 L156 80" />
+              <path class="nox-eye" d="M62 101.5 H88" />
+              <circle class="nox-eye" cx="125" cy="101" r="6" />
+              <path class="nox-beak" d="M93 108 L100 116 L107 108" />
             }
           }
-          <path d="M28 38 H36 L32 46 Z" fill="#ff8a1f" />
         </g>
-        @switch (state()) {
-          @case ('loading') {
-            <circle
-              cx="54"
-              cy="14"
-              r="8"
-              fill="none"
-              stroke="#ff8a1f"
-              stroke-opacity=".2"
-              stroke-width="2.5"
-            />
-            <g class="nox-spin">
-              <path
-                d="M54 6 A8 8 0 1 1 46 14"
-                fill="none"
-                stroke="#ff8a1f"
-                stroke-width="2.5"
-                stroke-linecap="round"
-              />
-            </g>
-          }
-          @case ('empty') {
-            <path
-              class="nox-floor"
-              d="M8 62 H56"
-              stroke="#19e6ff"
-              stroke-opacity=".4"
-              stroke-dasharray="4 3"
-            />
-          }
-          @case ('error') {
-            <path class="nox-flash" d="M32 0 L36 8 H28 Z" fill="#ff3b5c" />
-          }
-          @case ('success') {
-            <path
-              class="nox-draw"
-              d="M48 8 L53 13 L61 3"
-              pathLength="1"
-              fill="none"
-              stroke="#2dff9a"
-              stroke-width="3"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          }
-          @case ('offline') {
-            <path
-              class="nox-flash"
-              d="M6 6 L58 58"
-              stroke="#ff3b5c"
-              stroke-width="2.5"
-              stroke-linecap="round"
-            />
-          }
-        }
       </svg>
       <figcaption class="text-sm text-muted" [attr.role]="role()">{{ text() }}</figcaption>
       @if (action(); as actionLabel) {

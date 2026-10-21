@@ -13,12 +13,12 @@ export const REFRESH_MS = 5000;
   imports: [ConfirmDialog, MascotErrorComponent, MascotLoadingComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">Cache</h1>
+    <h1 class="mb-6 page-title">Cache</h1>
 
     @if (stats(); as s) {
       <section class="panel mb-6" aria-labelledby="cs-h">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 id="cs-h" class="text-lg text-cyan">Statistics</h2>
+          <h2 id="cs-h" class="section-title">Statistics</h2>
           <span class="text-xs text-muted">Refreshes every 5 seconds</span>
         </div>
         @if (refreshFailed()) {
@@ -30,7 +30,7 @@ export const REFRESH_MS = 5000;
           @for (item of items(s); track item.label) {
             <div>
               <dt class="text-xs uppercase tracking-wider text-muted">{{ item.label }}</dt>
-              <dd class="font-display text-xl text-cyan">{{ item.value }}</dd>
+              <dd class="text-xl font-medium tabular-nums text-text">{{ item.value }}</dd>
             </div>
           }
         </dl>
@@ -46,7 +46,7 @@ export const REFRESH_MS = 5000;
     }
 
     <section class="panel" aria-labelledby="fl-h">
-      <h2 id="fl-h" class="mb-4 text-lg text-cyan">Flush</h2>
+      <h2 id="fl-h" class="mb-4 section-title">Flush</h2>
       <form class="mb-6 flex flex-wrap items-end gap-3" novalidate (submit)="flushName($event)">
         <div>
           <label class="field-label" for="fl-name">Domain name</label>

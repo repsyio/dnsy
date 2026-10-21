@@ -66,7 +66,7 @@ const REGISTRAR_ROLLOVER =
       @default {
         @if (view(); as v) {
           @if (v.enabled && !v.keys_encrypted) {
-            <p class="mb-4 border border-orange p-3 text-sm text-orange" role="alert">
+            <p class="mb-4 hairline border-amber p-3 text-sm text-amber" role="alert">
               Private keys are not encrypted at rest. Set a key passphrase (<code
                 >DNSY_DNSSEC_PASSPHRASE</code
               >
@@ -81,7 +81,7 @@ const REGISTRAR_ROLLOVER =
           }
 
           @if (!v.enabled) {
-            <h2 class="mb-2 text-lg text-cyan">Sign this zone</h2>
+            <h2 class="mb-2 section-title">Sign this zone</h2>
             <p class="mb-4 text-sm text-muted">
               DNSSEC adds signatures to the zone so resolvers can prove answers are genuine. After
               enabling you publish a DS record at your registrar.
@@ -140,7 +140,7 @@ const REGISTRAR_ROLLOVER =
                 </label>
               </fieldset>
               @if (denial() === 'nsec3') {
-                <div class="grid gap-4 border border-cyan/30 p-4 sm:grid-cols-2">
+                <div class="grid gap-4 hairline border-line p-4 sm:grid-cols-2">
                   <div>
                     <label class="field-label" for="dn-salt">Salt (hex, optional)</label>
                     <input
@@ -241,7 +241,7 @@ const REGISTRAR_ROLLOVER =
             </div>
 
             @if (v.rollover.rollovers.length > 0) {
-              <div class="mb-4 border border-cyan/30 p-3 text-sm" role="status">
+              <div class="mb-4 hairline border-line p-3 text-sm" role="status">
                 <ul class="mb-3 grid gap-1">
                   @for (r of v.rollover.rollovers; track r.new_key_id) {
                     <li>
@@ -266,7 +266,7 @@ const REGISTRAR_ROLLOVER =
               </div>
             }
 
-            <h2 class="mb-2 text-lg text-cyan">Keys</h2>
+            <h2 class="mb-2 section-title">Keys</h2>
             <div class="mb-6 overflow-x-auto">
               <table class="w-full text-left text-sm">
                 <caption class="sr-only">
@@ -283,7 +283,7 @@ const REGISTRAR_ROLLOVER =
                 </thead>
                 <tbody>
                   @for (k of v.keys; track k.id) {
-                    <tr class="border-t border-cyan/20 align-top">
+                    <tr class="border-t-[0.5px] border-line align-top">
                       <td class="py-2 pr-4 uppercase">{{ k.role }}</td>
                       <td class="py-2 pr-4">{{ k.key_tag }}</td>
                       <td class="py-2 pr-4">
@@ -302,7 +302,7 @@ const REGISTRAR_ROLLOVER =
                       <td class="whitespace-nowrap py-2">
                         @if (needsDsConfirm(k)) {
                           <button
-                            class="mr-3 cursor-pointer text-cyan underline"
+                            class="mr-3 cursor-pointer text-red underline"
                             type="button"
                             [attr.aria-label]="'DS confirmed at registrar for key ' + k.key_tag"
                             (click)="action.set({ kind: 'confirm-ds', key: k })"
@@ -312,7 +312,7 @@ const REGISTRAR_ROLLOVER =
                         }
                         @if (k.state === 'active' && !rollingRole(v, k.role)) {
                           <button
-                            class="cursor-pointer text-orange underline"
+                            class="cursor-pointer text-amber underline"
                             type="button"
                             [attr.aria-label]="'Start rollover of key ' + k.key_tag"
                             (click)="action.set({ kind: 'rollover', key: k })"
@@ -327,7 +327,7 @@ const REGISTRAR_ROLLOVER =
               </table>
             </div>
 
-            <h2 class="mb-2 text-lg text-cyan">DS records for the registrar</h2>
+            <h2 class="mb-2 section-title">DS records for the registrar</h2>
             <p class="mb-3 text-sm text-muted">
               Add one DS record at your registrar. Use SHA-256 unless the registrar only offers
               SHA-384. Registrars that take keys want the DNSKEY instead.
@@ -338,7 +338,7 @@ const REGISTRAR_ROLLOVER =
               } @else {
                 <ul class="mb-3 grid gap-3">
                   @for (r of dsOrdered(d); track r.record) {
-                    <li class="border border-cyan/30 p-3">
+                    <li class="hairline border-line p-3">
                       <p class="mb-1 text-xs text-muted">
                         Key {{ r.key_tag }}, {{ digest(r.digest_type) }}
                       </p>
@@ -361,10 +361,10 @@ const REGISTRAR_ROLLOVER =
                 </button>
               }
               @if (d.dnskey.length > 0) {
-                <h3 class="mb-2 mt-4 text-sm text-cyan">DNSKEY records</h3>
+                <h3 class="mb-2 mt-4 section-title">DNSKEY records</h3>
                 <ul class="grid gap-3">
                   @for (r of d.dnskey; track r.record) {
-                    <li class="border border-cyan/30 p-3">
+                    <li class="hairline border-line p-3">
                       <code class="block break-all text-sm">{{ r.record }}</code>
                       <button
                         class="btn mt-2"

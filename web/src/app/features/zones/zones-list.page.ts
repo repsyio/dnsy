@@ -22,7 +22,7 @@ import type { CreateZone, ZoneSummary } from './zones.service';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
-      <h1 class="text-2xl font-bold text-cyan">Zones</h1>
+      <h1 class="page-title">Zones</h1>
       <button class="btn" type="button" (click)="openCreate()">Create zone</button>
     </div>
 
@@ -57,9 +57,9 @@ import type { CreateZone, ZoneSummary } from './zones.service';
                 </thead>
                 <tbody>
                   @for (z of zones(); track z.name) {
-                    <tr class="border-t border-cyan/20">
+                    <tr class="border-t-[0.5px] border-line">
                       <td class="py-2 pr-4">
-                        <a class="text-cyan underline" [routerLink]="['/zones', z.name]">{{
+                        <a class="text-red underline" [routerLink]="['/zones', z.name]">{{
                           z.name
                         }}</a>
                       </td>
@@ -75,7 +75,7 @@ import type { CreateZone, ZoneSummary } from './zones.service';
                           }
                         </div>
                         @if (z.load_error) {
-                          <p class="mt-1 text-xs text-orange">{{ z.load_error }}</p>
+                          <p class="mt-1 text-xs text-amber">{{ z.load_error }}</p>
                         }
                       </td>
                     </tr>

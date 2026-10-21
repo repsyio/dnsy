@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { apiInterceptor } from '../../core/api.interceptor';
 import { LoginPage } from './login.page';
-import { LOGIN_SCENE_LOADER } from './scene-loader';
+import { LOGIN_SCENE_FACTORY } from './scene-factory';
 
 describe('LoginPage', () => {
   let ctrl: HttpTestingController;
@@ -19,20 +19,13 @@ describe('LoginPage', () => {
     create.mockClear();
   });
 
-  const withWebGl = (): void => {
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-      getExtension: () => null,
-    } as unknown as RenderingContext);
-  };
-
   beforeEach(() => {
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     TestBed.configureTestingModule({
       providers: [
         provideRouter([]),
         provideHttpClient(withInterceptors([apiInterceptor])),
         provideHttpClientTesting(),
-        { provide: LOGIN_SCENE_LOADER, useValue: () => Promise.resolve(create) },
+        { provide: LOGIN_SCENE_FACTORY, useValue: create },
       ],
     });
     ctrl = TestBed.inject(HttpTestingController);
@@ -132,18 +125,18 @@ describe('LoginPage', () => {
     expect(submitBtn.disabled).toBe(false);
   });
 
-  it('fallback_when_webgl_missing', async () => {
+  it('starts the scene after render, decorative and animated without reduced motion', async () => {
     const fixture = TestBed.createComponent(LoginPage);
     await fixture.whenStable();
     const el = fixture.nativeElement as HTMLElement;
-    expect(el.querySelector('[data-testid=static-grid]')).not.toBeNull();
-    expect(create).not.toHaveBeenCalled();
-    expect(el.querySelector('canvas')?.classList.contains('hidden')).toBe(true);
+    const canvas = el.querySelector('canvas')!;
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith(canvas, { reducedMotion: false });
+    expect(el.querySelector('[data-testid=login-art]')?.getAttribute('aria-hidden')).toBe('true');
     expect(el.querySelector('form')).not.toBeNull();
   });
 
-  it('fallback_when_reduced_motion', async () => {
-    withWebGl();
+  it('reduced_motion_asks_for_a_still_scene', async () => {
     vi.stubGlobal('matchMedia', () => ({
       matches: true,
       addEventListener: () => undefined,
@@ -151,23 +144,30 @@ describe('LoginPage', () => {
     }));
     const fixture = TestBed.createComponent(LoginPage);
     await fixture.whenStable();
-    expect(fixture.nativeElement.querySelector('[data-testid=static-grid]')).not.toBeNull();
-    expect(create).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), { reducedMotion: true });
   });
 
-  it('starts the scene when WebGL works and disposes it on destroy', async () => {
-    withWebGl();
+  it('restarts the scene when the reduced-motion preference changes', async () => {
+    let listener: ((e: { matches: boolean }) => void) | undefined;
+    vi.stubGlobal('matchMedia', () => ({
+      matches: false,
+      addEventListener: (_: string, fn: typeof listener) => (listener = fn),
+      removeEventListener: () => undefined,
+    }));
     const fixture = TestBed.createComponent(LoginPage);
     await fixture.whenStable();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(fixture.nativeElement.querySelector('[data-testid=static-grid]')).toBeNull();
+    listener!({ matches: true });
+    await fixture.whenStable();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), {
+      reducedMotion: true,
+    });
   });
 
   it('scene_disposed_on_destroy', async () => {
-    withWebGl();
     const fixture = TestBed.createComponent(LoginPage);
     await fixture.whenStable();
-    await vi.waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create).toHaveBeenCalled();
     fixture.destroy();
     expect(dispose).toHaveBeenCalledTimes(1);
   });

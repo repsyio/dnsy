@@ -8,7 +8,7 @@ import { formatCount } from './format';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <section class="panel" [attr.aria-labelledby]="headingId()">
-      <h2 [id]="headingId()" class="mb-3 text-sm text-cyan">{{ heading() }}</h2>
+      <h2 [id]="headingId()" class="mb-3 section-title">{{ heading() }}</h2>
       @if (rows().length === 0) {
         <p class="text-sm text-muted">No entries in this range.</p>
       } @else {
@@ -16,7 +16,7 @@ import { formatCount } from './format';
           @for (row of rows(); track row.key) {
             <li>
               <div class="flex items-baseline justify-between gap-3 text-sm">
-                <span class="min-w-0 truncate" [class.text-orange]="accent() === 'orange'">{{
+                <span class="min-w-0 truncate" [class.text-amber]="accent() === 'amber'">{{
                   row.key
                 }}</span>
                 <span class="shrink-0 tabular-nums text-muted">{{ row.label }}</span>
@@ -27,13 +27,13 @@ import { formatCount } from './format';
                 class="mt-1 h-1 w-full"
                 aria-hidden="true"
               >
-                <rect x="0" y="0" width="100" height="2" class="fill-cyan/10" />
+                <rect x="0" y="0" width="100" height="2" class="fill-red/10" />
                 <rect
                   x="0"
                   y="0"
                   [attr.width]="row.pct"
                   height="2"
-                  [class]="accent() === 'orange' ? 'fill-orange' : 'fill-cyan'"
+                  [class]="accent() === 'amber' ? 'fill-amber' : 'fill-red'"
                 />
               </svg>
             </li>
@@ -46,7 +46,7 @@ import { formatCount } from './format';
 export class TopList {
   readonly heading = input.required<string>();
   readonly items = input.required<components['schemas']['TopItem'][]>();
-  readonly accent = input<'cyan' | 'orange'>('cyan');
+  readonly accent = input<'red' | 'amber'>('red');
 
   protected readonly headingId = computed(
     () => 'top-' + this.heading().toLowerCase().replace(/\W+/g, '-'),

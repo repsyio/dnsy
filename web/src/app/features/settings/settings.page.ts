@@ -53,7 +53,7 @@ export function validateForm(f: Form): Record<string, string> {
   imports: [MascotErrorComponent, MascotLoadingComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">Settings</h1>
+    <h1 class="mb-6 page-title">Settings</h1>
 
     @switch (status()) {
       @case ('loading') {
@@ -73,7 +73,7 @@ export function validateForm(f: Form): Record<string, string> {
           (submit)="save($event)"
         >
           <fieldset class="sm:col-span-2">
-            <legend class="mb-2 text-lg text-cyan">Filtering</legend>
+            <legend class="mb-2 section-title">Filtering</legend>
             <label class="field-label" for="set-block">Blocked query response</label>
             <select
               id="set-block"
@@ -87,7 +87,7 @@ export function validateForm(f: Form): Record<string, string> {
           </fieldset>
 
           <fieldset>
-            <legend class="mb-2 text-lg text-cyan">Limits</legend>
+            <legend class="mb-2 section-title">Limits</legend>
             <label class="field-label" for="set-qps">Per-client queries per second (0 = off)</label>
             <input
               id="set-qps"
@@ -103,7 +103,7 @@ export function validateForm(f: Form): Record<string, string> {
           </fieldset>
 
           <fieldset>
-            <legend class="mb-2 text-lg text-cyan">Query log</legend>
+            <legend class="mb-2 section-title">Query log</legend>
             <label class="field-label" for="set-ret">Retention (days)</label>
             <input
               id="set-ret"
@@ -119,7 +119,7 @@ export function validateForm(f: Form): Record<string, string> {
           </fieldset>
 
           <fieldset class="sm:col-span-2">
-            <legend class="mb-2 text-lg text-cyan">Cache</legend>
+            <legend class="mb-2 section-title">Cache</legend>
             <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label class="field-label" for="set-min">Minimum TTL (seconds)</label>
