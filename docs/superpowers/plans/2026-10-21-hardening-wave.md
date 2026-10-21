@@ -85,6 +85,8 @@ impl Zone { pub fn add_record(&mut self, r: Record) -> RecordId; pub fn replace_
 
 `migrate.rs` registration is append-only; the set-based runner makes merge order irrelevant (0014 may land before 0010). Each owning story also appends its rows to the table in `2026-10-20-dnsy-implementation.md`. Next free number for post-1.0 stories: 0016.
 
+`migrate.rs` registration is append-only; the set-based runner makes merge order irrelevant (0014 may land before 0010). Each owning story also appends its rows to the table in `2026-10-20-dnsy-implementation.md`. Next free number for post-1.0 stories: 0017 (0015 is DNSY-95 querylog_compact, 0016 is DNSY-107 response_ip).
+
 ## Jira story table
 
 Labels: `E11-hardening` plus `wave-Hn` (must-fix) or `post-1.0` (deferred). Issue type Story. Every must-fix story has a "Blocks" link to each of DNSY-64, 65, 66, 67, and "Blocks" links for the dependencies below. Score drives the model as in the implementation plan: 1-3 `haiku`, 4-8 `sonnet`, 9-10 `opus`.
