@@ -9,8 +9,18 @@
 //! asked, and either established or past [`ESTABLISH_GRACE`] can be chosen. Choosing and the
 //! transitions to established, authenticated or busy happen under one lock, and each of those
 //! transitions withdraws a pending request, so a stale request can never close a connection that
-//! has since proved itself or started working. A recycle spends budget (per client and global)
-//! only once a victim is chosen, and the budget is refunded when no slot is obtained.
+//! has since proved itself or started working.
+//!
+//! Invariant of `acquire_or_recycle` (budget `B` = per-client turn plus one global token):
+//! 1. Nobody is woken unless `B` was reserved first: candidates are ranked without notifying, `B`
+//!    is reserved, and only then is the first still-eligible candidate asked to close.
+//! 2. `B` is refunded exactly when the recycle certainly freed nothing: no candidate was still
+//!    eligible after reserving, or the wait for the slot ended and the victim never saw the
+//!    request (`cancel_close` returns true). Once the victim saw it, or the slot was released to
+//!    anyone (even if `claim` then refuses it), `B` stays spent.
+//! 3. Every request that is not observed is either withdrawn by the connection itself (it
+//!    established, authenticated or started a request) or by `cancel_close`, so no request
+//!    outlives its waiter.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -54,6 +64,9 @@ struct State {
     authenticated: bool,
     /// The pool asked this connection to close.
     requested: bool,
+    /// The connection saw that request (its `recycled()` returned): it is closing and its slot
+    /// will be released.
+    observed: bool,
 }
 
 /// What a connection task shares with its pool: its state and the wake-up asking it to close.
@@ -79,6 +92,7 @@ impl Activity {
                 established: false,
                 authenticated: false,
                 requested: false,
+                observed: false,
             }),
             wake: Notify::new(),
         })
@@ -131,8 +145,12 @@ impl Activity {
         loop {
             // Created before the check, so a notification in between is not lost.
             let woken = self.wake.notified();
-            if self.state().requested {
-                return;
+            {
+                let mut state = self.state();
+                if state.requested {
+                    state.observed = true;
+                    return;
+                }
             }
             woken.await;
         }
@@ -164,9 +182,12 @@ impl Activity {
         eligible
     }
 
-    /// Withdraws a request nobody is waiting for any more.
-    fn cancel_close(&self) {
-        self.state().requested = false;
+    /// Withdraws a request nobody is waiting for any more. Returns true when the connection never
+    /// saw it (so no slot was or will be released because of it), false when it already did.
+    fn cancel_close(&self) -> bool {
+        let mut state = self.state();
+        state.requested = false;
+        !state.observed
     }
 }
 
@@ -347,23 +368,29 @@ impl SlotLimit {
         }
         // Never more than a few waiters, so a burst of connections cannot pile up tasks.
         let _waiting = Arc::clone(&self.pending).try_acquire_owned().ok()?;
-        let victim = self.choose_victim()?;
-        let Some(ticket) = self.reserve(ip, Instant::now()) else {
-            victim.cancel_close();
+        // Order matters: rank without waking anyone, spend the budget, and only then wake the
+        // chosen victim, so a refused reservation never disturbs a connection.
+        let candidates = self.candidates();
+        if candidates.is_empty() {
+            return None;
+        }
+        let ticket = self.reserve(ip, Instant::now())?;
+        let Some(victim) = self.request_victim(&candidates) else {
+            self.refund(&ticket);
             return None;
         };
         let waited =
             tokio::time::timeout(RECYCLE_WAIT, Arc::clone(&self.total).acquire_owned()).await;
         let Ok(Ok(permit)) = waited else {
-            victim.cancel_close();
-            self.refund(&ticket);
+            // Refund only if the victim never saw the request; if it did, it is closing and its
+            // slot went (or will go) to someone, so the recycle stays paid for.
+            if victim.cancel_close() {
+                self.refund(&ticket);
+            }
             return None;
         };
-        let slot = self.claim(ip, permit).ok();
-        if slot.is_none() {
-            self.refund(&ticket);
-        }
-        slot
+        // The slot was released by someone: the recycle stays paid for even if `claim` refuses.
+        self.claim(ip, permit).ok()
     }
 
     /// Spends one recycle for `ip`'s client, if its own and the global budget allow. Clients that
@@ -441,12 +468,14 @@ impl SlotLimit {
             .is_some_and(|n| *n >= self.clients.max)
     }
 
-    /// Asks one eligible connection to close and returns it; `None` when there is none.
-    /// Connections that never got going (past [`ESTABLISH_GRACE`]) go first, so silent ones cannot
-    /// pin slots; younger unestablished ones are left alone (they may be mid-handshake).
-    fn choose_victim(&self) -> Option<Arc<Activity>> {
-        let registry = self.registry.as_ref()?;
-        let mut candidates: Vec<_> = registry
+    /// Eligible victims, best first: connections that never got going (past [`ESTABLISH_GRACE`])
+    /// before established ones, then the longest idle. Nobody is woken; younger unestablished
+    /// connections are left alone (they may be mid-handshake).
+    fn candidates(&self) -> Vec<Arc<Activity>> {
+        let Some(registry) = self.registry.as_ref() else {
+            return Vec::new();
+        };
+        let mut ranked: Vec<_> = registry
             .live()
             .values()
             .filter_map(|a| {
@@ -454,11 +483,21 @@ impl SlotLimit {
                     .map(|rank| (rank, Arc::clone(a)))
             })
             .collect();
-        candidates.sort_by_key(|(rank, _)| *rank);
+        ranked.sort_by_key(|(rank, _)| *rank);
+        ranked.into_iter().map(|(_, a)| a).collect()
+    }
+
+    /// Asks the first candidate that is still eligible to close, and returns it.
+    fn request_victim(&self, candidates: &[Arc<Activity>]) -> Option<Arc<Activity>> {
         candidates
-            .into_iter()
-            .map(|(_, a)| a)
+            .iter()
             .find(|a| a.request_close(self.establish_grace))
+            .cloned()
+    }
+
+    #[cfg(test)]
+    fn choose_victim(&self) -> Option<Arc<Activity>> {
+        self.request_victim(&self.candidates())
     }
 }
 
@@ -1040,5 +1079,73 @@ mod tests {
         assert!(limit.clients.held.lock().unwrap().is_empty());
         assert!(limit.registry.as_ref().unwrap().live().is_empty());
         assert_eq!(limit.pending.available_permits(), MAX_PENDING_RECYCLES);
+    }
+
+    #[tokio::test]
+    async fn a_refused_reservation_never_wakes_a_connection() {
+        for exhausted in ["client", "global"] {
+            let limit = SlotLimit::new_connections(1, 1);
+            let victim = limit.try_acquire(ip("192.0.2.1")).unwrap();
+            victim.activity().establish();
+            let newcomer = ip("198.51.100.1");
+            {
+                let mut limits = limit.recycles.lock().unwrap();
+                if exhausted == "client" {
+                    limits
+                        .per_client
+                        .insert(recycle_key(newcomer), Instant::now());
+                } else {
+                    limits.in_window = MAX_RECYCLES_PER_INTERVAL;
+                }
+            }
+            assert!(
+                limit.acquire_or_recycle(newcomer).await.is_none(),
+                "{exhausted}"
+            );
+            let activity = victim.activity();
+            {
+                let state = activity.state();
+                assert!(!state.requested && !state.observed, "{exhausted}");
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), activity.wake.notified())
+                    .await
+                    .is_err(),
+                "{exhausted}: no wake-up was sent"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn budget_stays_spent_once_the_victim_saw_the_request() {
+        let limit = SlotLimit::new_connections(1, 1);
+        let slot = limit.try_acquire(ip("192.0.2.1")).unwrap();
+        slot.activity().establish();
+        let activity = slot.activity();
+        // The victim sees the request but drains slowly: past the newcomer's wait.
+        let closer = tokio::spawn(async move {
+            activity.recycled().await;
+            tokio::time::sleep(RECYCLE_WAIT + Duration::from_millis(200)).await;
+            drop(slot);
+        });
+        let newcomer = ip("198.51.100.1");
+        assert!(limit.acquire_or_recycle(newcomer).await.is_none());
+        {
+            let limits = limit.recycles.lock().unwrap();
+            assert_eq!(limits.in_window, 1, "not refunded");
+            assert!(limits.per_client.contains_key(&recycle_key(newcomer)));
+        }
+        // The same client cannot simply retry: its turn is spent too.
+        assert!(limit.reserve(newcomer, Instant::now()).is_none());
+        closer.await.unwrap();
+        // A request the connection never saw is the only kind that can be withdrawn for a refund.
+        let slot = limit.try_acquire(ip("192.0.2.2")).unwrap();
+        slot.activity().establish();
+        let candidates = limit.candidates();
+        let victim = limit.request_victim(&candidates).unwrap();
+        assert!(victim.cancel_close());
+        let victim2 = limit.request_victim(&candidates).unwrap();
+        victim2.recycled().await;
+        assert!(!victim2.cancel_close());
     }
 }

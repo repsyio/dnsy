@@ -98,9 +98,12 @@ recycled connection is dropped at once (unflushed output is abandoned).
 
 Budgets: a client that already holds its whole share never recycles; one client (IPv4 address or
 IPv6 `/56`) recycles at most once per second; all clients together at most 64 per second, of which
-the last 32 are reserved for clients that have not recycled in the last 10 seconds. A recycle spends
-budget only once a victim is chosen and gives it back when the freed slot is not obtained within
-500 ms (the request is then withdrawn). At most 32 newcomers wait at once and the accept loop never
+the last 32 are reserved for clients that have not recycled in the last 10 seconds. The order is fixed:
+candidates are ranked without waking anyone, the budget is reserved, and only then is a victim asked
+to close, so a refused reservation never disturbs a connection. The budget is given back only when
+the recycle certainly freed nothing: no candidate was left after reserving, or the 500 ms wait for
+the slot ended and the victim never saw the request (which is then withdrawn). Once the victim saw
+the request, or its slot went to anyone, the budget stays spent. At most 32 newcomers wait at once and the accept loop never
 waits. The invariants (protected connections are never asked to close, each recycle frees exactly
 one slot, nothing leaks) are tested in `crates/dnsy-server/src/admission.rs`.
 
