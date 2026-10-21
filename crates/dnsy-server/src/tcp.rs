@@ -96,25 +96,32 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
                 }
             },
         };
-        let Some(permit) = slots.acquire_or_recycle(client.ip()).await else {
-            tracing::debug!(%client, "tcp connection limit reached (shared or per client); closing");
-            continue; // dropping the stream closes it
-        };
-        // Answers are small frames; Nagle plus the peer's delayed ACK would hold each for ~40 ms.
-        if let Err(e) = stream.set_nodelay(true) {
-            tracing::debug!(%client, error = %e, "tcp set_nodelay failed");
-        }
         let handler = Arc::clone(&handler);
         let shutdown = shutdown.clone();
         let wrap = wrap.clone();
-        let activity = permit.activity();
+        let slots = Arc::clone(&slots);
+        // The slot is taken in the connection task: recycling an idle connection can take a
+        // moment, and the accept loop must keep serving everyone else meanwhile.
         conns.spawn(async move {
-            // A handshake that stalls is idle too, so it can be recycled like any connection.
-            let wrapped = tokio::select! {
-                () = activity.recycled() => None,
-                wrapped = wrap(stream) => wrapped,
+            let Some(permit) = slots.acquire_or_recycle(client.ip()).await else {
+                tracing::debug!(%client, "tcp connection limit reached (shared or per client); closing");
+                return; // dropping the stream closes it
             };
+            // Answers are small frames; Nagle plus the peer's delayed ACK would hold each for ~40 ms.
+            if let Err(e) = stream.set_nodelay(true) {
+                tracing::debug!(%client, error = %e, "tcp set_nodelay failed");
+            }
+            let activity = permit.activity();
+            // A handshake that stalls is not yet established, so it is never recycled, but it is
+            // still bounded by the idle time inside `wrap`.
+            let wrapped = wrap(stream).await;
             if let Some((stream, session)) = wrapped {
+                if flavor.transport != Transport::Tcp {
+                    activity.establish(); // TLS handshake done
+                }
+                if session.is_some() {
+                    activity.mark_authenticated();
+                }
                 let link = Link { session, activity };
                 connection(stream, client, link, handler, shutdown, limits, flavor).await;
             }
@@ -151,6 +158,7 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
     let idle = limits.idle;
     let writer_task = tokio::spawn(write_frames(writer, rx, idle));
 
+    let mut recycled = false;
     let mut requests = JoinSet::new();
     loop {
         while requests.try_join_next().is_some() {}
@@ -160,11 +168,15 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
         // The whole frame must arrive within the idle time, so slow drip-feeding is cut off too.
         let frame = tokio::select! {
             _ = shutdown.changed() => break,
-            () = activity.recycled() => break,
+            () = activity.recycled() => {
+                recycled = true;
+                break;
+            }
             frame = timeout(idle, read_frame(&mut reader)) => frame,
         };
         // Anything but a frame: peer closed, I/O error, empty frame or idle timeout.
         let Ok(Ok(Some(packet))) = frame else { break };
+        activity.establish();
         activity.touch();
         match parse_admitted(&packet, &*handler, client, flavor.transport) {
             // Garbage on a stream cannot be re-synchronised; answer if possible and close.
@@ -202,6 +214,13 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
                 });
             }
         }
+    }
+    if recycled {
+        // Make room now: whatever is queued or half written is abandoned, so a peer that stopped
+        // reading cannot hold the slot.
+        writer_task.abort();
+        requests.abort_all();
+        return;
     }
     // Let in-flight requests finish (bounded by the drain time), then flush and close.
     let _ = timeout(limits.drain, async {
@@ -326,5 +345,109 @@ mod tests {
         let mut out = Vec::new();
         push_frame(&mut out, &vec![0; 70_000]);
         assert_eq!(out, Vec::<u8>::new());
+    }
+
+    fn query_frame() -> Vec<u8> {
+        use dnsy_proto::{Class, Message, Name, Question, RecordType};
+        let mut m = Message::response_to(&Message::decode(&[0; 12]).unwrap());
+        m.header.qr = false;
+        m.header.id = 7;
+        m.questions.push(Question {
+            name: Name::from_ascii("a.example.").unwrap(),
+            qtype: RecordType::A,
+            qclass: Class::In,
+        });
+        let bytes = m.encode(512).unwrap();
+        let mut out = u16::try_from(bytes.len()).unwrap().to_be_bytes().to_vec();
+        out.extend_from_slice(&bytes);
+        out
+    }
+
+    #[tokio::test]
+    async fn recycled_connection_with_a_stalled_reader_is_released_at_once() {
+        use dnsy_engine::RefusedHandler;
+        let slots = SlotLimit::new_connections(1, 4);
+        let slot = slots.try_acquire("192.0.2.1".parse().unwrap()).unwrap();
+        let activity = slot.activity();
+        // A tiny pipe that the peer never reads: the answer cannot be flushed.
+        let (server_side, mut peer) = tokio::io::duplex(8);
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let limits = Limits {
+            idle: Duration::from_secs(30),
+            drain: Duration::from_secs(30),
+        };
+        let link = Link {
+            session: None,
+            activity,
+        };
+        let conn = tokio::spawn(async move {
+            connection(
+                server_side,
+                "192.0.2.1:5353".parse().unwrap(),
+                link,
+                Arc::new(RefusedHandler),
+                shutdown,
+                limits,
+                Flavor::PLAIN,
+            )
+            .await;
+            drop(slot);
+        });
+        peer.write_all(&query_frame()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Another client needs the slot: the stalled connection must go within the bound.
+        let taken = tokio::time::timeout(
+            Duration::from_secs(2),
+            slots.acquire_or_recycle("192.0.2.2".parse().unwrap()),
+        )
+        .await
+        .expect("recycling completes");
+        assert!(taken.is_some());
+        tokio::time::timeout(Duration::from_secs(1), conn)
+            .await
+            .expect("the connection task ended without waiting for the flush")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn accept_loop_keeps_serving_while_a_recycle_is_pending() {
+        use dnsy_engine::RefusedHandler;
+        let slots = SlotLimit::new_connections(1, 4);
+        // An established idle connection that never lets go of its slot.
+        let stuck = slots.try_acquire("127.0.0.1".parse().unwrap()).unwrap();
+        stuck.activity().establish();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let limits = Limits {
+            idle: Duration::from_secs(5),
+            drain: Duration::from_millis(100),
+        };
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::new(RefusedHandler),
+            shutdown,
+            limits,
+            Arc::clone(&slots),
+        ));
+        let connect_from = |src: &'static str| async move {
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket.bind(format!("{src}:0").parse().unwrap()).unwrap();
+            socket.connect(addr).await.unwrap()
+        };
+        // The first newcomer asks the stuck connection to close and waits for its slot.
+        let _waiting = connect_from("127.0.0.2").await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The second one must be turned away at once, not after the first one's wait.
+        let mut refused = connect_from("127.0.0.3").await;
+        let mut buf = [0_u8; 1];
+        let n = tokio::time::timeout(Duration::from_millis(250), refused.read(&mut buf))
+            .await
+            .expect("the accept loop was not blocked by the pending recycle")
+            .unwrap_or(0);
+        assert_eq!(n, 0);
+        drop(stuck);
+        let _ = shutdown_tx.send(true);
+        server.await.unwrap();
     }
 }

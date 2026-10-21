@@ -149,12 +149,19 @@ async fn rate_limited_udp_dropped() {
         socket.send_to(&wire(&www()), h.udp).await.unwrap();
     }
     let mut answered = 0;
+    let mut slipped = 0;
     let mut buf = vec![0u8; 4096];
     while let Ok(Ok(_)) =
         tokio::time::timeout(Duration::from_millis(600), socket.recv_from(&mut buf)).await
     {
-        answered += 1;
+        // Over the limit one query in `rate_limit_slip` (2) gets a minimal TC=1 reply.
+        if buf[2] & 0x02 != 0 {
+            slipped += 1;
+        } else {
+            answered += 1;
+        }
     }
+    assert!(slipped >= 1, "over-limit queries slip a truncated reply");
     assert!(
         answered >= 1,
         "the burst allowance answers the first queries"

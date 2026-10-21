@@ -47,9 +47,15 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
   `limits.max_tcp_conns` (1024) shared by all its listen addresses, and one client (IPv4 address
   or IPv6 `/64`) may hold `limits.max_conns_per_client` (16) of them, so a single source cannot
   take every slot. When a pool is full, the connection that has been idle longest (no request in
-  flight) is closed to make room for the new one, as BIND does with `tcp-clients`; a client that
-  already holds its whole share never evicts anyone, and nothing is evicted while every connection
-  is serving a request, so then the new connection is closed at accept. UDP is bounded by
+  flight) is closed to make room for the new one, as BIND does with `tcp-clients`. Only
+  connections that finished their TLS handshake (DoT, DoH) or sent a complete query (plain TCP)
+  can be chosen, and never one that proved an identity (an mTLS client certificate, a DoH token),
+  so a flood of connections that never get that far cannot push out working or authenticated ones.
+  A client that already holds its whole share never evicts anyone, one client (IPv4 address or
+  IPv6 `/64`) recycles at most one connection per second, and at most 32 newcomers wait for a
+  recycled slot at once. The recycled connection is dropped immediately, abandoning any unflushed
+  output, so a peer that stopped reading cannot hold the slot. If nothing can be recycled the new
+  connection is closed at accept. The accept loop never waits for any of this. UDP is bounded by
   `limits.udp_in_flight` (4096) requests in flight with `limits.udp_in_flight_per_client` (64)
   per client; excess datagrams are dropped. The API listener closes connections that send nothing
   or an incomplete request head within 30 s, closes connections (HTTP/1.1 or HTTP/2, pings notwithstanding) that have had no request in progress for 30 s, serves at most `api.max_conns` (256) connections (and `api.max_conns_per_client` (64) per client address, so one address cannot lock out the admin API) and

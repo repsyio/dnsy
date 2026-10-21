@@ -209,6 +209,7 @@ async fn tcp_connection_limit_and_garbage() {
     c.max_tcp_conns = 1;
     let server = Server::start(c, Arc::new(RefusedHandler)).await.unwrap();
     let mut idle = TcpStream::connect(server.tcp_addrs()[0]).await.unwrap();
+    establish(&mut idle).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     // The pool is full: the idle connection is recycled for the new one.
     let mut first = TcpStream::connect(server.tcp_addrs()[0]).await.unwrap();
@@ -307,6 +308,11 @@ async fn connect_from(from: &str, to: std::net::SocketAddr) -> TcpStream {
 }
 
 /// True when the server closed `s` (EOF or reset) within `wait`.
+async fn establish(s: &mut TcpStream) {
+    send_frame(s, &query(99, "warm.example.", None)).await;
+    assert_eq!(read_frame(s).await.unwrap().header.id, 99);
+}
+
 async fn closed_within(s: &mut TcpStream, wait: Duration) -> bool {
     let mut buf = [0; 1];
     match tokio::time::timeout(wait, s.read(&mut buf)).await {
@@ -325,6 +331,7 @@ async fn tcp_cap_is_shared_across_listen_addresses() {
     let addrs = server.tcp_addrs().to_vec();
     assert_eq!(addrs.len(), 2);
     let mut first = TcpStream::connect(addrs[0]).await.unwrap();
+    establish(&mut first).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let mut second = TcpStream::connect(addrs[1]).await.unwrap();
     // One pool: the second listener's connection recycles the first listener's idle one.
@@ -341,8 +348,10 @@ async fn tcp_cap_recycles_oldest_idle_connection() {
     let server = Server::start(c, Arc::new(RefusedHandler)).await.unwrap();
     let addr = server.tcp_addrs()[0];
     let mut oldest = TcpStream::connect(addr).await.unwrap();
+    establish(&mut oldest).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let mut newer = TcpStream::connect(addr).await.unwrap();
+    establish(&mut newer).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     // Using the older connection makes the other one the longest idle.
     send_frame(&mut oldest, &query(1, "a.example.", None)).await;

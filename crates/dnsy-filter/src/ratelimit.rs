@@ -148,7 +148,7 @@ impl RateLimiter {
             RateVerdict::Allow
         } else if transport == Transport::Udp {
             bucket.over = bucket.over.wrapping_add(1);
-            if self.slip > 0 && bucket.over % self.slip == 0 {
+            if self.slip > 0 && bucket.over.is_multiple_of(self.slip) {
                 RateVerdict::Slip
             } else {
                 RateVerdict::Drop

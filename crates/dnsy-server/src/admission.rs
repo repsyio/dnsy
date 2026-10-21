@@ -13,6 +13,13 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 /// How long a new connection waits for the slot of a connection that was asked to close.
 const RECYCLE_WAIT: Duration = Duration::from_millis(500);
+/// New connections that may wait for a recycled slot at once; further ones are closed at once.
+const MAX_PENDING_RECYCLES: usize = 32;
+/// One client (`client_key`) may recycle at most one connection per interval.
+const RECYCLE_INTERVAL: Duration = Duration::from_secs(1);
+/// Clients whose last recycle is remembered; when full, the table is pruned, and if it is still
+/// full no further recycling happens until entries age out.
+const MAX_RECYCLE_CLIENTS: usize = 1024;
 
 /// Per-client counters. Entries exist only while a client holds at least one slot, so the map is
 /// bounded by the global cap.
@@ -27,6 +34,8 @@ struct ClientCounts {
 #[derive(Debug)]
 pub struct Activity {
     last: Mutex<Instant>,
+    established: AtomicBool,
+    authenticated: AtomicBool,
     busy: AtomicUsize,
     recycling: AtomicBool,
     recycle: Notify,
@@ -40,6 +49,8 @@ impl Activity {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             last: Mutex::new(Instant::now()),
+            established: AtomicBool::new(false),
+            authenticated: AtomicBool::new(false),
             busy: AtomicUsize::new(0),
             recycling: AtomicBool::new(false),
             recycle: Notify::new(),
@@ -52,6 +63,19 @@ impl Activity {
             .last
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
+    }
+
+    /// The connection finished its handshake (TLS for `DoT` and `DoH`) or sent its first complete
+    /// query (plain TCP). Until then it is never chosen for recycling, so a flood of connections
+    /// that never get that far cannot push out working ones.
+    pub fn establish(&self) {
+        self.established.store(true, Ordering::Release);
+    }
+
+    /// The peer proved an identity (mTLS client certificate, `DoH` token). Such a connection is
+    /// never recycled: a new connection has no identity yet and so ranks below it.
+    pub fn mark_authenticated(&self) {
+        self.authenticated.store(true, Ordering::Release);
     }
 
     /// A request started: the connection is not idle until the guard drops.
@@ -103,6 +127,10 @@ pub struct SlotLimit {
     total: Arc<Semaphore>,
     clients: Arc<ClientCounts>,
     registry: Option<Arc<Registry>>,
+    /// Bounds the connections waiting for a recycled slot.
+    pending: Arc<Semaphore>,
+    /// When each client last recycled a connection.
+    recycled_at: Mutex<HashMap<ClientKey, Instant>>,
 }
 
 /// Holds one global slot and one per-client slot; both are released on drop.
@@ -146,6 +174,8 @@ impl SlotLimit {
                 held: Mutex::new(HashMap::new()),
             }),
             registry,
+            pending: Arc::new(Semaphore::new(MAX_PENDING_RECYCLES)),
+            recycled_at: Mutex::new(HashMap::new()),
         })
     }
 
@@ -201,7 +231,12 @@ impl SlotLimit {
             Err(Denied::Client) => return None,
             Err(Denied::Total) => {}
         }
-        if self.client_at_cap(ip) || !self.recycle_oldest_idle() {
+        if self.client_at_cap(ip) {
+            return None;
+        }
+        // Never more than a few waiters, so a burst of connections cannot pile up tasks.
+        let _waiting = Arc::clone(&self.pending).try_acquire_owned().ok()?;
+        if !self.may_recycle(ip) || !self.recycle_oldest_idle() {
             return None;
         }
         let permit = tokio::time::timeout(RECYCLE_WAIT, Arc::clone(&self.total).acquire_owned())
@@ -209,6 +244,27 @@ impl SlotLimit {
             .ok()?
             .ok()?;
         self.claim(ip, permit).ok()
+    }
+
+    /// Whether `ip`'s client may recycle a connection now; counts it if so.
+    fn may_recycle(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let mut at = self
+            .recycled_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if at.len() >= MAX_RECYCLE_CLIENTS {
+            at.retain(|_, t| now.saturating_duration_since(*t) < RECYCLE_INTERVAL);
+        }
+        let key = client_key(ip);
+        match at.get(&key) {
+            Some(t) if now.saturating_duration_since(*t) < RECYCLE_INTERVAL => false,
+            None if at.len() >= MAX_RECYCLE_CLIENTS => false,
+            _ => {
+                at.insert(key, now);
+                true
+            }
+        }
     }
 
     fn client_at_cap(&self, ip: IpAddr) -> bool {
@@ -221,7 +277,8 @@ impl SlotLimit {
             .is_some_and(|n| *n >= self.clients.max)
     }
 
-    /// Asks the connection idle the longest to close; false when there is none.
+    /// Asks the established, unauthenticated connection idle the longest to close; false when
+    /// there is none.
     fn recycle_oldest_idle(&self) -> bool {
         let Some(registry) = &self.registry else {
             return false;
@@ -229,7 +286,12 @@ impl SlotLimit {
         let live = registry.live();
         let victim = live
             .values()
-            .filter(|a| a.busy.load(Ordering::Acquire) == 0 && !a.recycling.load(Ordering::Acquire))
+            .filter(|a| {
+                a.established.load(Ordering::Acquire)
+                    && !a.authenticated.load(Ordering::Acquire)
+                    && a.busy.load(Ordering::Acquire) == 0
+                    && !a.recycling.load(Ordering::Acquire)
+            })
             .min_by_key(|a| a.last());
         victim.is_some_and(|a| {
             a.recycling.store(true, Ordering::Release);
@@ -316,6 +378,8 @@ mod tests {
         let limit = SlotLimit::new_connections(2, 2);
         let oldest = limit.try_acquire(ip("192.0.2.1")).unwrap();
         let newer = limit.try_acquire(ip("192.0.2.2")).unwrap();
+        oldest.activity().establish();
+        newer.activity().establish();
         newer.activity().touch();
         let (oldest_activity, newer_activity) = (oldest.activity(), newer.activity());
         let closer = tokio::spawn(async move {
@@ -337,7 +401,9 @@ mod tests {
     async fn busy_connections_and_full_client_shares_are_never_recycled() {
         let limit = SlotLimit::new_connections(2, 1);
         let a = limit.try_acquire(ip("192.0.2.1")).unwrap();
-        let _b = limit.try_acquire(ip("192.0.2.2")).unwrap();
+        let b = limit.try_acquire(ip("192.0.2.2")).unwrap();
+        a.activity().establish();
+        b.activity().establish();
         // The same client over its own share: refused, nobody evicted.
         assert!(limit.acquire_or_recycle(ip("192.0.2.1")).await.is_none());
         assert!(
@@ -347,12 +413,77 @@ mod tests {
         );
         // Everyone busy: refused instead of cutting a request short.
         let busy_a = a.activity().begin();
-        let busy_b = _b.activity().begin();
+        let busy_b = b.activity().begin();
         assert!(limit.acquire_or_recycle(ip("192.0.2.3")).await.is_none());
         drop((busy_a, busy_b));
         // A plain pool never recycles.
         let plain = SlotLimit::new(1, 1);
         let _held = plain.try_acquire(ip("192.0.2.1")).unwrap();
         assert!(plain.acquire_or_recycle(ip("192.0.2.2")).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn unestablished_and_authenticated_connections_are_never_evicted() {
+        let limit = SlotLimit::new_connections(3, 3);
+        let authenticated = limit.try_acquire(ip("192.0.2.1")).unwrap();
+        authenticated.activity().establish();
+        authenticated.activity().mark_authenticated();
+        let handshaking = limit.try_acquire(ip("192.0.2.2")).unwrap();
+        let plain = limit.try_acquire(ip("192.0.2.3")).unwrap();
+        plain.activity().establish();
+        let (auth_activity, hs_activity) = (authenticated.activity(), handshaking.activity());
+        let closer = tokio::spawn(async move {
+            plain.activity().recycled().await;
+            drop(plain);
+        });
+        // A flood from other addresses can only ever take the plain established connection.
+        let flood_first = limit.acquire_or_recycle(ip("198.51.100.1")).await;
+        assert!(flood_first.is_some());
+        closer.await.unwrap();
+        for n in 2..20 {
+            let attacker = ip(&format!("198.51.100.{n}"));
+            assert!(limit.acquire_or_recycle(attacker).await.is_none());
+        }
+        for activity in [auth_activity, hs_activity] {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), activity.recycled())
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn one_client_recycles_at_most_one_connection_per_interval() {
+        let limit = SlotLimit::new_connections(3, 3);
+        let victims: Vec<_> = (1..=3)
+            .map(|n| {
+                let slot = limit.try_acquire(ip(&format!("192.0.2.{n}"))).unwrap();
+                slot.activity().establish();
+                slot
+            })
+            .collect();
+        let activities: Vec<_> = victims.iter().map(Slot::activity).collect();
+        let attacker = ip("198.51.100.1");
+        let mut victims = victims.into_iter();
+        let first = victims.next().unwrap();
+        let closer = tokio::spawn(async move {
+            activities[0].recycled().await;
+            drop(first);
+            activities
+        });
+        let taken = limit.acquire_or_recycle(attacker).await;
+        assert!(taken.is_some());
+        let activities = closer.await.unwrap();
+        // Asking again at once is refused, however many idle connections remain.
+        assert!(limit.acquire_or_recycle(attacker).await.is_none());
+        for activity in &activities[1..] {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), activity.recycled())
+                    .await
+                    .is_err()
+            );
+        }
+        drop(victims);
     }
 }
