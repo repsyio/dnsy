@@ -357,14 +357,12 @@ async fn blocklist_file_source_blocks_toggles_refreshes_and_deletes() {
             matches!(&r.answers.first().map(|a| &a.data), Some(RData::A(ip)) if ip.is_unspecified())
         }
     };
-    // A new source is loaded by refresh (or the scheduler); until then it blocks nothing.
-    assert_eq!(list["entries"], 0);
-    assert!(!blocked("listed.example.net.").await);
-    let first = api
+    // A new source is fetched on creation, without waiting for the scheduler.
+    assert_eq!(list["entries"], 2, "{list}");
+    let again = api
         .post(&format!("/blocklists/{id}/refresh"), admin, &json!({}))
-        .await
-        .ok(200);
-    assert_eq!(first["entries"], 2, "{first}");
+        .await;
+    assert_eq!(again.status, 200, "{}", again.text);
     eventually(WAIT, "the list to block", || async {
         blocked("listed.example.net.").await.then_some(())
     })
