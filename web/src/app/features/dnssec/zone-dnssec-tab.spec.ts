@@ -24,11 +24,19 @@ const view = (over = {}) => ({
   signature_validity_days: 14,
   refresh_days: 5,
   dnskey_ttl: 3600,
+  propagation_delay: 3600,
   keys: [key()],
-  rollover: { state: 'idle' },
+  rollover: { state: 'idle', rollovers: [] },
   keys_encrypted: true,
   next_resign: 1_700_100_000,
   ...over,
+});
+
+const roll = (state: string, role: string, id: number) => ({
+  state,
+  role,
+  new_key_id: id,
+  rollovers: [{ role, state, new_key_id: id }],
 });
 
 const DS = {
@@ -193,7 +201,7 @@ describe('ZoneDnssecTab', () => {
     expect(req.request.method).toBe('POST');
     req.flush({}, { status: 202, statusText: 'Accepted' });
     await t.fixture.whenStable();
-    t.http.expectOne(URL).flush(view({ rollover: { state: 'in_progress', role: 'csk' } }));
+    t.http.expectOne(URL).flush(view({ rollover: roll('in_progress', 'csk', 2) }));
     await t.fixture.whenStable();
     t.http.expectOne(`${URL}/ds`).flush(DS);
     await t.fixture.whenStable();
@@ -205,7 +213,7 @@ describe('ZoneDnssecTab', () => {
   it('confirms the DS at the registrar', async () => {
     const t = await setup(
       view({
-        rollover: { state: 'awaiting_ds_confirmation', role: 'csk', new_key_id: 2 },
+        rollover: roll('awaiting_ds_confirmation', 'csk', 2),
         keys: [key(), key({ id: 2, state: 'published', key_tag: 7, published_at: 1_700_000_200 })],
       }),
     );
@@ -222,6 +230,105 @@ describe('ZoneDnssecTab', () => {
     t.http.expectOne(`${URL}/ds`).flush(DS);
     await t.fixture.whenStable();
     expect(t.el.textContent).toContain('DS confirmed.');
+  });
+
+  it('lists every concurrent rollover and starts one per idle role', async () => {
+    const t = await setup(
+      view({
+        key_layout: 'ksk_zsk',
+        keys: [
+          key({ id: 1, role: 'ksk', key_tag: 11 }),
+          key({ id: 2, role: 'zsk', key_tag: 22 }),
+          key({ id: 3, role: 'ksk', state: 'published', key_tag: 33 }),
+        ],
+        rollover: {
+          state: 'awaiting_ds_confirmation',
+          role: 'ksk',
+          new_key_id: 3,
+          rollovers: [
+            { role: 'ksk', state: 'awaiting_ds_confirmation', new_key_id: 3 },
+            { role: 'zsk', state: 'in_progress', new_key_id: 4 },
+          ],
+        },
+      }),
+    );
+    const items = Array.from(t.el.querySelectorAll('[role="status"] li')).map((li) =>
+      li.textContent?.replace(/\s+/g, ' ').trim(),
+    );
+    expect(items).toHaveLength(2);
+    expect(items[0]).toContain('ksk');
+    expect(items[0]).toContain('waiting for you to publish');
+    expect(items[1]).toContain('zsk');
+    expect(items[1]).toContain('in progress');
+    expect(t.el.querySelector('[aria-label="Start rollover of key 11"]')).toBeNull();
+    expect(t.el.querySelector('[aria-label="Start rollover of key 22"]')).toBeNull();
+  });
+
+  it('offers a rollover for a role that is not rolling while another is', async () => {
+    const t = await setup(
+      view({
+        keys: [key({ id: 1, role: 'ksk', key_tag: 11 }), key({ id: 2, role: 'zsk', key_tag: 22 })],
+        rollover: roll('in_progress', 'zsk', 4),
+      }),
+    );
+    expect(t.el.querySelector('[aria-label="Start rollover of key 11"]')).not.toBeNull();
+    expect(t.el.querySelector('[aria-label="Start rollover of key 22"]')).toBeNull();
+  });
+
+  it('aborts a rollover only after a confirmation', async () => {
+    const t = await setup(
+      view({
+        keys: [key(), key({ id: 2, state: 'published', key_tag: 7 })],
+        rollover: roll('awaiting_ds_confirmation', 'csk', 2),
+      }),
+    );
+    clickByText(t.el, 'Abort rollover');
+    await t.fixture.whenStable();
+    t.http.expectNone(`${URL}/rollover/abort`);
+    expect(t.el.textContent).toContain('remove it there again');
+    clickByText(t.el, 'Cancel');
+    await t.fixture.whenStable();
+    t.http.expectNone(`${URL}/rollover/abort`);
+
+    clickByText(t.el, 'Abort rollover');
+    await t.fixture.whenStable();
+    const confirm = Array.from(t.el.querySelectorAll('app-confirm-dialog button')).find(
+      (b) => b.textContent?.trim() === 'Abort rollover',
+    ) as HTMLElement;
+    confirm.click();
+    const req = t.http.expectOne(`${URL}/rollover/abort`);
+    expect(req.request.method).toBe('POST');
+    req.flush(view());
+    await t.fixture.whenStable();
+    expect(t.el.textContent).toContain('Rollover aborted.');
+    expect(t.el.textContent).not.toContain('Abort rollover');
+    t.http.expectOne(`${URL}/ds`).flush(DS);
+  });
+
+  it('shows the server error when the abort is refused', async () => {
+    const t = await setup(
+      view({
+        keys: [key(), key({ id: 2, state: 'published', key_tag: 7 })],
+        rollover: roll('in_progress', 'csk', 2),
+      }),
+    );
+    clickByText(t.el, 'Abort rollover');
+    await t.fixture.whenStable();
+    (
+      Array.from(t.el.querySelectorAll('app-confirm-dialog button')).find(
+        (b) => b.textContent?.trim() === 'Abort rollover',
+      ) as HTMLElement
+    ).click();
+    const p = problem(409, 'no csk rollover is in progress for this zone');
+    t.http.expectOne(`${URL}/rollover/abort`).flush(p.body, p.init);
+    await t.fixture.whenStable();
+    expect(t.el.textContent).toContain('no csk rollover is in progress');
+  });
+
+  it('shows the propagation delay', async () => {
+    const t = await setup(view({ propagation_delay: 120 }));
+    expect(t.el.textContent).toContain('Propagation delay');
+    expect(t.el.textContent).toContain('120 s');
   });
 
   it('copies the SHA-256 DS first and the DNSKEY on request', async () => {
