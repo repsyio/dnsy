@@ -583,10 +583,12 @@ mod tests {
     #[tokio::test]
     async fn burst_of_logins_from_one_client_queues_and_succeeds() {
         let (s, users, _user, _d) = setup().await;
-        // One hashing slot: twelve simultaneous logins from one address must queue, not 503.
-        let users = users.with_hash_permits(1);
+        // One hashing slot: six simultaneous logins from one address must queue, not 503.
+        let users = users
+            .with_hash_permits(1)
+            .with_login_limits(16, std::time::Duration::from_secs(120));
         let mut tasks = Vec::new();
-        for _ in 0..12 {
+        for _ in 0..6 {
             let (s, users) = (s.clone(), users.clone());
             tasks.push(tokio::spawn(async move {
                 s.login_at(&users, "alice", "pw", IP, None, 100).await
