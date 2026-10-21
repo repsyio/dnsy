@@ -77,11 +77,17 @@ pub fn querylog_counters() -> QueryLogCounters {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    current.map_or_else(QueryLogCounters::default, |c| QueryLogCounters {
-        dropped: c.dropped.load(Ordering::Relaxed),
-        flush_errors: c.flush_errors.load(Ordering::Relaxed),
-        disk_full: c.disk_full.load(Ordering::Relaxed),
-    })
+    current.map_or_else(QueryLogCounters::default, |c| c.snapshot())
+}
+
+impl Counters {
+    fn snapshot(&self) -> QueryLogCounters {
+        QueryLogCounters {
+            dropped: self.dropped.load(Ordering::Relaxed),
+            flush_errors: self.flush_errors.load(Ordering::Relaxed),
+            disk_full: self.disk_full.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// The configured size cap of the running writer in bytes (0 = unlimited or no writer).
@@ -422,7 +428,7 @@ mod tests {
             "every event of the failed batch is lost"
         );
         assert_eq!(
-            querylog_counters(),
+            counters.snapshot(),
             QueryLogCounters {
                 dropped: 3,
                 flush_errors: 1,
@@ -517,7 +523,7 @@ mod tests {
         );
         let mut i = 0;
         for _ in 0..500 {
-            if querylog_counters().disk_full {
+            if w.counters.snapshot().disk_full {
                 break;
             }
             for _ in 0..200 {
@@ -526,20 +532,23 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
-        assert!(querylog_counters().disk_full, "SQLITE_FULL raises the flag");
+        assert!(
+            w.counters.snapshot().disk_full,
+            "SQLITE_FULL raises the flag"
+        );
         assert!(w.flush_errors() > 0);
         store
             .write(|t| Ok(t.execute_batch("PRAGMA max_page_count = 1073741823")?))
             .await
             .unwrap();
         for _ in 0..500 {
-            if !querylog_counters().disk_full {
+            if !w.counters.snapshot().disk_full {
                 break;
             }
             w.record(event("ok.example.", 1));
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
-        assert!(!querylog_counters().disk_full, "a good flush clears it");
+        assert!(!w.counters.snapshot().disk_full, "a good flush clears it");
         drop(w);
         task.await.unwrap();
     }
