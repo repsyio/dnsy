@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::admission::SlotLimit;
+use crate::admission::{Activity, SlotLimit};
 use crate::dot::mtls::ClientSession;
 use crate::query::{Incoming, encode_response, pad_response, parse_admitted};
 
@@ -96,7 +96,7 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
                 }
             },
         };
-        let Some(permit) = slots.try_acquire(client.ip()) else {
+        let Some(permit) = slots.acquire_or_recycle(client.ip()).await else {
             tracing::debug!(%client, "tcp connection limit reached (shared or per client); closing");
             continue; // dropping the stream closes it
         };
@@ -107,9 +107,16 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
         let handler = Arc::clone(&handler);
         let shutdown = shutdown.clone();
         let wrap = wrap.clone();
+        let activity = permit.activity();
         conns.spawn(async move {
-            if let Some((stream, session)) = wrap(stream).await {
-                connection(stream, client, session, handler, shutdown, limits, flavor).await;
+            // A handshake that stalls is idle too, so it can be recycled like any connection.
+            let wrapped = tokio::select! {
+                () = activity.recycled() => None,
+                wrapped = wrap(stream) => wrapped,
+            };
+            if let Some((stream, session)) = wrapped {
+                let link = Link { session, activity };
+                connection(stream, client, link, handler, shutdown, limits, flavor).await;
             }
             drop(permit);
         });
@@ -120,15 +127,25 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
     .await;
 }
 
+/// What a connection carries besides its socket: the mTLS session and its pool record.
+struct Link {
+    session: Option<ClientSession>,
+    activity: Arc<Activity>,
+}
+
 async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
     stream: S,
     client: SocketAddr,
-    mut session: Option<ClientSession>,
+    link: Link,
     handler: Arc<H>,
     mut shutdown: watch::Receiver<bool>,
     limits: Limits,
     flavor: Flavor,
 ) {
+    let Link {
+        mut session,
+        activity,
+    } = link;
     let (mut reader, writer) = tokio::io::split(stream);
     let (tx, rx) = mpsc::channel::<Vec<u8>>(MAX_IN_FLIGHT_PER_CONN);
     let idle = limits.idle;
@@ -143,10 +160,12 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
         // The whole frame must arrive within the idle time, so slow drip-feeding is cut off too.
         let frame = tokio::select! {
             _ = shutdown.changed() => break,
+            () = activity.recycled() => break,
             frame = timeout(idle, read_frame(&mut reader)) => frame,
         };
         // Anything but a frame: peer closed, I/O error, empty frame or idle timeout.
         let Ok(Ok(Some(packet))) = frame else { break };
+        activity.touch();
         match parse_admitted(&packet, &*handler, client, flavor.transport) {
             // Garbage on a stream cannot be re-synchronised; answer if possible and close.
             Incoming::Drop => break,
@@ -162,6 +181,7 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
                 let principal = session.as_ref().map(|s| s.principal.clone());
                 let tx = tx.clone();
                 let handler = Arc::clone(&handler);
+                let busy = activity.begin();
                 let ctx = RequestContext {
                     client,
                     transport: flavor.transport,
@@ -169,6 +189,7 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
                     received_at: Instant::now(),
                 };
                 requests.spawn(async move {
+                    let _busy = busy;
                     let Some(mut response) = handler.respond(ctx, query.clone()).await else {
                         return;
                     };

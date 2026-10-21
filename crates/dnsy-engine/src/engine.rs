@@ -145,6 +145,12 @@ impl Filters {
     }
 }
 
+/// What admission decided: an ACL-style action, or a truncated slip reply.
+enum Gate {
+    Act(AclAction),
+    Slip,
+}
+
 /// What the pipeline decided, before the event is emitted.
 struct Outcome {
     /// `None`: send nothing.
@@ -246,10 +252,13 @@ impl<E: Exchange> Engine<E> {
         self.acl.store(Arc::new(acl));
     }
 
-    /// Replaces the rate limiter (`qps == 0` disables limiting); client buckets start fresh.
+    /// Replaces the rate limiter (`qps == 0` disables limiting, the slip interval is kept); client
+    /// buckets start fresh.
     pub fn set_rate_limit(&self, qps: u32) {
-        self.rate
-            .store(Arc::new(RateLimiter::new(qps, RATE_LIMIT_KEYS)));
+        let slip = self.rate.load().slip();
+        self.rate.store(Arc::new(
+            RateLimiter::new(qps, RATE_LIMIT_KEYS).with_slip(slip),
+        ));
     }
 
     /// Changes how blocked names are answered. With persisted list sources, also call
@@ -365,9 +374,17 @@ impl<E: Exchange> Engine<E> {
         // Admission first: a client set to `drop` gets nothing, not even an error reply, and
         // every reply (error replies too) consumes rate-limit tokens.
         match self.admission(ctx.client.ip(), ctx.principal.as_ref(), ctx.transport) {
-            AclAction::Allow => {}
-            AclAction::Refuse => return refused(),
-            AclAction::Drop => {
+            Gate::Act(AclAction::Allow) => {}
+            Gate::Act(AclAction::Refuse) => return refused(),
+            Gate::Slip => {
+                // A minimal truncated reply: a real client behind a spoofed address retries
+                // over TCP, while the reply stays no larger than the query.
+                let mut response = Message::response_to(query);
+                response.header.tc = true;
+                response.edns = None;
+                return Outcome::new(response, AnswerSource::Refused);
+            }
+            Gate::Act(AclAction::Drop) => {
                 return Outcome {
                     response: None,
                     source: AnswerSource::Refused,
@@ -815,20 +832,16 @@ impl<E: Exchange> Engine<E> {
     }
 
     /// ACL, then rate limit (which takes a token): the checks that need only the client.
-    fn admission(
-        &self,
-        ip: IpAddr,
-        principal: Option<&Principal>,
-        transport: Transport,
-    ) -> AclAction {
+    fn admission(&self, ip: IpAddr, principal: Option<&Principal>, transport: Transport) -> Gate {
         match self.acl.load().check(ip, principal) {
             AclAction::Allow => {}
-            other => return other,
+            other => return Gate::Act(other),
         }
         match self.rate.load().check(ip, transport, Instant::now()) {
-            RateVerdict::Allow => AclAction::Allow,
-            RateVerdict::Refuse => AclAction::Refuse,
-            RateVerdict::Drop => AclAction::Drop,
+            RateVerdict::Allow => Gate::Act(AclAction::Allow),
+            RateVerdict::Refuse => Gate::Act(AclAction::Refuse),
+            RateVerdict::Drop => Gate::Act(AclAction::Drop),
+            RateVerdict::Slip => Gate::Slip,
         }
     }
 
@@ -892,8 +905,9 @@ impl<E: Exchange + 'static> Handler for Engine<E> {
     /// the rate limit; only an outright drop suppresses the listener's reply.
     fn admit(&self, client: SocketAddr, transport: Transport) -> Admission {
         match self.admission(client.ip(), None, transport) {
-            AclAction::Drop => Admission::Drop,
-            AclAction::Allow | AclAction::Refuse => Admission::Answer,
+            // A listener-built FORMERR is not worth a slip reply: stay silent.
+            Gate::Act(AclAction::Drop) | Gate::Slip => Admission::Drop,
+            Gate::Act(AclAction::Allow | AclAction::Refuse) => Admission::Answer,
         }
     }
 }

@@ -427,6 +427,10 @@ pub struct Limits {
     pub udp_in_flight: u32,
     /// UDP requests in flight per client (default 64).
     pub udp_in_flight_per_client: u32,
+    /// One over-limit UDP query in this many gets a minimal truncated (TC=1) reply so a real
+    /// client behind a spoofed address falls back to TCP; the rest are dropped. 0 never replies
+    /// (default 2).
+    pub rate_limit_slip: u32,
 }
 
 impl Default for Limits {
@@ -439,6 +443,7 @@ impl Default for Limits {
             max_conns_per_client: 16,
             udp_in_flight: 4096,
             udp_in_flight_per_client: 64,
+            rate_limit_slip: 2,
         }
     }
 }

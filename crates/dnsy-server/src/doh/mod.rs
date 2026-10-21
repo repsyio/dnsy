@@ -40,7 +40,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
-use crate::admission::SlotLimit;
+use crate::admission::{Activity, SlotLimit};
 use crate::query::{Incoming as Parsed, encode_response, pad_response, parse};
 use crate::tcp::Limits;
 use wire::{MAX_MESSAGE, MAX_TOKEN, MEDIA_TYPE};
@@ -193,7 +193,7 @@ pub(crate) async fn serve<H: Handler>(
                 }
             },
         };
-        let Some(permit) = slots.try_acquire(client.ip()) else {
+        let Some(permit) = slots.acquire_or_recycle(client.ip()).await else {
             tracing::debug!(%client, "doh connection limit reached; closing");
             continue;
         };
@@ -203,11 +203,19 @@ pub(crate) async fn serve<H: Handler>(
         let acceptor = acceptor.clone();
         let state = Arc::clone(&state);
         let shutdown = shutdown.clone();
+        let activity = permit.activity();
         conns.spawn(async move {
-            match timeout(limits.idle, acceptor.accept(stream)).await {
-                Ok(Ok(tls)) => connection(tls, client, state, shutdown, limits).await,
-                Ok(Err(e)) => tracing::debug!(error = %e, "doh handshake failed"),
-                Err(_) => tracing::debug!("doh handshake timed out"),
+            let handshake = tokio::select! {
+                () = activity.recycled() => None,
+                result = timeout(limits.idle, acceptor.accept(stream)) => Some(result),
+            };
+            match handshake {
+                None => tracing::debug!("doh connection recycled during the handshake"),
+                Some(Ok(Ok(tls))) => {
+                    connection(tls, client, state, shutdown, limits, activity).await;
+                }
+                Some(Ok(Err(e))) => tracing::debug!(error = %e, "doh handshake failed"),
+                Some(Err(_)) => tracing::debug!("doh handshake timed out"),
             }
             drop(permit);
         });
@@ -224,6 +232,7 @@ async fn connection<H: Handler, S>(
     state: Arc<State<H>>,
     mut shutdown: watch::Receiver<bool>,
     limits: Limits,
+    activity: Arc<Activity>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
@@ -238,9 +247,17 @@ async fn connection<H: Handler, S>(
         .max_concurrent_streams(100)
         .keep_alive_interval(limits.idle)
         .keep_alive_timeout(limits.idle);
-    let service = service_fn(move |req| {
-        let state = Arc::clone(&state);
-        async move { Ok::<_, Infallible>(respond(&state, client, req).await) }
+    let service = service_fn({
+        let activity = Arc::clone(&activity);
+        move |req| {
+            let state = Arc::clone(&state);
+            let busy = activity.begin();
+            async move {
+                let response = respond(&state, client, req).await;
+                drop(busy);
+                Ok::<_, Infallible>(response)
+            }
+        }
     });
     let conn = builder.serve_connection(TokioIo::new(stream), service);
     tokio::pin!(conn);
@@ -251,6 +268,10 @@ async fn connection<H: Handler, S>(
             }
         }
         _ = shutdown.changed() => {
+            conn.as_mut().graceful_shutdown();
+            let _ = timeout(limits.drain, conn.as_mut()).await;
+        }
+        () = activity.recycled() => {
             conn.as_mut().graceful_shutdown();
             let _ = timeout(limits.drain, conn.as_mut()).await;
         }
