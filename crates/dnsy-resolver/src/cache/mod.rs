@@ -284,7 +284,7 @@ impl Cache {
         reason = "signature pinned by the plan"
     )]
     pub fn insert(&self, key: CacheKey, msg: &Message, dnssec: DnssecStatus, now: Instant) {
-        self.store(key, msg.clone(), dnssec, now);
+        self.store(&key, msg.clone(), dnssec, now);
     }
 
     /// Like [`Cache::insert`], and returns the message to serve for this answer: the stored
@@ -292,7 +292,7 @@ impl Cache {
     /// is cacheable, `msg` unchanged otherwise.
     pub fn store(
         &self,
-        key: CacheKey,
+        key: &CacheKey,
         msg: Message,
         dnssec: DnssecStatus,
         now: Instant,
@@ -300,9 +300,9 @@ impl Cache {
         if !self.cfg().enabled || msg.header.tc || msg.header.aa || key.qtype == RESERVED_TYPE {
             return msg;
         }
-        let (ttl, mut stored) = match self.prepare(msg, dnssec) {
-            Ok(prepared) => prepared,
-            Err(msg) => return msg,
+        let mut stored = msg;
+        let Some(ttl) = self.prepare(&mut stored, dnssec) else {
+            return stored;
         };
         for r in section_records_mut(&mut stored) {
             r.ttl = r.ttl.min(ttl);
@@ -311,9 +311,9 @@ impl Cache {
             return stored;
         }
         let key = if stored.header.rcode == Rcode::NxDomain && stored.answers.is_empty() {
-            StoreKey::by_name(&key)
+            StoreKey::by_name(key)
         } else {
-            StoreKey::exact(&key)
+            StoreKey::exact(key)
         };
         let lifetime = Duration::from_secs(u64::from(ttl));
         let stale = if self.cfg().serve_stale.enabled {
@@ -354,37 +354,32 @@ impl Cache {
         stored
     }
 
-    /// Works out the entry lifetime and the message to store (record TTLs clamped); gives
-    /// `msg` back when it is not cacheable.
-    fn prepare(&self, mut msg: Message, dnssec: DnssecStatus) -> Result<(u32, Message), Message> {
+    /// Works out the entry lifetime, clamping the record TTLs of `msg` in place; `None` (and
+    /// `msg` untouched) when it is not cacheable.
+    fn prepare(&self, msg: &mut Message, dnssec: DnssecStatus) -> Option<u32> {
         let cfg = self.cfg();
         let ttl = match msg.header.rcode {
-            Rcode::ServFail => Some(cfg.servfail_ttl),
-            Rcode::NxDomain | Rcode::NoError if is_negative(&msg) => msg
-                .authority
-                .iter()
-                .find_map(|r| match &r.data {
+            Rcode::ServFail => cfg.servfail_ttl,
+            Rcode::NxDomain | Rcode::NoError if is_negative(msg) => {
+                let soa = msg.authority.iter().find_map(|r| match &r.data {
                     RData::Soa(s) => Some(r.ttl.min(s.minimum)),
                     _ => None,
-                })
-                .map(|soa| soa.min(cfg.negative_max_ttl)),
+                })?;
+                soa.min(cfg.negative_max_ttl)
+            }
             Rcode::NoError => {
-                for r in section_records_mut(&mut msg) {
+                for r in section_records_mut(msg) {
                     r.ttl = r.ttl.clamp(cfg.min_ttl, cfg.max_ttl.max(cfg.min_ttl));
                 }
-                section_records_mut(&mut msg).map(|r| r.ttl).min()
+                section_records_mut(msg).map(|r| r.ttl).min()?
             }
-            _ => None,
+            _ => return None,
         };
-        let Some(ttl) = ttl else {
-            return Err(msg);
-        };
-        let ttl = if dnssec == DnssecStatus::Bogus {
+        Some(if dnssec == DnssecStatus::Bogus {
             ttl.min(cfg.bogus_ttl)
         } else {
             ttl
-        };
-        Ok((ttl, msg))
+        })
     }
 
     /// Evicts the least recently used entry among a per-shard sample, never `keep` (the entry

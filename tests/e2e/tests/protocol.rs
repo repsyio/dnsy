@@ -381,7 +381,7 @@ async fn any_for_forwarded_name_is_refused_without_upstream() {
     let h = start_forwarding().await;
     let r = udp_exchange(h.udp, &query("www.example.org.", RecordType::Any)).await;
     assert_eq!(r.header.rcode, Rcode::Refused);
-    assert!(r.answers.is_empty());
+    assert_eq!(r.answers, []);
     assert_eq!(h.upstream.as_ref().unwrap().total(), 0);
 }
 

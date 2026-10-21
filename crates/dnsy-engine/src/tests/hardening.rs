@@ -146,7 +146,7 @@ async fn any_for_forwarded_name_refused_without_upstream() {
         .handle(ctx(), query("www.example.", RecordType::Any))
         .await;
     assert_eq!(r.header.rcode, Rcode::Refused);
-    assert!(r.answers.is_empty());
+    assert_eq!(r.answers, []);
     assert_eq!(h.fake.calls(), 0);
     assert_eq!(h.events.take()[0].source, AnswerSource::Refused);
 }
@@ -211,7 +211,7 @@ async fn concurrent_identical_misses_share_one_upstream_exchange() {
 #[tokio::test]
 async fn coalescing_is_per_key() {
     let rig = Rig::new(&no_validation(), Duration::from_millis(200));
-    let (a, b, c, d, e) = tokio::join!(
+    let (plain, with_do, with_cd, upper, other) = tokio::join!(
         ask_many(&rig, 8, "www.example.", false, false),
         ask_many(&rig, 8, "www.example.", true, false),
         ask_many(&rig, 8, "www.example.", false, true),
@@ -220,12 +220,19 @@ async fn coalescing_is_per_key() {
     );
     // DO, CD and the name each make a different key; the name's case does not.
     assert_eq!(rig.calls(), 4);
-    for r in a.iter().chain(&b).chain(&c).chain(&d).chain(&e) {
+    for r in plain
+        .iter()
+        .chain(&with_do)
+        .chain(&with_cd)
+        .chain(&upper)
+        .chain(&other)
+    {
         assert_eq!(r.header.rcode, Rcode::NoError);
     }
     // Each follower is answered with its own id and question casing.
     assert!(
-        d.iter()
+        upper
+            .iter()
             .all(|r| r.questions[0].name.to_string() == "WWW.Example.")
     );
 }

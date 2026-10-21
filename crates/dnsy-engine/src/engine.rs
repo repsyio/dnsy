@@ -569,7 +569,7 @@ impl<E: Exchange> Engine<E> {
     fn store_refresh(&self, key: &CacheKey, resolved: Resolved) -> Resolved {
         match resolved {
             Ok((msg, from, dnssec)) if msg.header.rcode != Rcode::ServFail => Ok((
-                self.cache.store(key.clone(), msg, dnssec, (self.now)()),
+                self.cache.store(key, msg, dnssec, (self.now)()),
                 from,
                 dnssec,
             )),
@@ -599,7 +599,7 @@ impl<E: Exchange> Engine<E> {
                         .resolve(ctx.received_at, query, question, policy, validating)
                         .await
                         .map(|(msg, from, dnssec)| {
-                            let served = self.cache.store(key.clone(), msg, dnssec, (self.now)());
+                            let served = self.cache.store(key, msg, dnssec, (self.now)());
                             (served, from, dnssec)
                         });
                     slot.finish(|| resolved.clone());
