@@ -94,6 +94,47 @@ async fn dot_idle_timeout_closes_connection() {
     assert!(c.closed_within(Duration::from_secs(10)).await);
 }
 
+// ---- Persistent connections ----
+
+/// 200 sequential queries on one kept-alive connection: each answer must not wait for a delayed ACK.
+const SEQUENTIAL: usize = 200;
+
+#[tokio::test]
+async fn persistent_tcp_connection_answers_fast() {
+    let h = Harness::start(opts()).await;
+    let mut c = Framed::connect_tcp(h.tcp).await;
+    let started = std::time::Instant::now();
+    for _ in 0..SEQUENTIAL {
+        assert!(is_www(&c.ask(&www()).await.unwrap()));
+    }
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(1),
+        "{SEQUENTIAL} queries took {took:?}"
+    );
+}
+
+#[tokio::test]
+async fn persistent_dot_connection_answers_fast() {
+    let h = Harness::start(Opts {
+        dot: Some(MtlsPolicy::Off),
+        ..opts()
+    })
+    .await;
+    let mut c = Framed::connect_dot(h.dot.unwrap(), &h.pki, None)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    for _ in 0..SEQUENTIAL {
+        assert!(is_www(&c.ask(&www()).await.unwrap()));
+    }
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(1),
+        "{SEQUENTIAL} queries took {took:?}"
+    );
+}
+
 // ---- mTLS ----
 
 async fn dot_h(policy: MtlsPolicy) -> Harness {

@@ -61,6 +61,20 @@ See [Upgrade and migrations](upgrade.md). In short:
 lists applied and pending migrations without touching the database. Migrations are never
 edited after release; a database newer than the binary is refused. Back up before upgrading.
 
+## Benchmarks
+
+`just bench` builds the release `dnsy`, starts it against a fake upstream and prints a table of
+throughput and latency: UDP cache hit, UDP cache miss (every name unique), TCP (one persistent
+connection, 64 clients, 64 clients with 16 queries pipelined) and DoH (HTTP/1.1 and h2, POST).
+Pin CPUs for stable numbers, for example `taskset -c 0-5 just bench`; the server and the load
+generator share the machine, so compare runs on the same host only. Reference numbers on a
+24-thread workstation, unpinned: UDP hit about 310k QPS, TCP persistent connection p50 18 us,
+TCP pipeline 16 at 64 clients about 426k QPS.
+
+TCP and DoT listeners set `TCP_NODELAY` and write each length-prefixed answer in a single write,
+so a client reusing a connection no longer waits for a delayed ACK (about 41 ms per answer
+before). `just bench-micro` runs the criterion micro-benchmarks (codec, cache lookup).
+
 ## Building with the UI
 
 `just build` produces the release binary with the web UI embedded (see [Install](install.md)).

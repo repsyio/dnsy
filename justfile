@@ -22,12 +22,12 @@ build:
 
 # Run the Rust test suite (the end-to-end crate has its own recipe: `just e2e`).
 test:
-    cargo nextest run --workspace --exclude dnsy-e2e --no-tests=pass
+    cargo nextest run --workspace --exclude dnsy-e2e --exclude dnsy-bench --no-tests=pass
 
 # Rust line coverage (unit + integration; e2e is excluded): workspace >= 80%, every crate >= 80%,
 # dnsy-proto and dnsy-dnssec >= 90%. Prints a per-crate table; HTML at target/llvm-cov/html.
 cov-rust:
-    cargo llvm-cov nextest --workspace --exclude dnsy-e2e --no-tests=pass --html
+    cargo llvm-cov nextest --workspace --exclude dnsy-e2e --exclude dnsy-bench --no-tests=pass --html
     ./scripts/cov-crate-gates.sh 80 80 dnsy-proto=90 dnsy-dnssec=90
 
 # Web coverage gate: `ng test --coverage` fails below the thresholds in web/angular.json
@@ -53,6 +53,16 @@ e2e-ui:
     cd web && pnpm install --frozen-lockfile && pnpm build && pnpm exec playwright install chromium
     cargo build -p dnsy --features embed-ui
     cd web && DNSY_BIN="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/debug/dnsy" pnpm e2e
+
+# Benchmarks (tests/bench): release `dnsy` against a fake upstream; prints UDP cache-hit and cache-miss,
+# TCP (persistent, pipelined) and DoH throughput and latency. Pin CPUs with `taskset` for stable numbers.
+bench:
+    cargo build --release -p dnsy
+    DNSY_BIN="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/release/dnsy" cargo run --release -p dnsy-bench --bin bench
+
+# Criterion micro-benchmarks (codec, cache lookup).
+bench-micro:
+    cargo bench -p dnsy-bench --bench micro
 
 # Regenerate web/src/app/api/schema.d.ts from openapi/dnsy.json.
 web-types:
