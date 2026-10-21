@@ -15,6 +15,8 @@ pub enum VerifyError {
     SignerNotAncestor,
     /// The DNSKEY lacks the zone-key flag or has a protocol other than 3.
     NotZoneKey,
+    /// The DNSKEY has the REVOKE bit set (RFC 5011 2.1) and signs nothing.
+    Revoked,
     /// The RRSIG and DNSKEY algorithms differ.
     AlgorithmMismatch,
     /// The RRSIG key tag does not match the DNSKEY.
@@ -41,6 +43,7 @@ impl fmt::Display for VerifyError {
             VerifyError::InvalidLabels => f.write_str("RRSIG labels exceed the owner's labels"),
             VerifyError::SignerNotAncestor => f.write_str("owner is not within the signer zone"),
             VerifyError::NotZoneKey => f.write_str("DNSKEY is not a zone key"),
+            VerifyError::Revoked => f.write_str("DNSKEY is revoked"),
             VerifyError::AlgorithmMismatch => f.write_str("RRSIG and DNSKEY algorithms differ"),
             VerifyError::KeyTagMismatch => f.write_str("RRSIG key tag does not match the DNSKEY"),
             VerifyError::NotYetValid => f.write_str("signature is not yet valid"),

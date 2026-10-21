@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dnsy_config::{Config, Dnssec};
-use dnsy_proto::{Class, RData, Record, RecordType};
+use dnsy_proto::{Class, Dnskey, Ds, RData, Record, RecordType};
 
 use super::*;
 use crate::groups::{GroupMember, GroupSpec, Strategy, SystemClock, ThreadRng};
@@ -31,6 +31,8 @@ struct Fake {
     calls: AtomicUsize,
     wrong_question: bool,
     fail: bool,
+    /// Adds records the question did not ask for to the answer and authority sections.
+    unrelated: bool,
 }
 
 impl Exchange for Arc<Fake> {
@@ -47,14 +49,44 @@ impl Exchange for Arc<Fake> {
         if self.wrong_question {
             r.questions = vec![q("other.example.", RecordType::A)];
         }
+        let data = match query.questions[0].qtype {
+            RecordType::Dnskey => RData::Dnskey(Dnskey {
+                flags: 257,
+                protocol: 3,
+                algorithm: 13,
+                public_key: vec![7; 64],
+            }),
+            RecordType::Ds => RData::Ds(Ds {
+                key_tag: 1,
+                algorithm: 13,
+                digest_type: 2,
+                digest: vec![9; 32],
+            }),
+            _ => RData::A(Ipv4Addr::LOCALHOST),
+        };
         r.answers.push(Record {
             name: query.questions[0].name.clone(),
-            rtype: RecordType::A,
+            rtype: data.rtype(),
             class: Class::In,
             ttl: 300,
-            data: RData::A(Ipv4Addr::LOCALHOST),
+            data,
         });
         r.additional.push(r.answers[0].clone());
+        if self.unrelated {
+            let bank = |rtype, data| Record {
+                name: n("bank.example."),
+                rtype,
+                class: Class::In,
+                ttl: 300,
+                data,
+            };
+            r.answers
+                .push(bank(RecordType::A, RData::A(Ipv4Addr::new(192, 0, 2, 66))));
+            r.authority
+                .push(bank(RecordType::A, RData::A(Ipv4Addr::new(192, 0, 2, 67))));
+            r.authority
+                .push(bank(RecordType::Ns, RData::Ns(n("ns.bank.example."))));
+        }
         Ok(r)
     }
 }
@@ -136,6 +168,37 @@ async fn fetch_sends_do_and_cd_and_memoises_unchecked() {
         ..key
     };
     assert_eq!(rig.cache.get(&validated, Instant::now()), CacheLookup::Miss);
+}
+
+#[tokio::test]
+async fn fetch_scrubs_unrelated_records_before_caching() {
+    let rig = Rig::new(Fake {
+        unrelated: true,
+        ..Fake::default()
+    });
+    let f = rig.fetcher(Duration::from_secs(5));
+    let got = f.fetch(q("example.", RecordType::Dnskey)).await.unwrap();
+    assert_eq!(got.answers.len(), 1);
+    assert_eq!(got.answers[0].rtype, RecordType::Dnskey);
+    assert!(got.authority.is_empty());
+
+    // A CD=1 client asking for the same name is served the cache entry: it must hold the
+    // scrubbed message, not the upstream's extras.
+    let key = CacheKey {
+        name: n("example."),
+        qtype: RecordType::Dnskey,
+        qclass: Class::In,
+        do_bit: true,
+        cd_bit: true,
+    };
+    match rig.cache.get(&key, Instant::now()) {
+        CacheLookup::Fresh { msg, .. } => {
+            assert_eq!(msg.answers.len(), 1);
+            assert!(msg.authority.is_empty(), "{:?}", msg.authority);
+            assert!(msg.answers.iter().all(|r| r.name == n("example.")));
+        }
+        other => panic!("fetch result not memoised: {other:?}"),
+    }
 }
 
 #[tokio::test]

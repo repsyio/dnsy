@@ -56,6 +56,9 @@ pub struct ValidationLimits {
     pub max_nsec3_hashes: usize,
     /// Seconds the RRSIG validity window is widened by on each side (capped at one day).
     pub clock_skew: u32,
+    /// Seconds an answer stays cached when validation failed to fetch DS or DNSKEY data
+    /// (`Indeterminate`); match the cache's `servfail_ttl`.
+    pub indeterminate_ttl: u32,
 }
 
 impl Default for ValidationLimits {
@@ -68,6 +71,7 @@ impl Default for ValidationLimits {
             max_nsec3_iterations: 100,
             max_nsec3_hashes: 64,
             clock_skew: 300,
+            indeterminate_ttl: 5,
         }
     }
 }
@@ -137,7 +141,7 @@ impl Validator {
             Err(f) => ValidationOutcome {
                 status: f.status,
                 ede: Some((f.ede, f.text)),
-                min_ttl: None,
+                min_ttl: f.transient.then_some(self.limits.indeterminate_ttl),
             },
         }
     }
@@ -166,6 +170,8 @@ struct Failure {
     status: DnssecStatus,
     ede: u16,
     text: String,
+    /// A fetch failure: retry soon instead of caching the outcome for long.
+    transient: bool,
 }
 
 impl Failure {
@@ -174,6 +180,7 @@ impl Failure {
             status: DnssecStatus::Bogus,
             ede,
             text: text.into(),
+            transient: false,
         }
     }
 
@@ -182,6 +189,14 @@ impl Failure {
             status: DnssecStatus::Indeterminate,
             ede: ede::DNSSEC_INDETERMINATE,
             text: text.into(),
+            transient: false,
+        }
+    }
+
+    fn fetch(text: impl Into<String>) -> Self {
+        Self {
+            transient: true,
+            ..Self::indeterminate(text)
         }
     }
 
