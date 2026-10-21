@@ -16,7 +16,7 @@ const MINUTE_ROLLUP_KEEP_MS: i64 = 400 * 24 * 3_600 * 1000;
 const SESSION_IDLE_SECS: i64 = 30 * 60;
 const SESSION_ABSOLUTE_SECS: i64 = 12 * 60 * 60;
 /// `PRAGMA optimize` runs at most this often from the retention task.
-const OPTIMIZE_EVERY: Duration = Duration::from_secs(24 * 3600);
+const OPTIMIZE_EVERY: Duration = Duration::from_hours(24);
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -99,12 +99,15 @@ where
         &mut between,
     )
     .await?;
-    let now_s = now_ms.div_euclid(1000);
+    let unix_secs = now_ms.div_euclid(1000);
     store
         .write(move |tx| {
             tx.execute(
                 "DELETE FROM sessions WHERE last_seen_at < ?1 OR created_at < ?2",
-                params![now_s - SESSION_IDLE_SECS, now_s - SESSION_ABSOLUTE_SECS],
+                params![
+                    unix_secs - SESSION_IDLE_SECS,
+                    unix_secs - SESSION_ABSOLUTE_SECS
+                ],
             )?;
             Ok(())
         })

@@ -47,20 +47,31 @@ struct Inner {
 }
 
 /// A reader connection taken from the pool; returned on drop, also when the closure panics.
-struct Reader {
-    inner: Arc<Inner>,
+struct Reader<'a> {
+    pool: &'a Mutex<Vec<Connection>>,
     conn: Option<Connection>,
 }
 
-impl Drop for Reader {
+impl Drop for Reader<'_> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
-            self.inner
-                .readers
+            self.pool
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(conn);
         }
+    }
+}
+
+impl Reader<'_> {
+    fn run<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.conn.as_ref().map_or_else(
+            || Err(StoreError::Task("reader connection missing".to_owned())),
+            f,
+        )
     }
 }
 
@@ -160,10 +171,10 @@ impl Store {
                 .pop()
                 .ok_or_else(|| StoreError::Task("no idle reader connection".to_owned()))?;
             let reader = Reader {
-                inner,
+                pool: &inner.readers,
                 conn: Some(conn),
             };
-            f(reader.conn.as_ref().expect("set above"))
+            reader.run(f)
         }))
         .await
     }

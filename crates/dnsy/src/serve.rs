@@ -512,6 +512,6 @@ mod tests {
         // Missing files and unset keys are not this check's business.
         config.dot.key = Some(dir.path().join("absent.key"));
         config.doh.key = None;
-        assert!(loose_key_files(&config).is_empty());
+        assert_eq!(loose_key_files(&config).len(), 0);
     }
 }
