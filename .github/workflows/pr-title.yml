@@ -1,0 +1,30 @@
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the PR title shape
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Shape: DNSY-{n}: {emoji} {Sentence}, or several stories joined by ", ".
+          pattern='^DNSY-[0-9]+(, DNSY-[0-9]+)*: \S'
+          # The title is untrusted text: it is only ever read from the environment and
+          # printed after a fixed prefix, so it cannot start a workflow command.
+          printf 'PR title: %s\n' "$PR_TITLE"
+          if [[ "$PR_TITLE" =~ $pattern ]]; then
+            echo "PR title has the expected shape."
+            exit 0
+          fi
+          echo "::error title=Invalid PR title::Expected DNSY-{n}: {emoji} {Sentence}, for example DNSY-12: ✨ Add EDNS0 codec"
+          echo "Pattern: $pattern"
+          exit 1

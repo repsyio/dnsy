@@ -3,6 +3,10 @@
 Workflow, conventions and the `just ci` gate are described in `AGENTS.md` in the repository.
 This page covers the end-to-end tests.
 
+Pull request titles must read `DNSY-{n}: {emoji} {Sentence}` (several stories: `DNSY-12, DNSY-13: ...`).
+The `pr-title` workflow (`.github/workflows/pr-title.yml`) checks this on every open, edit and push, and
+prints the expected shape when the title does not match.
+
 ## Release profile and dependencies
 
 `[profile.release]` in the root `Cargo.toml` sets `lto = "fat"`, `codegen-units = 1`,
