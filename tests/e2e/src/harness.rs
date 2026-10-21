@@ -329,10 +329,6 @@ impl Harness {
 
     /// Like [`start`](Self::start) with an upstream the test already scripted (it becomes the
     /// only upstream and `opts.upstream` is ignored).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one linear start-up sequence, kept in order for readability"
-    )]
     pub async fn start_with(opts: Opts, upstream: Option<FakeUpstream>) -> Harness {
         crate::pki::install_provider();
         let bin = opts.binary.as_deref().unwrap_or_else(|| binary());
