@@ -970,12 +970,17 @@ async fn secure_cookies_true_overrides_missing_tls() {
         secure_cookies: Some(true),
     };
     let app = router(state, config);
-    let r = req(
+    let mut r = req(
         Method::POST,
         "/api/v1/auth/login",
         None,
         Some(json!({"username": "alice", "password": PW})),
     );
+    r.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40_000,
+        ))));
     let res = app.oneshot(r).await.unwrap();
     let cookies = set_cookies(&res);
     assert_eq!(cookies.len(), 2);

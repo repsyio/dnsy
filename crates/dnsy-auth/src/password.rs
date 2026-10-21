@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -35,8 +37,9 @@ pub(crate) fn verify(password: &str, phc: &str) -> bool {
 /// Longest password accepted anywhere, checked before any hashing.
 pub const MAX_PASSWORD_BYTES: usize = 1024;
 
-/// Concurrent argon2 runs one client key may hold, so one address cannot take every slot.
-pub(crate) const PER_CLIENT_HASHES: usize = 2;
+/// Requests (waiting or hashing) one client key may have in flight, so one address can neither
+/// take every slot nor park an unbounded number of waiting tasks.
+pub(crate) const PER_CLIENT_HASHES: usize = 4;
 
 type KeyCounts = Arc<Mutex<HashMap<ClientKey, usize>>>;
 
@@ -45,6 +48,29 @@ type KeyCounts = Arc<Mutex<HashMap<ClientKey, usize>>>;
 pub(crate) struct HashGate {
     pub(crate) sem: Arc<Semaphore>,
     keys: KeyCounts,
+    waiters: Arc<AtomicUsize>,
+}
+
+/// Requests allowed to wait for a slot at once, across all clients.
+pub(crate) const MAX_WAITERS: usize = 64;
+
+#[derive(Debug)]
+struct WaitGuard(Arc<AtomicUsize>);
+
+impl WaitGuard {
+    fn enter(waiters: &Arc<AtomicUsize>) -> Result<WaitGuard, UserError> {
+        if waiters.fetch_add(1, Ordering::AcqRel) >= MAX_WAITERS {
+            waiters.fetch_sub(1, Ordering::AcqRel);
+            return Err(UserError::Busy);
+        }
+        Ok(WaitGuard(Arc::clone(waiters)))
+    }
+}
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Capacity for one argon2 run, held from admission until the hash finishes.
@@ -83,7 +109,26 @@ impl HashGate {
         HashGate {
             sem: Arc::new(Semaphore::new(n)),
             keys: KeyCounts::default(),
+            waiters: Arc::default(),
         }
+    }
+
+    /// Counts one in-flight request (waiting or hashing) for `client`; checked before any global
+    /// capacity is touched, so a capped client cannot consume or queue for global slots.
+    fn claim(&self, client: Option<ClientKey>) -> Result<Option<KeyGuard>, UserError> {
+        let Some(key) = client else {
+            return Ok(None);
+        };
+        let mut keys = self.keys.lock().map_err(|_| UserError::Hash)?;
+        let n = keys.entry(key).or_insert(0);
+        if *n >= PER_CLIENT_HASHES {
+            return Err(UserError::Busy);
+        }
+        *n += 1;
+        Ok(Some(KeyGuard {
+            keys: Arc::clone(&self.keys),
+            key,
+        }))
     }
 
     /// Takes a slot without waiting, also bounded per `client` when one is given.
@@ -91,24 +136,33 @@ impl HashGate {
     /// # Errors
     /// [`UserError::Busy`] when the global or the per-client limit is reached.
     pub(crate) fn try_slot(&self, client: Option<ClientKey>) -> Result<HashSlot, UserError> {
+        let key = self.claim(client)?;
         let permit = Arc::clone(&self.sem)
             .try_acquire_owned()
             .map_err(|_| UserError::Busy)?;
-        let key = match client {
-            Some(key) => {
-                let mut keys = self.keys.lock().map_err(|_| UserError::Hash)?;
-                let n = keys.entry(key).or_insert(0);
-                if *n >= PER_CLIENT_HASHES {
-                    return Err(UserError::Busy);
-                }
-                *n += 1;
-                Some(KeyGuard {
-                    keys: Arc::clone(&self.keys),
-                    key,
-                })
-            }
-            None => None,
-        };
+        Ok(HashSlot {
+            _permit: permit,
+            _key: key,
+        })
+    }
+
+    /// Like [`HashGate::try_slot`] but queues on the (fair) semaphore for up to `wait`. At most
+    /// [`PER_CLIENT_HASHES`] requests per client and [`MAX_WAITERS`] in total are ever parked;
+    /// beyond that the answer is an immediate [`UserError::Busy`].
+    ///
+    /// # Errors
+    /// [`UserError::Busy`] when a cap is hit or no slot became free in time.
+    pub(crate) async fn slot(
+        &self,
+        client: ClientKey,
+        wait: Duration,
+    ) -> Result<HashSlot, UserError> {
+        let key = self.claim(Some(client))?;
+        let _waiting = WaitGuard::enter(&self.waiters)?;
+        let permit = tokio::time::timeout(wait, Arc::clone(&self.sem).acquire_owned())
+            .await
+            .map_err(|_| UserError::Busy)?
+            .map_err(|_| UserError::Hash)?;
         Ok(HashSlot {
             _permit: permit,
             _key: key,
@@ -153,5 +207,94 @@ impl HashGate {
         })
         .await
         .map_err(|_| UserError::Hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    fn key(s: &str) -> ClientKey {
+        dnsy_core::net::client_key(s.parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn one_client_flooding_logins_parks_a_bounded_number_of_waiters() {
+        let gate = HashGate::with_permits(1);
+        let held = gate.try_slot(None).unwrap();
+        let (a, b) = (key("192.0.2.1"), key("192.0.2.2"));
+        let wait = Duration::from_secs(30);
+        let tasks: Vec<_> = (0..200)
+            .map(|_| {
+                let gate = gate.clone();
+                tokio::spawn(async move { gate.slot(a, wait).await })
+            })
+            .collect();
+        // Everything beyond the client's cap is refused at once, without waiting out `wait`.
+        let mut refused = 0;
+        let mut parked = Vec::new();
+        for t in tasks {
+            if t.is_finished()
+                || tokio::time::timeout(Duration::from_millis(200), async {
+                    while !t.is_finished() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .is_ok()
+            {
+                assert!(matches!(t.await.unwrap(), Err(UserError::Busy)));
+                refused += 1;
+            } else {
+                parked.push(t);
+            }
+        }
+        assert_eq!(
+            parked.len(),
+            PER_CLIENT_HASHES,
+            "waiters are capped per client"
+        );
+        assert_eq!(refused, 200 - PER_CLIENT_HASHES);
+        assert!(gate.waiters.load(Ordering::Acquire) <= PER_CLIENT_HASHES);
+        // Another client queues and is served once capacity frees up; the flood did not use up
+        // the global waiter budget.
+        let other = {
+            let gate = gate.clone();
+            tokio::spawn(async move { gate.slot(b, wait).await })
+        };
+        drop(held);
+        // The flooder's parked requests give up (dropping a finished handle drops its slot).
+        for t in parked {
+            t.abort();
+            drop(t);
+        }
+        let slot = tokio::time::timeout(Duration::from_secs(5), other)
+            .await
+            .expect("the other client is served")
+            .unwrap();
+        assert!(slot.is_ok());
+    }
+
+    #[tokio::test]
+    async fn global_waiters_are_bounded() {
+        let gate = HashGate::with_permits(1);
+        let _held = gate.try_slot(None).unwrap();
+        let mut parked = Vec::new();
+        for n in 0..u32::try_from(MAX_WAITERS).unwrap() {
+            let (gate, who) = (gate.clone(), key(&format!("198.51.100.{}", n + 1)));
+            parked.push(tokio::spawn(async move {
+                gate.slot(who, Duration::from_secs(30)).await
+            }));
+        }
+        while gate.waiters.load(Ordering::Acquire) < MAX_WAITERS {
+            tokio::task::yield_now().await;
+        }
+        let r = gate.slot(key("203.0.113.1"), Duration::from_secs(30)).await;
+        assert!(matches!(r, Err(UserError::Busy)));
+        for t in parked {
+            t.abort();
+        }
     }
 }

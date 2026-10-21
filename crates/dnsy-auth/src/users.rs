@@ -130,7 +130,7 @@ pub struct UserService {
 
 impl UserService {
     #[cfg(test)]
-    fn with_hash_permits(mut self, n: usize) -> UserService {
+    pub(crate) fn with_hash_permits(mut self, n: usize) -> UserService {
         self.gate = HashGate::with_permits(n);
         self
     }
@@ -323,15 +323,7 @@ impl UserService {
     /// # Errors
     /// [`UserError::Busy`] when no slot became free in time.
     pub(crate) async fn hash_slot(&self, client: ClientKey) -> Result<HashSlot, UserError> {
-        let deadline = tokio::time::Instant::now() + SLOT_WAIT;
-        loop {
-            match self.gate.try_slot(Some(client)) {
-                Err(UserError::Busy) if tokio::time::Instant::now() < deadline => {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                other => return other,
-            }
-        }
+        self.gate.slot(client, SLOT_WAIT).await
     }
 
     #[cfg(test)]
@@ -494,6 +486,7 @@ mod tests {
     #[tokio::test]
     async fn one_client_cannot_hold_every_hash_slot() {
         let (s, _d) = svc();
+        let s = s.with_hash_permits(crate::password::PER_CLIENT_HASHES + 1);
         let (a, b) = (
             dnsy_core::net::client_key("192.0.2.1".parse().unwrap()),
             dnsy_core::net::client_key("192.0.2.2".parse().unwrap()),
@@ -502,12 +495,8 @@ mod tests {
             .map(|_| s.gate.try_slot(Some(a)).unwrap())
             .collect();
         assert!(matches!(s.gate.try_slot(Some(a)), Err(UserError::Busy)));
-        // Another client still gets capacity (the host has more than the per-client share).
-        if std::thread::available_parallelism().map_or(1, usize::from)
-            > crate::password::PER_CLIENT_HASHES
-        {
-            drop(s.gate.try_slot(Some(b)).unwrap());
-        }
+        // Another client still gets capacity.
+        drop(s.gate.try_slot(Some(b)).unwrap());
         drop(held);
         drop(s.gate.try_slot(Some(a)).unwrap());
     }

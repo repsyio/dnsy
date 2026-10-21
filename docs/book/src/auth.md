@@ -63,7 +63,7 @@ limits:
 
 Refused attempts are not counted, so hammering a locked client does not extend the lock. A
 successful login clears the username's counters. Passwords longer than 1 KiB are refused (400)
-before hashing. At most as many argon2 hashes as CPUs run at once, and at most 2 per client. A
+before hashing. At most as many argon2 hashes as CPUs run at once, and at most 4 requests per client (waiting or hashing), and at most 64 requests wait at once; excess is refused immediately. A
 login waits up to 2 seconds for a slot, then gets 503 with `Retry-After: 1`. The slot is taken
 before the attempt is recorded, so a busy refusal never counts as a failed password.
 

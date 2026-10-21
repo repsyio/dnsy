@@ -561,6 +561,7 @@ mod tests {
     #[tokio::test]
     async fn busy_hasher_refusal_does_not_burn_the_throttle_budget() {
         let (s, users, _user, _d) = setup().await;
+        let users = users.with_hash_permits(crate::password::PER_CLIENT_HASHES + 1);
         let key = client_key(IP);
         let held: Vec<_> = (0..crate::password::PER_CLIENT_HASHES)
             .map(|_| users.try_slot_now(key).unwrap())
