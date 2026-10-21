@@ -29,7 +29,8 @@ works and 503 otherwise; point load balancers and orchestrators at it.
 `serve` runs these tasks for you: blocklist refresh, zone hot reload, re-signing of DNSSEC zones
 (every minute it checks for changed zones, expiring signatures and key state changes), the key
 rollover timer (advances key states per the zone policy), client-certificate allowlist refresh
-and query-log retention (`[querylog] retention_days`).
+and query-log retention (`[querylog] retention_days`; batched, also removes expired sessions and
+minute rollups older than 400 days, and runs `PRAGMA optimize` daily).
 
 ## Query log, stats and cache
 
@@ -43,6 +44,18 @@ dnsy cache flush example.com --subtree --token "$DNSY_TOKEN"
 
 Dropped queries (ACL `drop`, UDP rate limiting) get no reply on UDP and TCP; over DoH they
 become `403`.
+
+## Database and file modes
+
+SQLite runs in WAL mode with `synchronous = NORMAL` (a power loss can lose the last moments of the
+query log, never corrupt the database) and `journal_size_limit = 64 MiB`. Reads use a pool of four
+connections, any idle one serves a request, so a slow query-log search does not queue the others
+behind it. The first start after an upgrade logs `applying migration ...` while it builds new
+indexes on a large query log.
+
+`data_dir` is created with mode 0700 and `dnsy.db` (with `-wal` and `-shm`) with 0600. Existing
+ones are never changed. At start the server logs a warning for every TLS private key
+(`api.tls_key`, `dot.key`, `doh.key`) that group or others can read; fix it with `chmod 600`.
 
 ## Backups
 

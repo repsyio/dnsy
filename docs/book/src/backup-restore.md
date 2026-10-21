@@ -28,8 +28,15 @@ The database holds DNSSEC private keys. Without a key passphrase (`dnssec.key_pa
 themselves, and keep the passphrase separately from the backup: a database copy is useless for
 signing without it.
 
+The database file is created with mode 0600 (its `-wal` and `-shm` files follow) and a missing
+`data_dir` with 0700. Existing files and directories keep their modes, so check them after
+restoring from a backup made by another user: `chmod 700 <data_dir>; chmod 600 <data_dir>/dnsy.db*`.
+
 The query log can dominate the database size. Lower `[querylog] retention_days` to shrink the
-backup; the rollups behind the dashboard are small.
+backup; the rollups behind the dashboard are small. The write-ahead log is truncated to 64 MiB
+after a checkpoint (`journal_size_limit`), so a large purge does not leave a large `-wal` file.
+The two query-log indexes add about 30 percent to the file size (see [Query log and
+stats](query-log.md)).
 
 ## Restore
 

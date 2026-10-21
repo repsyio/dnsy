@@ -94,6 +94,11 @@ pub struct SummaryBody {
     /// Upstream and overall latency, microseconds.
     pub avg_latency_us: u64,
     pub max_latency_us: u64,
+    /// Query-log events lost since the server started: the channel was full or a batch failed to
+    /// write. Not limited to the requested range.
+    pub querylog_dropped: u64,
+    /// Query-log batches that failed to write since the server started.
+    pub querylog_flush_errors: u64,
 }
 
 /// One timeseries bucket.
@@ -178,6 +183,7 @@ async fn summary(
         .summary(range)
         .await
         .map_err(internal)?;
+    let lost = dnsy_observe::querylog_counters();
     let blocked = s.by_source.get("blocked").copied().unwrap_or(0);
     #[expect(clippy::cast_precision_loss, reason = "counts far below 2^52")]
     let blocked_ratio = if s.total == 0 {
@@ -204,6 +210,8 @@ async fn summary(
         stale_answers: s.stale_answers,
         avg_latency_us: s.avg_latency_us,
         max_latency_us: s.max_latency_us,
+        querylog_dropped: lost.dropped,
+        querylog_flush_errors: lost.flush_errors,
     }))
 }
 
