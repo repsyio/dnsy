@@ -106,3 +106,29 @@ ci: check test cov-rust web e2e e2e-ui
 # Validate branding SVGs (wellformedness, viewBox, no external refs, size budget).
 check-svg:
     ./scripts/check-svg.sh branding
+
+# Fuzz one target with libFuzzer (needs a nightly toolchain and cargo-fuzz; not part of `ci`).
+# `just fuzz` runs fuzz_decode for an hour; `just fuzz fuzz_validate 600` runs the validator target.
+fuzz target="fuzz_decode" seconds="3600":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{target}}" in
+      fuzz_decode) crate=dnsy-proto ;;
+      fuzz_validate) crate=dnsy-dnssec ;;
+      *) echo "unknown target {{target}} (fuzz_decode, fuzz_validate)"; exit 2 ;;
+    esac
+    cd "crates/$crate"
+    cargo +nightly fuzz run "{{target}}" -- -max_total_time={{seconds}}
+
+# The same targets on the pinned stable toolchain: a std-only mutation fuzzer without coverage
+# feedback (`just fuzz-stable fuzz_validate 600`). Crashing inputs land in the fuzz dir's `crashes/`.
+fuzz-stable target="fuzz_decode" seconds="600":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{target}}" in
+      fuzz_decode) crate=dnsy-proto ;;
+      fuzz_validate) crate=dnsy-dnssec ;;
+      *) echo "unknown target {{target}} (fuzz_decode, fuzz_validate)"; exit 2 ;;
+    esac
+    cd "crates/$crate/fuzz"
+    RUSTFLAGS="-C overflow-checks=on" cargo run --release --bin mutate -- {{seconds}} "$RANDOM" "corpus/{{target}}"

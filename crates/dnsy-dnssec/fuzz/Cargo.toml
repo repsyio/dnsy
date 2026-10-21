@@ -1,0 +1,38 @@
+[package]
+name = "dnsy-dnssec-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone: not a member of the main workspace, so libfuzzer-sys never reaches its lockfile.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dnsy-proto = { path = "../../dnsy-proto" }
+dnsy-core = { path = "../../dnsy-core" }
+dnsy-dnssec = { path = ".." }
+# The std-only mutation engine and seed helpers live next to the proto targets.
+dnsy-proto-fuzz = { path = "../../dnsy-proto/fuzz" }
+
+[lib]
+name = "dnsy_dnssec_fuzz"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fuzz_validate"
+path = "fuzz_targets/fuzz_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mutate"
+path = "src/bin/mutate.rs"
+test = false
+doc = false
+bench = false

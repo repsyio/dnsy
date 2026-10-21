@@ -24,12 +24,21 @@ This page describes how it treats packets on the wire.
   advertised size), whole RRsets are dropped from the end: additional first, then authority, then
   answers. The OPT record is never dropped. TC is set when an answer or authority RRset had to go;
   losing only additional data does not set TC (RFC 2181 section 9).
+- A message whose rcode does not fit four bits and that has no OPT record fails with
+  `EncodeError::BadRcode`; it is never truncated to NOERROR. With an OPT the upper eight bits go
+  into it.
+- Name compression is case-insensitive: the writer matches suffixes on their lowercased bytes
+  (RFC 1035 section 4.1.4), so a name written after an equal-but-differently-cased one reuses the
+  first occurrence and decodes with that case (`MX 10 Mail.Example.com.` after a question for
+  `www.example.com.` reads back as `Mail.example.com.`). RFC 4343 asks implementations to preserve
+  case; this is a known, accepted deviation. The question name is always written first, so a
+  client's 0x20 echo is unaffected, and DNSSEC canonical form lowercases these names anyway.
 
 ## EDNS0
 
 - The OPT pseudo-record is lifted out of the additional section into `Message::edns` (UDP payload
-  size, DO bit, version, options). More than one OPT, or an OPT not owned by the root name, makes
-  the packet malformed (FORMERR).
+  size, DO bit, version, options). More than one OPT, an OPT not owned by the root name, or an OPT
+  in the answer or authority section makes the packet malformed (FORMERR; RFC 6891 section 6.1.1).
 - `Message::header.rcode` is the full 12-bit rcode: the header's four bits merged with the OPT's
   upper eight on decode, split again on encode. A query with an EDNS version other than 0 is
   answered with `Message::badvers_for` (BADVERS, version 0 OPT, no data).
@@ -37,7 +46,9 @@ This page describes how it treats packets on the wire.
 - `Message::set_ede(code, text)` attaches an Extended DNS Error (RFC 8914), creating the OPT with
   a 1232-octet payload size if needed; the codes live in the `ede` module.
 - For DoT and DoH, `Message::encode_padded` pads the response to a multiple of 468 octets
-  (RFC 8467) when the query carried a Padding option (`Edns::has_padding`).
+  (RFC 8467) when the query carried a Padding option (`Edns::has_padding`). Padding only uses
+  room that is left: it is shortened or skipped when the message is close to the limit, and it
+  never causes an RRset to be dropped.
 
 ## DNSSEC records
 
@@ -59,14 +70,13 @@ NSEC3 and NSEC3PARAM (RFC 4034, RFC 5155, RFC 8078).
 - `canonical::rrset_signing_input` builds the octets an RRSIG signs (RFC 4034 3.1.8.1): the RRSIG
   fields without the signature, then the RRs ordered by canonical RDATA with duplicates removed,
   the original TTL, lowercased owner names, and wildcard owners rewritten from the RRSIG `labels`
-  field. Names in the RDATA of NS, CNAME, PTR, MX, SOA and SRV are lowercased and never compressed;
+  field. Names in the RDATA of NS, CNAME, PTR, MX, SOA, SRV and DNAME, and the replacement name of
+  NAPTR, are lowercased and never compressed (DNAME and NAPTR stay opaque RDATA, the canonical form
+  walks their bytes);
   NSEC and RRSIG names keep their case (RFC 6840 section 5.1).
 
 ## Fuzzing
 
-A `cargo-fuzz` target lives in `crates/dnsy-proto/fuzz/` (not run by `just ci`):
-
-```sh
-cd crates/dnsy-proto
-cargo +nightly fuzz run fuzz_decode
-```
+Two fuzz targets cover untrusted input (`fuzz_decode` for the codec, `fuzz_validate` for the
+chain-of-trust validator). How to run them and the recorded results are in
+[Contributing](contributing.md#fuzzing).
