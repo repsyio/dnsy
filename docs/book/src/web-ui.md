@@ -154,8 +154,8 @@ Code lives in `web/src/app/features/zones/`. Routes: `/zones` (list) and `/zones
   writes. A 412 means the zone changed elsewhere: nothing was written, and a banner offers
   "Reload latest" (discard the edit and re-read) or "Overwrite anyway" (repeat the write with
   `If-Match: *`).
-- **Tabs**: the detail page has a tab list with the Records tab; the DNSSEC tab (DNSY-52) is added
-  next to it.
+- **Tabs**: the detail page has a tab list with the Records and DNSSEC tabs (see
+  [DNSSEC tab](#dnssec-tab)).
 
 Accessibility: every control has a label, dialogs trap focus, close on Escape and return focus to
 their opener, table actions carry descriptive `aria-label`s, and errors are announced through
@@ -288,3 +288,52 @@ opens it (`aria-expanded`, focus moves into the nav), Escape or the backdrop clo
 returns focus to the button. From `md` up the sidebar is always visible. The page content clips
 horizontal overflow so wide tables scroll inside their own container; there is no horizontal page
 scroll at 360 px.
+
+## DNSSEC
+
+The `dnssec` feature folder (`web/src/app/features/dnssec/`) has the zone's DNSSEC tab and the
+validation page.
+
+### DNSSEC tab
+
+Open a zone and choose the **DNSSEC** tab. It reads `GET /zones/{name}/dnssec`.
+
+- **Enable signing** (zone unsigned): pick the algorithm (ECDSAP256SHA256 or Ed25519, the only
+  ones DNSY signs with), the key layout (one CSK or separate KSK and ZSK) and the denial of
+  existence: NSEC3 (hides names, with optional hex salt, iterations and opt-out) or plain NSEC. The
+  salt and iteration count are checked before anything is sent; non-zero iterations need an
+  explicit tick because RFC 9276 advises 0. A confirmation dialog explains the registrar step:
+  signing alone does not secure the zone until the DS is published at the registrar.
+- **Disable signing**: the dialog says to remove the DS at the registrar first (otherwise
+  validating resolvers return SERVFAIL for the zone) and asks you to type the zone name.
+- **Keys**: role, key tag, state (`generated`, `published`, `active`, `retired`, `removed`) and
+  the timers present (created, published, active, retired, removed, DS confirmed), plus the
+  algorithm, denial settings and the **next re-sign** time.
+- **Rollover**: "Start rollover" on an active key opens a confirmation, then calls
+  `POST .../keys/{id}/rollover`. A KSK or CSK rollover waits for the new DS: publish it at the
+  registrar, then use "DS confirmed at registrar" on the new key.
+- **Unencrypted keys**: when `keys_encrypted` is false a warning banner (`role="alert"`) tells you
+  to set a key passphrase.
+- **DS for the registrar**: DS records are listed SHA-256 first; "Copy for registrar (SHA-256)"
+  copies that one, every record and DNSKEY has its own copy button. A blocked clipboard shows a
+  message instead of failing silently.
+- **Signed export**: "Download signed export" saves `<zone>.signed.zone`.
+
+### DNSSEC validation page
+
+The **DNSSEC** entry in the navigation (`/dnssec`) shows and changes validation at run time
+(`GET`/`PATCH /settings/dnssec`, counters from `GET /dnssec/status`).
+
+- **Mode**: `strict` (recommended; bogus answers become SERVFAIL), `permissive` (validated and
+  logged, bogus answers still returned) or `off`. Choosing a weaker mode asks for confirmation and
+  says what it exposes you to. Changes are not saved to the configuration file.
+- **Negative trust anchors**: names at and below which validation is skipped (RFC 7646). The API
+  stores names only, so there is no expiry: remove an entry when the zone is fixed. A name is
+  checked and lowercased before it is sent.
+- **Trust anchors**: read-only table (zone, kind, key tag, algorithm, digest); they come from the
+  configuration.
+- **Counters**: secure and bogus answers and signed zones for the status window, and a banner when
+  the clock is untrusted and validation is suspended.
+
+Loading, error (with retry) and empty states use the mascot components; every control has a label,
+errors use `role="alert"` and the pages work at 360 px.
