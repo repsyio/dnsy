@@ -1,15 +1,19 @@
 //! Upstream client: UDP with TCP fallback on truncation, TCP, and `DoT` with connection reuse.
 //!
-//! Anti-spoofing: every attempt uses a fresh random query ID and (for UDP) a fresh socket bound to
-//! an OS-randomised ephemeral port and connected to the upstream, so the kernel drops datagrams
-//! from any other source. A response is accepted only if its ID, QR bit, opcode and question match
-//! the query; mismatching UDP datagrams are ignored until the attempt times out.
+//! Anti-spoofing: every attempt uses a fresh CSPRNG query ID. UDP goes over a small per-upstream
+//! pool of sockets, each bound to an OS-randomised ephemeral port and connected to the upstream
+//! (so the kernel drops datagrams from any other source), used by one query at a time and
+//! replaced after [`UDP_ROTATE_QUERIES`] queries, [`UDP_ROTATE_AGE`] or [`UDP_IDLE_LIFETIME`]
+//! idle, whichever comes first. A socket whose attempt failed or timed out is closed, never
+//! pooled. A response is accepted only if its ID, QR bit, opcode and full question section (the
+//! name compared case-sensitively) match the query; mismatching UDP datagrams (including late
+//! answers to an earlier query on the same socket) are ignored until the attempt times out.
 
 mod spec;
 
 use std::collections::HashMap;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,6 +29,23 @@ pub use spec::{Upstream, UpstreamTransport};
 
 /// EDNS UDP payload size advertised to upstreams.
 pub const ADVERTISED_UDP_PAYLOAD: u16 = 1232;
+/// Largest UDP response accepted (the receive buffer of a pooled socket). Above the advertised
+/// size, so an upstream overshooting it a little is still understood.
+pub const MAX_UDP_RESPONSE: usize = 4096;
+/// A pooled UDP socket is closed after this many queries ...
+///
+/// Rotation bounds how long one source port is in use. While it is, an off-path attacker who
+/// learnt the port only has to guess the 16-bit ID (and match the question) to poison a
+/// response, so the window is kept short: a few queries and a few seconds.
+pub const UDP_ROTATE_QUERIES: u32 = 16;
+/// ... or this long after it was opened, whichever comes first.
+pub const UDP_ROTATE_AGE: Duration = Duration::from_secs(5);
+/// A pooled UDP socket left idle for this long is closed instead of reused.
+pub const UDP_IDLE_LIFETIME: Duration = Duration::from_secs(2);
+/// Idle UDP sockets kept per upstream; a query finding none opens a new one.
+pub const UDP_POOL_IDLE: usize = 16;
+/// A host-name upstream is resolved again at most this often.
+pub const RESOLVE_TTL: Duration = Duration::from_secs(60);
 
 /// Why an upstream query failed.
 #[derive(Debug, thiserror::Error)]
@@ -81,11 +102,88 @@ struct PooledConn {
     last_used: Instant,
 }
 
+/// When pooled UDP sockets are replaced.
+#[derive(Debug, Clone, Copy)]
+struct Rotation {
+    queries: u32,
+    age: Duration,
+    idle: Duration,
+}
+
+/// A connected UDP socket with its receive buffer, used by one query at a time.
+struct UdpConn {
+    socket: UdpSocket,
+    peer: SocketAddr,
+    buf: Box<[u8]>,
+    opened: Instant,
+    /// When the socket last went back to the pool.
+    idle_since: Instant,
+    uses: u32,
+}
+
+impl UdpConn {
+    async fn open(peer: SocketAddr) -> io::Result<UdpConn> {
+        let bind: SocketAddr = if peer.is_ipv4() {
+            ([0, 0, 0, 0], 0).into()
+        } else {
+            ([0u16; 8], 0).into()
+        };
+        // Port 0: the OS picks a random ephemeral source port for every new socket.
+        let socket = UdpSocket::bind(bind).await?;
+        socket.connect(peer).await?;
+        Ok(UdpConn {
+            socket,
+            peer,
+            buf: vec![0u8; MAX_UDP_RESPONSE].into_boxed_slice(),
+            opened: Instant::now(),
+            idle_since: Instant::now(),
+            uses: 0,
+        })
+    }
+
+    /// Discards whatever queued up while the socket sat in the pool (late answers, or forgeries
+    /// aimed at a port that was known for a while), so that only datagrams arriving after the
+    /// next query's ID goes out can match it, as with a fresh socket. Returns how many.
+    fn drain(&mut self) -> io::Result<usize> {
+        let mut dropped = 0;
+        loop {
+            match self.socket.try_recv(&mut self.buf) {
+                Ok(_) => dropped += 1,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(dropped),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Never across upstream addresses, never past the rotation count, age or idle lifetime.
+    fn reusable(&self, peer: SocketAddr, rotation: Rotation, now: Instant) -> bool {
+        self.peer == peer
+            && self.uses < rotation.queries
+            && now.saturating_duration_since(self.opened) < rotation.age
+            && now.saturating_duration_since(self.idle_since) < rotation.idle
+    }
+}
+
+/// Where an upstream lives; `until` is `None` for an IP literal (never re-resolved).
+#[derive(Clone, Copy)]
+struct Resolved {
+    addr: SocketAddr,
+    until: Option<Instant>,
+}
+
+#[derive(Default)]
+struct UdpState {
+    resolved: Option<Resolved>,
+    idle: Vec<UdpConn>,
+}
+
 /// Sends queries to upstream resolvers.
 pub struct UpstreamClient {
     config: UpstreamConfig,
     tls: TlsConnector,
     pool: Mutex<HashMap<Upstream, PooledConn>>,
+    udp: Mutex<HashMap<Upstream, UdpState>>,
+    rotation: Rotation,
 }
 
 impl UpstreamClient {
@@ -115,6 +213,12 @@ impl UpstreamClient {
             config,
             tls: TlsConnector::from(Arc::new(tls_config)),
             pool: Mutex::new(HashMap::new()),
+            udp: Mutex::new(HashMap::new()),
+            rotation: Rotation {
+                queries: UDP_ROTATE_QUERIES,
+                age: UDP_ROTATE_AGE,
+                idle: UDP_IDLE_LIFETIME,
+            },
         })
     }
 
@@ -160,20 +264,107 @@ impl UpstreamClient {
     ) -> Result<Message, UpstreamError> {
         query.header.id = random_id();
         let wire = query.encode(usize::from(u16::MAX))?;
-        let addr = resolve(upstream).await?;
+        let udp = matches!(kind, Attempt::Udp);
+        let (addr, pooled) = self.checkout(upstream, udp).await?;
+        let query = &*query;
         let fut = async {
             match kind {
-                Attempt::Udp => udp_exchange(addr, &wire, query).await,
+                Attempt::Udp => {
+                    let mut conn = match pooled {
+                        Some(conn) => conn,
+                        None => UdpConn::open(addr).await?,
+                    };
+                    let resp = udp_exchange(&mut conn, &wire, query).await?;
+                    Ok::<_, UpstreamError>((resp, Some(conn)))
+                }
                 Attempt::Tcp => {
                     let mut stream = TcpStream::connect(addr).await?;
                     stream.set_nodelay(true)?;
-                    framed_exchange(&mut stream, &wire, query).await
+                    Ok((framed_exchange(&mut stream, &wire, query).await?, None))
                 }
             }
         };
-        timeout(self.config.timeout, fut)
+        // A timed-out or failed attempt drops its socket here: it is never pooled again.
+        let (resp, conn) = timeout(self.config.timeout, fut)
             .await
-            .map_err(|_| UpstreamError::Timeout)?
+            .map_err(|_| UpstreamError::Timeout)??;
+        if let Some(conn) = conn {
+            self.put_udp(upstream, conn);
+        }
+        Ok(resp)
+    }
+
+    /// The upstream's socket address: cached forever for an IP literal, for [`UDP_ROTATE_AGE`]
+    /// for a host name.
+    async fn resolve(&self, upstream: &Upstream) -> Result<SocketAddr, UpstreamError> {
+        Ok(self.checkout(upstream, false).await?.0)
+    }
+
+    /// The upstream's address and, with `udp`, an idle pooled socket connected to it (sockets
+    /// due for rotation are closed on the way), under one lock in the common case.
+    async fn checkout(
+        &self,
+        upstream: &Upstream,
+        udp: bool,
+    ) -> Result<(SocketAddr, Option<UdpConn>), UpstreamError> {
+        let now = Instant::now();
+        if let Some(state) = self.udp_state().get_mut(upstream)
+            && let Some(r) = state
+                .resolved
+                .filter(|r| r.until.is_none_or(|until| now < until))
+        {
+            let conn = if udp {
+                let rotation = self.rotation;
+                state.idle.retain(|c| c.reusable(r.addr, rotation, now));
+                state.idle.pop()
+            } else {
+                None
+            };
+            return Ok((r.addr, conn));
+        }
+        let resolved = if let Ok(ip) = upstream.host.parse::<IpAddr>() {
+            Resolved {
+                addr: SocketAddr::new(ip, upstream.port),
+                until: None,
+            }
+        } else {
+            let addr = lookup_host((upstream.host.as_str(), upstream.port))
+                .await?
+                .next()
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "no address for upstream")
+                })?;
+            Resolved {
+                addr,
+                until: Some(now + RESOLVE_TTL),
+            }
+        };
+        self.udp_state()
+            .entry(upstream.clone())
+            .or_default()
+            .resolved = Some(resolved);
+        Ok((resolved.addr, None))
+    }
+
+    fn udp_state(&self) -> std::sync::MutexGuard<'_, HashMap<Upstream, UdpState>> {
+        self.udp
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Returns a socket after a successful exchange, unless it is due for rotation or the pool
+    /// is full (then it is closed).
+    fn put_udp(&self, upstream: &Upstream, mut conn: UdpConn) {
+        conn.uses += 1;
+        conn.idle_since = Instant::now();
+        if !conn.reusable(conn.peer, self.rotation, conn.idle_since) {
+            return;
+        }
+        let mut state = self.udp_state();
+        let idle = &mut state.entry(upstream.clone()).or_default().idle;
+        if idle.len() < UDP_POOL_IDLE {
+            idle.push(conn);
+        }
     }
 
     async fn query_dot(
@@ -203,7 +394,7 @@ impl UpstreamClient {
         }
         query.header.id = random_id();
         let wire = query.encode(usize::from(u16::MAX))?;
-        let addr = resolve(upstream).await?;
+        let addr = self.resolve(upstream).await?;
         let name = ServerName::try_from(upstream.server_name().to_owned())
             .map_err(|e| UpstreamError::Tls(e.to_string()))?;
         let fut = async {
@@ -262,39 +453,28 @@ fn random_id() -> u16 {
     u16::from_be_bytes(b)
 }
 
-async fn resolve(upstream: &Upstream) -> Result<SocketAddr, UpstreamError> {
-    lookup_host((upstream.host.as_str(), upstream.port))
-        .await?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address for upstream").into())
-}
-
-/// A response matches when it answers this exact query.
+/// A response matches when it answers this exact query: ID, QR, opcode and the question section
+/// byte for byte (the name compared case-sensitively, so the QNAME case is part of the match).
 fn matches(query: &Message, resp: &Message) -> bool {
     resp.header.qr
         && resp.header.id == query.header.id
         && resp.header.opcode == Opcode::Query
-        && resp.questions == query.questions
+        && resp.questions.len() == query.questions.len()
+        && resp.questions.iter().zip(&query.questions).all(|(r, q)| {
+            r.qtype == q.qtype && r.qclass == q.qclass && r.name.as_wire() == q.name.as_wire()
+        })
 }
 
 async fn udp_exchange(
-    addr: SocketAddr,
+    conn: &mut UdpConn,
     wire: &[u8],
     query: &Message,
 ) -> Result<Message, UpstreamError> {
-    let bind: SocketAddr = if addr.is_ipv4() {
-        ([0, 0, 0, 0], 0).into()
-    } else {
-        ([0u16; 8], 0).into()
-    };
-    // Port 0: the OS picks a random ephemeral source port per query.
-    let socket = UdpSocket::bind(bind).await?;
-    socket.connect(addr).await?;
-    socket.send(wire).await?;
-    let mut buf = vec![0u8; usize::from(u16::MAX)];
+    conn.drain()?;
+    conn.socket.send(wire).await?;
     loop {
-        let n = socket.recv(&mut buf).await?;
-        match Message::decode(&buf[..n]) {
+        let n = conn.socket.recv(&mut conn.buf).await?;
+        match Message::decode(&conn.buf[..n]) {
             Ok(resp) if matches(query, &resp) => return Ok(resp),
             // Spoofed, stale or garbled datagram: keep waiting until the attempt times out.
             _ => {}

@@ -1220,7 +1220,7 @@ async fn cache_settings_patch_applies_live() {
     };
     cache.insert(
         key.clone(),
-        &answer,
+        answer.clone(),
         DnssecStatus::Unchecked,
         Instant::now(),
     );
@@ -1234,7 +1234,7 @@ async fn cache_settings_patch_applies_live() {
     assert_eq!(v["cache"]["prefetch"]["enabled"], false);
     cache.insert(
         key.clone(),
-        &answer,
+        answer.clone(),
         DnssecStatus::Unchecked,
         Instant::now(),
     );
@@ -1251,7 +1251,7 @@ async fn cache_settings_patch_applies_live() {
     .await;
     cache.insert(
         key.clone(),
-        &answer,
+        answer.clone(),
         DnssecStatus::Unchecked,
         Instant::now(),
     );

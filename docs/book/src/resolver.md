@@ -73,8 +73,10 @@ only ever returned to a CD=0 query as SERVFAIL, and never replaces a live Secure
 
 **Bounded size.** The cache is split into up to 16 shards, each with its own lock, so concurrent
 readers do not contend on a global lock. `max_entries` bounds the total number of entries across
-shards; when it is exceeded the least recently used entry (among a small per-shard sample) is
-evicted and counted.
+shards. When an insert takes it over, the inserting shard evicts the least recently used of 8
+entries sampled at random positions, as long as it holds more than its share (`max_entries /
+shards`); otherwise the first other shard over its share (visited one lock at a time from a random
+start) does. No insert ever locks all shards. Evictions are counted.
 
 **Flush and statistics.** The cache can be flushed entirely or by name (optionally the whole
 subtree below it). Statistics report entries, capacity, hits, misses, inserts, evictions and
@@ -123,11 +125,43 @@ IPv6 literals use brackets, for example `tcp://[2001:db8::1]:53`.
 
 Behaviour:
 
-- Every attempt uses a fresh random query ID. UDP queries use a new socket on an OS-chosen random
-  source port, connected to the upstream so datagrams from other sources are dropped.
-- A response is accepted only when the ID, the QR bit, the opcode and the question match the query.
-  Mismatching UDP datagrams are ignored until the attempt times out; a mismatch on a stream
-  transport is an error.
+- Every attempt uses a fresh query ID from the CSPRNG.
+- UDP queries go over a small pool of connected sockets per upstream. The pool keeps these
+  anti-spoofing invariants:
+  - each socket is bound to an OS-chosen random source port and connected to the upstream
+    address, so the kernel drops datagrams from any other source; a socket is never reused for
+    another upstream address;
+  - a socket serves one query at a time; concurrent queries take other sockets, and a query
+    finding no idle socket opens a new one;
+  - a socket is closed after 16 queries, 5 s after it was opened or 2 s idle, whichever comes
+    first; at most 16 idle sockets are kept per upstream (constants `UDP_ROTATE_QUERIES`,
+    `UDP_ROTATE_AGE`, `UDP_IDLE_LIFETIME` and `UDP_POOL_IDLE` in `upstream/mod.rs`);
+  - before a pooled socket sends a new query, everything queued on it is discarded, so only
+    datagrams arriving after the new ID goes out can match, exactly as with a fresh socket;
+  - a socket whose attempt timed out or failed is closed, never reused;
+  - the receive buffer (4096 bytes, above the advertised 1232) belongs to the socket and is
+    reused, so a query allocates no receive buffer.
+- A response is accepted only when the ID, the QR bit, the opcode and the full question section
+  match the query, the name compared case-sensitively (byte for byte, as sent). Mismatching UDP
+  datagrams are ignored until the attempt times out; a mismatch on a stream transport is an error.
+  The QNAME case is not randomised (no 0x20): some upstreams and middleboxes do not preserve case,
+  and a fallback path for them is left for later.
+- The upstream address is cached: an IP literal is parsed once, a host name is resolved again at
+  most every 60 s (a pooled socket connected to an old address is closed).
+
+**The trade-off of pooling.** A fresh socket per query gives each query a new random source port
+(about 15 bits on Linux's default range) on top of the 16-bit ID. A pooled socket keeps its port for
+up to 16 queries or 5 s, so an off-path attacker who learnt the port (for example by observing one
+query) has, inside that window, only the 16-bit ID to guess and the exact question to match: a
+forged answer that arrives before the real one is accepted with probability about 1/65536 per
+forgery, against about 1/2^31 with a fresh port. Rotation keeps the window short, discarding queued
+datagrams on reuse prevents pre-loading forgeries into a parked socket, and the defence in depth is
+DNSSEC validation in `strict` mode (the default), which rejects forged answers in signed zones
+whatever the transport. Measured with `missbench` (dnsy pinned to 4 cores, 64 closed-loop clients,
+unique names, query log on): a fresh socket per query 113k QPS (31 us CPU per miss); the pool with
+128 queries / 60 s / 64 idle 185k QPS (18.5 us); the pool as shipped 172k QPS (20.7 us, p99
+1.15 ms).
+
 - Each attempt has a timeout (default 2 s). The TCP retry after TC is a new attempt.
 - Queries advertise an EDNS UDP payload of 1232. The caller's DO bit, CD bit and EDNS options are
   forwarded unchanged.

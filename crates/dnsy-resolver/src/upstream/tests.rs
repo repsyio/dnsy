@@ -470,3 +470,315 @@ fn parse_upstreams() {
         assert!(bad.parse::<Upstream>().is_err(), "{bad}");
     }
 }
+
+/// Like [`udp_server`], with the client's address and mutable state.
+async fn udp_server_peers<F>(mut f: F) -> u16
+where
+    F: FnMut(Message, SocketAddr) -> Vec<Vec<u8>> + Send + 'static,
+{
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = sock.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok((n, peer)) = sock.recv_from(&mut buf).await {
+            let Ok(q) = Message::decode(&buf[..n]) else {
+                continue;
+            };
+            for d in f(q, peer) {
+                sock.send_to(&d, peer).await.unwrap();
+            }
+        }
+    });
+    port
+}
+
+/// Source ports seen by a server answering every query.
+async fn port_recorder() -> (u16, mpsc::UnboundedReceiver<u16>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let port = udp_server_peers(move |q, peer| {
+        tx.send(peer.port()).unwrap();
+        vec![enc(&answer(&q))]
+    })
+    .await;
+    (port, rx)
+}
+
+#[tokio::test]
+async fn pooled_sockets_use_random_ports_and_rotate() {
+    let (port, mut rx) = port_recorder().await;
+    let mut c = client(1000);
+    c.rotation.queries = 3;
+    let u = up(UpstreamTransport::Udp, port);
+    let mut ports = Vec::new();
+    for _ in 0..7 {
+        c.query(&u, &query("example.com.")).await.unwrap();
+        ports.push(rx.recv().await.unwrap());
+    }
+    // Reused for three queries, then replaced by a socket on another port.
+    assert_eq!(
+        (ports[0], ports[1], ports[2]),
+        (ports[0], ports[0], ports[0])
+    );
+    assert_eq!(
+        (ports[3], ports[4], ports[5]),
+        (ports[3], ports[3], ports[3])
+    );
+    assert_ne!(ports[0], ports[3]);
+    assert_ne!(ports[3], ports[6]);
+
+    // Rotation by age.
+    c.rotation = Rotation {
+        queries: u32::MAX,
+        age: Duration::from_millis(50),
+        idle: Duration::from_secs(60),
+    };
+    c.query(&u, &query("example.com.")).await.unwrap();
+    let before = rx.recv().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    c.query(&u, &query("example.com.")).await.unwrap();
+    assert_ne!(rx.recv().await.unwrap(), before);
+
+    // Every new socket gets an OS-randomised port, not the next one up.
+    c.rotation.queries = 1;
+    let mut fresh = Vec::new();
+    for _ in 0..16 {
+        c.query(&u, &query("example.com.")).await.unwrap();
+        fresh.push(rx.recv().await.unwrap());
+    }
+    let distinct: std::collections::HashSet<_> = fresh.iter().collect();
+    assert!(distinct.len() >= 12, "ports repeat: {fresh:?}");
+    let sequential = fresh
+        .windows(2)
+        .filter(|w| w[1] == w[0].wrapping_add(1))
+        .count();
+    assert!(sequential < 4, "ports look sequential: {fresh:?}");
+}
+
+#[tokio::test]
+async fn pooled_socket_ignores_late_answer_to_earlier_query() {
+    // The second query (same question) first gets a replay of the first answer, whose id is the
+    // first query's: the full match on the reused socket must skip it.
+    let mut first: Option<Message> = None;
+    let port = udp_server_peers(move |q, _| {
+        let a = answer(&q);
+        match first.take() {
+            None => {
+                first = Some(a.clone());
+                vec![enc(&a)]
+            }
+            Some(old) => {
+                let mut stale_q = answer(&q);
+                stale_q.questions[0].qtype = RecordType::Aaaa;
+                vec![enc(&old), enc(&stale_q), enc(&a)]
+            }
+        }
+    })
+    .await;
+    let c = client(1000);
+    let u = up(UpstreamTransport::Udp, port);
+    let r1 = c.query(&u, &query("example.com.")).await.unwrap();
+    let r2 = c.query(&u, &query("example.com.")).await.unwrap();
+    assert_ne!(r1.header.id, r2.header.id);
+    assert_eq!(r2.questions[0].qtype, RecordType::A);
+    assert_eq!(c.udp_state()[&u].idle.len(), 1, "one socket served both");
+}
+
+#[tokio::test]
+async fn timed_out_socket_is_not_pooled() {
+    let mut n = 0;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let port = udp_server_peers(move |q, peer| {
+        n += 1;
+        tx.send(peer.port()).unwrap();
+        // The first query goes unanswered.
+        if n == 1 {
+            vec![]
+        } else {
+            vec![enc(&answer(&q))]
+        }
+    })
+    .await;
+    let c = client(100);
+    let u = up(UpstreamTransport::Udp, port);
+    let err = c.query(&u, &query("example.com.")).await.unwrap_err();
+    assert!(matches!(err, UpstreamError::Timeout), "{err}");
+    assert!(c.udp_state()[&u].idle.is_empty());
+    c.query(&u, &query("example.com.")).await.unwrap();
+    assert_ne!(rx.recv().await.unwrap(), rx.recv().await.unwrap());
+}
+
+#[tokio::test]
+async fn concurrent_queries_get_separate_sockets_and_pool_is_bounded() {
+    let (port, mut rx) = port_recorder().await;
+    let c = Arc::new(client(1000));
+    let u = up(UpstreamTransport::Udp, port);
+    let tasks: Vec<_> = (0..64)
+        .map(|i| {
+            let (c, u) = (Arc::clone(&c), u.clone());
+            tokio::spawn(async move {
+                let name = format!("n{i}.example.com.");
+                let r = c.query(&u, &query(&name)).await.unwrap();
+                assert_eq!(r.questions[0].name, Name::from_ascii(&name).unwrap());
+            })
+        })
+        .collect();
+    for t in tasks {
+        t.await.unwrap();
+    }
+    let mut ports = std::collections::HashSet::new();
+    while let Ok(p) = rx.try_recv() {
+        ports.insert(p);
+    }
+    assert!(ports.len() > 1, "concurrent queries shared one socket");
+    let idle = c.udp_state()[&u].idle.len();
+    assert!((1..=UDP_POOL_IDLE).contains(&idle), "{idle}");
+}
+
+#[tokio::test]
+async fn receive_buffer_is_reused_and_sized() {
+    let (port, _rx) = port_recorder().await;
+    let c = client(1000);
+    let u = up(UpstreamTransport::Udp, port);
+    c.query(&u, &query("example.com.")).await.unwrap();
+    let ptr = {
+        let state = c.udp_state();
+        let conn = &state[&u].idle[0];
+        assert_eq!(conn.buf.len(), MAX_UDP_RESPONSE);
+        conn.buf.as_ptr()
+    };
+    c.query(&u, &query("example.com.")).await.unwrap();
+    assert_eq!(c.udp_state()[&u].idle[0].buf.as_ptr(), ptr);
+}
+
+#[tokio::test]
+async fn upstream_address_is_cached() {
+    let (port, _rx) = port_recorder().await;
+    let c = client(1000);
+    let literal = up(UpstreamTransport::Udp, port);
+    c.query(&literal, &query("example.com.")).await.unwrap();
+    let r = c.udp_state()[&literal].resolved.unwrap();
+    assert_eq!((r.addr.port(), r.until), (port, None));
+
+    let named = Upstream {
+        host: "localhost".into(),
+        ..literal
+    };
+    let addr = c.resolve(&named).await.unwrap();
+    assert_eq!(addr.port(), port);
+    let until = c.udp_state()[&named].resolved.unwrap().until.unwrap();
+    assert!(until > Instant::now() && until <= Instant::now() + RESOLVE_TTL);
+}
+
+#[tokio::test]
+async fn pooled_socket_never_outlives_rotation_count_age_or_idle_lifetime() {
+    let (port, mut rx) = port_recorder().await;
+    let mut c = client(1000);
+    let u = up(UpstreamTransport::Udp, port);
+    // Default count: no port serves more than UDP_ROTATE_QUERIES queries.
+    let mut ports = Vec::new();
+    for _ in 0..UDP_ROTATE_QUERIES * 3 {
+        c.query(&u, &query("example.com.")).await.unwrap();
+        ports.push(rx.recv().await.unwrap());
+    }
+    let runs: Vec<usize> = ports.chunk_by(|a, b| a == b).map(<[u16]>::len).collect();
+    assert!(
+        runs.iter().all(|&n| n <= UDP_ROTATE_QUERIES as usize),
+        "{runs:?}"
+    );
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    const { assert!(UDP_ROTATE_QUERIES <= 16 && UDP_ROTATE_AGE.as_secs() <= 5) };
+
+    // Idle lifetime: a socket parked longer than it is closed.
+    c.rotation.idle = Duration::from_millis(50);
+    c.query(&u, &query("example.com.")).await.unwrap();
+    let before = rx.recv().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    c.query(&u, &query("example.com.")).await.unwrap();
+    assert_ne!(rx.recv().await.unwrap(), before);
+}
+
+#[tokio::test]
+async fn answer_from_wrong_source_is_rejected() {
+    // A valid-looking answer (right ID and question) sent to the client's port from another
+    // socket must not be accepted: the pooled socket is connected to the upstream.
+    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let spoofer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = server.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok((n, peer)) = server.recv_from(&mut buf).await {
+            let q = Message::decode(&buf[..n]).unwrap();
+            let mut forged = answer(&q);
+            forged.answers[0].data = RData::A(Ipv4Addr::new(198, 51, 100, 66));
+            spoofer.send_to(&enc(&forged), peer).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            server.send_to(&enc(&answer(&q)), peer).await.unwrap();
+        }
+    });
+    let c = client(1000);
+    let u = up(UpstreamTransport::Udp, port);
+    for _ in 0..3 {
+        let r = c.query(&u, &query("example.com.")).await.unwrap();
+        assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 1)));
+    }
+}
+
+#[tokio::test]
+async fn question_is_matched_case_sensitively() {
+    let (port, _h) = udp_server(|q| {
+        let mut recased = answer(&q);
+        recased.questions[0].name = Name::from_ascii("EXAMPLE.com.").unwrap();
+        recased.answers[0].data = RData::A(Ipv4Addr::new(198, 51, 100, 66));
+        vec![enc(&recased), enc(&answer(&q))]
+    })
+    .await;
+    let r = client(1000)
+        .query(&up(UpstreamTransport::Udp, port), &query("example.com."))
+        .await
+        .unwrap();
+    assert_eq!(r.questions[0].name.as_wire(), b"\x07example\x03com\x00");
+    assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 1)));
+}
+
+#[tokio::test]
+async fn datagrams_queued_while_pooled_are_discarded_before_reuse() {
+    let (port, _rx) = port_recorder().await;
+    let c = client(1000);
+    let u = up(UpstreamTransport::Udp, port);
+    c.query(&u, &query("example.com.")).await.unwrap();
+    let mut conn = c.udp_state().get_mut(&u).unwrap().idle.pop().unwrap();
+    // A datagram sprayed at the parked socket's port from another address.
+    let forger = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    forger
+        .send_to(b"x", conn.socket.local_addr().unwrap())
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Only the connected peer gets through the kernel filter; the stray one was dropped there.
+    assert_eq!(conn.drain().unwrap(), 0);
+    c.put_udp(&u, conn);
+
+    // Late answers from the upstream itself do queue up; they are discarded on reuse.
+    let (tx, mut rx) = mpsc::unbounded_channel::<SocketAddr>();
+    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let sport = server.local_addr().unwrap().port();
+    let server = Arc::new(server);
+    let s2 = Arc::clone(&server);
+    tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok((n, peer)) = s2.recv_from(&mut buf).await {
+            let q = Message::decode(&buf[..n]).unwrap();
+            tx.send(peer).unwrap();
+            s2.send_to(&enc(&answer(&q)), peer).await.unwrap();
+        }
+    });
+    let u2 = up(UpstreamTransport::Udp, sport);
+    c.query(&u2, &query("example.com.")).await.unwrap();
+    let peer = rx.recv().await.unwrap();
+    for _ in 0..3 {
+        server.send_to(b"late", peer).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let mut conn = c.udp_state().get_mut(&u2).unwrap().idle.pop().unwrap();
+    assert_eq!(conn.drain().unwrap(), 3);
+    assert_eq!(conn.drain().unwrap(), 0);
+}

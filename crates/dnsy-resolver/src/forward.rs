@@ -332,7 +332,7 @@ impl<E: Exchange> UpstreamFetcher<'_, E> {
         }
         scrub_fetch(&q, &mut resp);
         self.cache
-            .insert(key, &resp, DnssecStatus::Unchecked, Instant::now());
+            .insert(key, resp.clone(), DnssecStatus::Unchecked, Instant::now());
         Ok(resp)
     }
 }

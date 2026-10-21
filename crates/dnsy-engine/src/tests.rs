@@ -288,9 +288,12 @@ async fn authoritative_answers_not_cached() {
         do_bit: false,
         cd_bit: false,
     };
-    h.engine
-        .cache()
-        .insert(key, &planted, DnssecStatus::Unchecked, Instant::now());
+    h.engine.cache().insert(
+        key,
+        planted.clone(),
+        DnssecStatus::Unchecked,
+        Instant::now(),
+    );
     let inserts = h.engine.cache().stats().inserts;
     let r = h
         .engine
