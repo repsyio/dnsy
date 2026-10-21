@@ -1148,10 +1148,15 @@ export interface components {
             role: string;
             username: string;
         };
-        /** @description New zone. */
-        CreateZone: components["schemas"]["ZoneBody"] & {
+        /** @description New zone: the name plus the settings and records of a zone body. */
+        CreateZone: {
+            /** Format: int32 */
+            default_ttl: number;
             /** @description Zone name, e.g. `example.com.`. */
             name: string;
+            /** @description Must contain at least one NS record at the apex. */
+            records?: components["schemas"]["RecordInput"][];
+            soa: components["schemas"]["SoaBody"];
         };
         /** @description The only response that contains the token secret. */
         CreatedToken: {

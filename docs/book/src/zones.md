@@ -113,3 +113,16 @@ Records are addressed by a stable id derived from name, type and value. `GET /zo
 Authoritative answers are not cached, so a change is visible to queries as soon as the write
 returns.
 
+### Serial semantics and request bodies
+
+Every edit goes through one place in `dnsy-zone` (`ZoneStore::update`): it takes the store's
+write lock, applies the change to a copy of the stored zone, validates it exactly like a file,
+bumps the SOA serial by one (wrapping at 2^32) and writes the file atomically. Any successful
+write bumps the serial, including DNSSEC policy changes; a failed edit writes nothing and keeps
+the serial. A serial supplied in a `PUT` body is ignored; `POST /zones` uses it as the initial
+serial (default 1). An `If-Match` that no longer matches is answered 412 and nothing is written,
+even when another writer got in between the check and the write.
+
+`POST /zones` and `PUT /zones/{name}` reject unknown top-level fields (and unknown fields in
+`soa` and in records) with 422 instead of ignoring them, so a misspelled `default_tll` is an
+error rather than a silently missing setting.

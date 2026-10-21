@@ -1,20 +1,21 @@
 //! Zones, their records and BIND export.
 //!
-//! Zones live as JSON files in the zones directory ([`dnsy_zone::ZoneStore`]). Every write is a
-//! read-modify-write under one lock: the candidate zone is serialised and parsed again by
-//! [`Zone::from_json`], so API writes obey exactly the rules of files on disk. Zone names are
-//! validated through [`zone_file_name`] (lowercase `[a-z0-9.-]`), so a name can never leave the
-//! zones directory. Writes honour `If-Match` against the zone's `ETag`.
+//! Zones live as JSON files in the zones directory ([`dnsy_zone::ZoneStore`]). Every edit goes
+//! through [`ZoneStore::update`], which owns the lock, the serial bump and the atomic write; the
+//! candidate zone is parsed again by [`Zone::from_json`], so API writes obey exactly the rules of
+//! files on disk. This module maps requests onto it. Zone names are validated through
+//! [`zone_file_name`] (lowercase `[a-z0-9.-]`), so a name can never leave the zones directory.
+//! Writes honour `If-Match` against the zone's `ETag`.
 
 use std::fmt::Write as _;
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use dnsy_proto::Name;
-use dnsy_zone::{Zone, ZoneError, ZoneStore, export_bind, zone_file_name};
+use dnsy_zone::{Record, RecordId, Zone, ZoneError, ZoneStore, export_bind, zone_file_name};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -118,13 +119,28 @@ pub struct ZoneBody {
     pub records: Vec<RecordInput>,
 }
 
-/// New zone.
+/// New zone: the name plus the settings and records of a zone body.
 #[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateZone {
     /// Zone name, e.g. `example.com.`.
     pub name: String,
-    #[serde(flatten)]
-    pub body: ZoneBody,
+    pub default_ttl: u32,
+    pub soa: SoaBody,
+    /// Must contain at least one NS record at the apex.
+    #[serde(default)]
+    pub records: Vec<RecordInput>,
+}
+
+impl CreateZone {
+    fn into_parts(self) -> (String, ZoneBody) {
+        let body = ZoneBody {
+            default_ttl: self.default_ttl,
+            soa: self.soa,
+            records: self.records,
+        };
+        (self.name, body)
+    }
 }
 
 /// One page of records.
@@ -193,13 +209,8 @@ fn view(record: &dnsy_zone::Record) -> RecordView {
     let name = record.name.to_lowercase().to_string();
     let rtype = rtype_name(&record.rdata);
     let value = record.rdata.to_string();
-    let mut hash = Sha256::new();
-    for part in [&name, &rtype, &value] {
-        hash.update(part.as_bytes());
-        hash.update([0]);
-    }
     RecordView {
-        id: hex(&hash.finalize()[..8]),
+        id: record.id().to_string(),
         name,
         rtype,
         ttl: record.ttl,
@@ -235,6 +246,11 @@ pub(super) fn zone_error(e: &ZoneError) -> ApiError {
     match e {
         ZoneError::Invalid(_) | ZoneError::Json(_) => ApiError::Unprocessable(e.to_string()),
         ZoneError::Io(_) => ApiError::Internal(e.to_string()),
+        ZoneError::SerialMismatch { .. } => ApiError::PreconditionFailed(
+            "the zone changed since it was read; reload it and retry".to_owned(),
+        ),
+        ZoneError::NoSuchZone(_) | ZoneError::NoSuchRecord(_) => ApiError::NotFound(e.to_string()),
+        ZoneError::ZoneExists(_) | ZoneError::Duplicate => ApiError::Conflict(e.to_string()),
     }
 }
 
@@ -297,34 +313,45 @@ fn check_if_match(wanted: Option<&str>, zone: &Zone) -> Result<(), ApiError> {
     }
 }
 
-/// Runs a zone write on the blocking pool, serialised with all other zone writes.
-pub(super) async fn mutate<T: Send + 'static>(
-    state: &ApiState,
-    f: impl FnOnce(&ZoneStore) -> Result<T, ApiError> + Send + 'static,
-) -> Result<T, ApiError> {
-    let store = Arc::clone(store(state)?);
-    let lock = Arc::clone(&state.zone_lock);
-    tokio::task::spawn_blocking(move || {
-        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        f(&store)
-    })
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?
-}
-
-/// The current stored zone, checked against `If-Match`. Call inside [`mutate`].
-pub(super) fn current(
+/// The serial a write is conditional on: `None` without `If-Match`, otherwise the stored
+/// serial once the header matches the stored zone's `ETag` (the store re-checks it under its
+/// write lock, so a concurrent write still turns into 412).
+fn expected_serial(
     store: &ZoneStore,
     origin: &Name,
     wanted: Option<&str>,
-) -> Result<Arc<Zone>, ApiError> {
-    let zone = store
-        .snapshot()
-        .get(origin)
-        .cloned()
-        .ok_or_else(|| ApiError::NotFound(format!("zone {origin} not found")))?;
-    check_if_match(wanted, &zone)?;
-    Ok(zone)
+) -> Result<Option<u32>, ApiError> {
+    let Some(wanted) = wanted else {
+        return Ok(None);
+    };
+    let zone = store.stored(origin).map_err(|e| zone_error(&e))?;
+    check_if_match(Some(wanted), &zone)?;
+    Ok(Some(zone.soa.serial))
+}
+
+/// Edits a zone on the blocking pool through [`ZoneStore::update`].
+pub(super) async fn edit<T: Send + 'static>(
+    state: &ApiState,
+    origin: Name,
+    wanted: Option<String>,
+    f: impl FnOnce(&mut Zone) -> Result<T, ZoneError> + Send + 'static,
+) -> Result<(Arc<Zone>, T), ApiError> {
+    let store = Arc::clone(store(state)?);
+    blocking(move || {
+        let expected = expected_serial(&store, &origin, wanted.as_deref())?;
+        store
+            .update(&origin, expected, f)
+            .map_err(|e| zone_error(&e))
+    })
+    .await
+}
+
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
 }
 
 fn check_field(what: &str, value: &str) -> Result<(), ApiError> {
@@ -343,15 +370,21 @@ fn check_ttl(ttl: Option<u32>) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn record_json(r: &RecordInput) -> Result<Value, ApiError> {
+fn check_input(r: &RecordInput) -> Result<(), ApiError> {
     check_field("record name", &r.name)?;
     check_field("record value", &r.value)?;
-    check_ttl(r.ttl)?;
-    let mut v = json!({"name": r.name, "type": r.rtype, "value": r.value});
-    if let Some(ttl) = r.ttl {
-        v["ttl"] = json!(ttl);
-    }
-    Ok(v)
+    check_ttl(r.ttl)
+}
+
+fn parse_input(zone: &Zone, r: &RecordInput) -> Result<Record, ZoneError> {
+    Record::parse(
+        &zone.origin,
+        zone.default_ttl,
+        &r.name,
+        &r.rtype,
+        r.ttl,
+        &r.value,
+    )
 }
 
 fn soa_json(soa: &SoaBody, serial: u32) -> Result<Value, ApiError> {
@@ -374,46 +407,32 @@ fn has_apex_ns(zone: &Zone) -> bool {
         .any(|r| r.name == zone.origin && r.rdata.rtype() == dnsy_proto::RecordType::Ns)
 }
 
-/// Parses a candidate zone document, enforcing the rules a file would meet plus the API's own:
-/// the apex keeps an NS record, no duplicate records, size limits.
-fn validate(doc: &Value, previous: Option<&Zone>) -> Result<Zone, ApiError> {
-    let (zone, _) = Zone::from_json(&doc.to_string()).map_err(|e| zone_error(&e))?;
+/// The API's own rules on top of the file rules: size limit, the apex keeps an NS record
+/// (`require_ns`), no duplicate records.
+fn check_zone(zone: &Zone, require_ns: bool) -> Result<(), ZoneError> {
     if zone.records.len() > MAX_RECORDS {
-        return Err(ApiError::Unprocessable(format!(
+        return Err(ZoneError::Invalid(format!(
             "a zone holds at most {MAX_RECORDS} records"
         )));
     }
-    if !has_apex_ns(&zone) && previous.is_none_or(has_apex_ns) {
-        return Err(ApiError::Unprocessable(
+    if require_ns && !has_apex_ns(zone) {
+        return Err(ZoneError::Invalid(
             "the zone apex needs at least one NS record".to_owned(),
         ));
     }
-    let mut ids: Vec<String> = zone.records.iter().map(|r| view(r).id).collect();
+    let mut ids: Vec<RecordId> = zone.records.iter().map(Record::id).collect();
     ids.sort_unstable();
     if ids.windows(2).any(|w| w[0] == w[1]) {
-        return Err(ApiError::Conflict(
-            "the zone would contain a duplicate record".to_owned(),
-        ));
+        return Err(ZoneError::Duplicate);
     }
+    Ok(())
+}
+
+/// Parses a new zone document with the file rules and the API's rules.
+fn validate_new(doc: &Value) -> Result<Zone, ApiError> {
+    let (zone, _) = Zone::from_json(&doc.to_string()).map_err(|e| zone_error(&e))?;
+    check_zone(&zone, true).map_err(|e| zone_error(&e))?;
     Ok(zone)
-}
-
-/// The stored document of `zone` with the SOA serial advanced.
-fn bumped(zone: &Zone) -> Value {
-    let mut doc: Value = serde_json::from_str(&zone.to_json()).expect("zone JSON parses");
-    doc["soa"]["serial"] = json!(zone.soa.serial.wrapping_add(1));
-    doc
-}
-
-fn records_mut(doc: &mut Value) -> &mut Vec<Value> {
-    doc["records"].as_array_mut().expect("zone has records")
-}
-
-fn position(zone: &Zone, id: &str) -> Result<usize, ApiError> {
-    zone.records
-        .iter()
-        .position(|r| view(r).id == id)
-        .ok_or_else(|| ApiError::NotFound(format!("record {id} not found")))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -460,36 +479,20 @@ async fn create_zone(
     State(state): State<ApiState>,
     Json(req): Json<CreateZone>,
 ) -> Result<(StatusCode, Etagged<Json<ZoneDetail>>), ApiError> {
-    let origin = zone_name(&req.name)?;
-    let doc = zone_document(&origin, &req.body, req.body.soa.serial.unwrap_or(1), None)?;
-    let zone = validate(&doc, None)?;
-    let out = mutate(&state, move |store| {
-        let snapshot = store.snapshot();
-        let file = zone.file_name().map_err(|e| zone_error(&e))?;
-        if snapshot.get(&zone.origin).is_some() || store.load_error(&file).is_some() {
-            return Err(ApiError::Conflict(format!(
-                "zone {} already exists",
-                zone.origin
-            )));
-        }
-        if snapshot.len() >= MAX_ZONES {
-            return Err(ApiError::Unprocessable(format!(
-                "at most {MAX_ZONES} zones can be created"
-            )));
-        }
-        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
-        Ok((detail(store, &zone), etag(&zone)))
+    let (name, body) = req.into_parts();
+    let origin = zone_name(&name)?;
+    let doc = zone_document(&origin, &body, body.soa.serial.unwrap_or(1))?;
+    let zone = validate_new(&doc)?;
+    let store = Arc::clone(store(&state)?);
+    let out = blocking(move || {
+        let zone = store.create(&zone, MAX_ZONES).map_err(|e| zone_error(&e))?;
+        Ok((detail(&store, &zone), etag(&zone)))
     })
     .await?;
     Ok((StatusCode::CREATED, ([(header::ETAG, out.1)], Json(out.0))))
 }
 
-fn zone_document(
-    origin: &Name,
-    body: &ZoneBody,
-    serial: u32,
-    dnssec: Option<Value>,
-) -> Result<Value, ApiError> {
+fn zone_document(origin: &Name, body: &ZoneBody, serial: u32) -> Result<Value, ApiError> {
     check_ttl(Some(body.default_ttl))?;
     if body.records.len() > MAX_RECORDS {
         return Err(ApiError::Unprocessable(format!(
@@ -499,19 +502,22 @@ fn zone_document(
     let records = body
         .records
         .iter()
-        .map(record_json)
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut doc = json!({
+        .map(|r| {
+            check_input(r)?;
+            let mut v = json!({"name": r.name, "type": r.rtype, "value": r.value});
+            if let Some(ttl) = r.ttl {
+                v["ttl"] = json!(ttl);
+            }
+            Ok(v)
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(json!({
         "schema": 1,
         "origin": origin.to_string(),
         "default_ttl": body.default_ttl,
         "soa": soa_json(&body.soa, serial)?,
         "records": records,
-    });
-    if let Some(d) = dnssec {
-        doc["dnssec"] = d;
-    }
-    Ok(doc)
+    }))
 }
 
 /// Get a zone, with its `load_error` and an `ETag`.
@@ -550,18 +556,18 @@ async fn replace_zone(
 ) -> Result<Etagged<Json<ZoneDetail>>, ApiError> {
     let origin = zone_name(&name)?;
     let wanted = if_match(&headers)?;
-    let (detail, zone) = mutate(&state, move |store| {
-        let old = current(store, &origin, wanted.as_deref())?;
-        let dnssec = serde_json::from_str::<Value>(&old.to_json())
-            .expect("zone JSON parses")
-            .get("dnssec")
-            .cloned();
-        let doc = zone_document(&origin, &body, old.soa.serial.wrapping_add(1), dnssec)?;
-        let zone = validate(&doc, Some(&old))?;
-        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
-        Ok((detail(store, &zone), zone))
+    let doc = zone_document(&origin, &body, 0)?;
+    let (new, _) = Zone::from_json(&doc.to_string()).map_err(|e| zone_error(&e))?;
+    let (zone, ()) = edit(&state, origin, wanted, move |z| {
+        let had_ns = has_apex_ns(z);
+        z.default_ttl = new.default_ttl;
+        z.soa_ttl = new.soa_ttl;
+        z.soa = new.soa;
+        z.records = new.records;
+        check_zone(z, had_ns)
     })
     .await?;
+    let detail = detail(store(&state)?, &zone);
     Ok(etagged(&zone, Json(detail)))
 }
 
@@ -581,9 +587,12 @@ async fn delete_zone(
 ) -> Result<StatusCode, ApiError> {
     let origin = zone_name(&name)?;
     let wanted = if_match(&headers)?;
-    mutate(&state, move |store| {
-        current(store, &origin, wanted.as_deref())?;
-        store.remove_zone(&origin).map_err(|e| zone_error(&e))
+    let store = Arc::clone(store(&state)?);
+    blocking(move || {
+        let expected = expected_serial(&store, &origin, wanted.as_deref())?;
+        store
+            .remove_zone(&origin, expected)
+            .map_err(|e| zone_error(&e))
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -672,15 +681,14 @@ async fn create_record(
 ) -> Result<(StatusCode, Etagged<Json<RecordView>>), ApiError> {
     let origin = zone_name(&name)?;
     let wanted = if_match(&headers)?;
-    let new = record_json(&input)?;
-    let (record, zone) = mutate(&state, move |store| {
-        let old = current(store, &origin, wanted.as_deref())?;
-        let mut doc = bumped(&old);
-        records_mut(&mut doc).push(new);
-        let zone = validate(&doc, Some(&old))?;
-        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
-        let record = zone.records.last().map(view).expect("a record was added");
-        Ok((record, zone))
+    check_input(&input)?;
+    let (zone, record) = edit(&state, origin, wanted, move |z| {
+        let had_ns = has_apex_ns(z);
+        let record = parse_input(z, &input)?;
+        let view = view(&record);
+        z.add_record(record);
+        check_zone(z, had_ns)?;
+        Ok(view)
     })
     .await?;
     Ok((StatusCode::CREATED, etagged(&zone, Json(record))))
@@ -706,15 +714,15 @@ async fn replace_record(
 ) -> Result<Etagged<Json<RecordView>>, ApiError> {
     let origin = zone_name(&name)?;
     let wanted = if_match(&headers)?;
-    let new = record_json(&input)?;
-    let (record, zone) = mutate(&state, move |store| {
-        let old = current(store, &origin, wanted.as_deref())?;
-        let at = position(&old, &id)?;
-        let mut doc = bumped(&old);
-        records_mut(&mut doc)[at] = new;
-        let zone = validate(&doc, Some(&old))?;
-        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
-        Ok((view(&zone.records[at]), zone))
+    check_input(&input)?;
+    let id = RecordId::from(id);
+    let (zone, record) = edit(&state, origin, wanted, move |z| {
+        let had_ns = has_apex_ns(z);
+        let record = parse_input(z, &input)?;
+        let view = view(&record);
+        z.replace_record(&id, record)?;
+        check_zone(z, had_ns)?;
+        Ok(view)
     })
     .await?;
     Ok(etagged(&zone, Json(record)))
@@ -737,14 +745,11 @@ async fn delete_record(
 ) -> Result<Response, ApiError> {
     let origin = zone_name(&name)?;
     let wanted = if_match(&headers)?;
-    let zone = mutate(&state, move |store| {
-        let old = current(store, &origin, wanted.as_deref())?;
-        let at = position(&old, &id)?;
-        let mut doc = bumped(&old);
-        records_mut(&mut doc).remove(at);
-        let zone = validate(&doc, Some(&old))?;
-        store.write_zone(&zone).map_err(|e| zone_error(&e))?;
-        Ok(zone)
+    let id = RecordId::from(id);
+    let (zone, ()) = edit(&state, origin, wanted, move |z| {
+        let had_ns = has_apex_ns(z);
+        z.remove_record(&id)?;
+        check_zone(z, had_ns)
     })
     .await?;
     Ok((StatusCode::NO_CONTENT, [(header::ETAG, etag(&zone))]).into_response())
@@ -952,6 +957,38 @@ mod tests {
         )
         .await
         .json()
+    }
+
+    #[tokio::test]
+    async fn create_zone_rejects_unknown_fields() {
+        let fx = fx().await;
+        let mut body = zone_body();
+        body["bogus"] = json!(true);
+        let res = call(
+            &fx,
+            &fx.admin,
+            Method::POST,
+            "/api/v1/zones",
+            &[],
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+        assert!(res.body.contains("bogus"), "{}", res.body);
+        assert!(fx.zones.snapshot().is_empty());
+
+        assert_eq!(create(&fx).await.status, StatusCode::CREATED);
+        body.as_object_mut().unwrap().remove("name");
+        let res = call(
+            &fx,
+            &fx.admin,
+            Method::PUT,
+            "/api/v1/zones/example.com.",
+            &[],
+            Some(body),
+        )
+        .await;
+        assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
     }
 
     #[tokio::test]

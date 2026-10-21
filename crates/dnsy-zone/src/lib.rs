@@ -15,7 +15,7 @@ pub use keystore::{
     KdfCost, KeyStore, KeyStoreError, Passphrase, passphrase_from_environment, resolve_passphrase,
 };
 pub use lookup::LookupResult;
-pub use model::{Record, Zone, ZoneError, zone_file_name};
+pub use model::{Record, RecordId, Zone, ZoneError, zone_file_name};
 pub use policy::{Denial, DnssecPolicy, KeyLayout, Nsec3Params};
 pub use signed::ZoneSigning;
 pub use store::{ZoneSet, ZoneStore, ZoneWatcher};
