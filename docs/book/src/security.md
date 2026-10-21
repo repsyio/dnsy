@@ -78,6 +78,32 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
 - Protect backups: they contain password hashes and DNSSEC keys ([Backup and restore](backup-restore.md)).
 - Keep the binary current ([Upgrade](upgrade.md)).
 
+## Connection recycling model
+
+When the TCP, DoT or DoH pool is full, a newcomer may ask one existing connection to close.
+
+| Connection state | Can be chosen? |
+| --- | --- |
+| handshaking, younger than 5 s | no (it may be mid-handshake) |
+| handshaking or silent, older than 5 s | yes, first |
+| established (handshake done, or first query sent on plain TCP) and idle | yes, longest idle first |
+| authenticated (mTLS certificate, DoH token) | never |
+| busy (a request in flight) | never |
+| already asked to close | no |
+
+Choosing a victim and the moves to established, authenticated or busy happen under one lock, and
+each of those moves withdraws a pending request, so a stale request never closes a connection that
+has since proved itself or started work. The handshake itself listens for the request, and a
+recycled connection is dropped at once (unflushed output is abandoned).
+
+Budgets: a client that already holds its whole share never recycles; one client (IPv4 address or
+IPv6 `/56`) recycles at most once per second; all clients together at most 64 per second, of which
+the last 32 are reserved for clients that have not recycled in the last 10 seconds. A recycle spends
+budget only once a victim is chosen and gives it back when the freed slot is not obtained within
+500 ms (the request is then withdrawn). At most 32 newcomers wait at once and the accept loop never
+waits. The invariants (protected connections are never asked to close, each recycle frees exactly
+one slot, nothing leaks) are tested in `crates/dnsy-server/src/admission.rs`.
+
 ## Third-party crates
 
 Everything on the network path is Rust. Crates worth knowing about when you audit:

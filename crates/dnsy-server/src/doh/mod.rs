@@ -208,13 +208,18 @@ pub(crate) async fn serve<H: Handler>(
                 return;
             };
             let activity = permit.activity();
-            match timeout(limits.idle, acceptor.accept(stream)).await {
-                Ok(Ok(tls)) => {
+            let handshake = tokio::select! {
+                () = activity.recycled() => None,
+                result = timeout(limits.idle, acceptor.accept(stream)) => Some(result),
+            };
+            match handshake {
+                None => tracing::debug!(%client, "doh connection recycled during the handshake"),
+                Some(Ok(Ok(tls))) => {
                     activity.establish();
                     connection(tls, client, state, shutdown, limits, activity).await;
                 }
-                Ok(Err(e)) => tracing::debug!(error = %e, "doh handshake failed"),
-                Err(_) => tracing::debug!("doh handshake timed out"),
+                Some(Ok(Err(e))) => tracing::debug!(error = %e, "doh handshake failed"),
+                Some(Err(_)) => tracing::debug!("doh handshake timed out"),
             }
             drop(permit);
         });

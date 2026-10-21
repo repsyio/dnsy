@@ -112,9 +112,12 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
                 tracing::debug!(%client, error = %e, "tcp set_nodelay failed");
             }
             let activity = permit.activity();
-            // A handshake that stalls is not yet established, so it is never recycled, but it is
-            // still bounded by the idle time inside `wrap`.
-            let wrapped = wrap(stream).await;
+            // A handshake that stalls past the grace period can be recycled; one that finishes
+            // withdraws any pending request in `establish`/`mark_authenticated` below.
+            let wrapped = tokio::select! {
+                () = activity.recycled() => None,
+                wrapped = wrap(stream) => wrapped,
+            };
             if let Some((stream, session)) = wrapped {
                 if flavor.transport != Transport::Tcp {
                     activity.establish(); // TLS handshake done
@@ -447,6 +450,44 @@ mod tests {
             .unwrap_or(0);
         assert_eq!(n, 0);
         drop(stuck);
+        let _ = shutdown_tx.send(true);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stalled_handshake_past_grace_is_recycled() {
+        use dnsy_engine::RefusedHandler;
+        let slots = SlotLimit::new_connections(1, 4).with_establish_grace(Duration::ZERO);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let limits = Limits {
+            idle: Duration::from_secs(5),
+            drain: Duration::from_millis(100),
+        };
+        // A handshake that takes far longer than the test waits.
+        let slow = |stream: TcpStream| async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Some((stream, None))
+        };
+        let server = tokio::spawn(serve_with(
+            listener,
+            Arc::new(RefusedHandler),
+            shutdown,
+            limits,
+            slots,
+            Flavor::PLAIN,
+            slow,
+        ));
+        let mut silent = TcpStream::connect(addr).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _newcomer = TcpStream::connect(addr).await.unwrap();
+        let mut buf = [0_u8; 1];
+        let n = tokio::time::timeout(Duration::from_secs(2), silent.read(&mut buf))
+            .await
+            .expect("the handshake reacted to the recycle request")
+            .unwrap_or(0);
+        assert_eq!(n, 0);
         let _ = shutdown_tx.send(true);
         server.await.unwrap();
     }
