@@ -22,7 +22,7 @@ import type { MascotSize } from '../../shared/mascot';
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">Mascot gallery</h1>
+    <h1 class="mb-6 page-title">Mascot gallery</h1>
     <div class="mb-6 flex gap-3" role="group" aria-label="Size">
       @for (s of sizes; track s) {
         <button class="btn" type="button" [attr.aria-pressed]="size() === s" (click)="size.set(s)">

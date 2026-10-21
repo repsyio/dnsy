@@ -16,10 +16,10 @@ import { MIN_PASSWORD, passwordStrength } from '../../shared/util/password-stren
   imports: [MascotLoadingComponent, ReactiveFormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">Profile</h1>
+    <h1 class="mb-6 page-title">Profile</h1>
     @if (auth.user(); as u) {
       <section class="panel mb-6" aria-labelledby="pa-h">
-        <h2 id="pa-h" class="mb-4 text-lg text-cyan">Account</h2>
+        <h2 id="pa-h" class="mb-4 section-title">Account</h2>
         <dl class="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div>
             <dt class="text-xs uppercase tracking-wider text-muted">Username</dt>
@@ -41,7 +41,7 @@ import { MIN_PASSWORD, passwordStrength } from '../../shared/util/password-stren
       </section>
 
       <section class="panel mb-6" aria-labelledby="pp-h">
-        <h2 id="pp-h" class="mb-4 text-lg text-cyan">Change password</h2>
+        <h2 id="pp-h" class="mb-4 section-title">Change password</h2>
         <form class="max-w-md" novalidate (submit)="change($event)">
           <label class="field-label" for="pp-cur">Current password</label>
           <input
@@ -94,7 +94,7 @@ import { MIN_PASSWORD, passwordStrength } from '../../shared/util/password-stren
       </section>
 
       <section class="panel" aria-labelledby="ps-h">
-        <h2 id="ps-h" class="mb-2 text-lg text-cyan">Session</h2>
+        <h2 id="ps-h" class="mb-2 section-title">Session</h2>
         <p class="mb-4 text-sm text-muted">
           A session ends after 30 minutes without use or 12 hours after sign in. Changing your
           password or role ends all sessions.

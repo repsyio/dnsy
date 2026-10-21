@@ -7,7 +7,7 @@ import { MascotEmptyComponent } from '../shared/mascot';
   imports: [MascotEmptyComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">{{ heading() }}</h1>
+    <h1 class="mb-6 page-title">{{ heading() }}</h1>
     <section class="panel">
       <dnsy-mascot-empty message="This page is under construction." />
     </section>

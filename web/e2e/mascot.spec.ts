@@ -108,3 +108,39 @@ test('success: saving a record shows the success mascot', async ({ page, freshSe
   await form.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('img', { name: 'Nox reports success' })).toBeVisible();
 });
+
+test.describe('reduced motion', () => {
+  test.use({ reducedMotion: 'reduce' });
+
+  test('every animated part of Nox is frozen', async ({ page }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    await page.route('**/api/v1/zones', async (route) => {
+      await gate;
+      await route.continue();
+    });
+    await page.goto('/zones');
+    const nox = page.getByRole('img', { name: 'Nox is loading' });
+    await expect(nox).toBeVisible();
+    const animated = await nox.evaluate((svg) =>
+      [svg, ...svg.querySelectorAll('*')]
+        .map((el) => getComputedStyle(el).animationName)
+        .filter((name) => name !== 'none'),
+    );
+    expect(animated).toEqual([]);
+    release();
+  });
+});
+
+test('without reduced motion the loading sweep animates', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  await page.route('**/api/v1/zones', async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await page.goto('/zones');
+  const sweep = page.getByRole('img', { name: 'Nox is loading' }).locator('.nox-sweep');
+  await expect(sweep).toHaveCSS('animation-name', 'nox-sweep');
+  release();
+});

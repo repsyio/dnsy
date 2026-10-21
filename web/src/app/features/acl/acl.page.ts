@@ -18,7 +18,7 @@ const ACTIONS: AclAction[] = ['allow', 'refuse', 'drop'];
   imports: [ConfirmDialog, MascotEmptyComponent, MascotErrorComponent, MascotLoadingComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">ACL and rate limits</h1>
+    <h1 class="mb-6 page-title">ACL and rate limits</h1>
 
     @switch (status()) {
       @case ('loading') {
@@ -33,7 +33,7 @@ const ACTIONS: AclAction[] = ['allow', 'refuse', 'drop'];
       }
       @default {
         <section class="panel mb-6" aria-labelledby="acl-h">
-          <h2 id="acl-h" class="mb-1 text-lg text-cyan">Access rules</h2>
+          <h2 id="acl-h" class="mb-1 section-title">Access rules</h2>
           <p class="mb-4 text-sm text-muted">
             Clients matching no rule get the default action:
             <span class="badge badge-ok">{{ defaultAction() }}</span
@@ -108,7 +108,7 @@ const ACTIONS: AclAction[] = ['allow', 'refuse', 'drop'];
                 </thead>
                 <tbody>
                   @for (r of rules(); track r.id) {
-                    <tr class="border-t border-cyan/20">
+                    <tr class="border-t-[0.5px] border-line">
                       <td class="py-2 pr-4 break-all">
                         {{ r.cidr ?? 'cert ' + r.client_cert_sha256 }}
                       </td>
@@ -140,7 +140,7 @@ const ACTIONS: AclAction[] = ['allow', 'refuse', 'drop'];
         </section>
 
         <section class="panel" aria-labelledby="rl-h">
-          <h2 id="rl-h" class="mb-1 text-lg text-cyan">Rate limit</h2>
+          <h2 id="rl-h" class="mb-1 section-title">Rate limit</h2>
           <p class="mb-4 text-sm text-muted">
             Queries per second allowed from one client; 0 turns the limit off.
           </p>

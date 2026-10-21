@@ -62,7 +62,7 @@ export const NAV_ITEMS = [
       }
       <aside
         id="main-nav"
-        class="fixed inset-y-0 left-0 z-40 w-56 shrink-0 -translate-x-full overflow-y-auto border-r border-cyan/40 bg-surface shadow-glow-sm transition-transform invisible md:visible md:static md:translate-x-0 md:bg-surface/90"
+        class="fixed inset-y-0 left-0 z-40 w-56 shrink-0 -translate-x-full overflow-y-auto border-r-[0.5px] border-line bg-surface transition-transform invisible md:visible md:static md:translate-x-0 md:bg-surface"
         [class.translate-x-0]="menuOpen()"
         [class.visible]="menuOpen()"
       >
@@ -81,7 +81,7 @@ export const NAV_ITEMS = [
       </aside>
       <div class="flex min-w-0 flex-1 flex-col">
         <header
-          class="flex items-center justify-between gap-2 border-b border-cyan/40 bg-surface/90 px-4 py-3 md:px-6"
+          class="flex items-center justify-between gap-2 border-b-[0.5px] border-line bg-surface px-4 py-3 md:px-6"
         >
           <button
             #menuButton
@@ -95,7 +95,7 @@ export const NAV_ITEMS = [
           </button>
           <a routerLink="/dashboard" class="flex items-center gap-3">
             <img src="mark.svg" alt="" class="h-9 w-9" />
-            <span class="font-display text-xl font-bold tracking-widest text-cyan">DNSY</span>
+            <span class="wordmark text-lg">DNSY</span>
           </a>
           <div class="flex items-center gap-4 text-sm">
             @if (auth.user(); as user) {

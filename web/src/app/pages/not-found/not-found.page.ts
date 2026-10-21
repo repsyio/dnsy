@@ -9,7 +9,7 @@ import { MascotNotFoundComponent } from '../../shared/mascot';
   template: `
     <section class="panel mx-auto mt-10 max-w-xl text-center">
       <dnsy-mascot-not-found size="lg" message="Nox could not find that page." />
-      <h1 class="mt-4 text-3xl font-bold text-orange">404</h1>
+      <h1 class="mt-4 page-title text-amber">404</h1>
       <a class="btn mt-4 inline-block" routerLink="/dashboard">Back to dashboard</a>
     </section>
   `,

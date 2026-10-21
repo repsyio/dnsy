@@ -23,10 +23,10 @@ import { CreatedToken, TokenInfo, TokensService, scopesForRole } from './tokens.
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">API tokens</h1>
+    <h1 class="mb-6 page-title">API tokens</h1>
 
     <section class="panel mb-6" aria-labelledby="tc-h">
-      <h2 id="tc-h" class="mb-4 text-lg text-cyan">Create token</h2>
+      <h2 id="tc-h" class="mb-4 section-title">Create token</h2>
       <form class="grid gap-4 md:grid-cols-2" novalidate (submit)="create($event)">
         <div>
           <label class="field-label" for="tc-name">Name</label>
@@ -74,7 +74,7 @@ import { CreatedToken, TokenInfo, TokensService, scopesForRole } from './tokens.
     </section>
 
     <section class="panel mb-6" aria-labelledby="td-h">
-      <h2 id="td-h" class="mb-2 text-lg text-cyan">DNS over HTTPS</h2>
+      <h2 id="td-h" class="mb-2 section-title">DNS over HTTPS</h2>
       <p class="mb-3 text-sm text-muted">
         A token with the <code>dns:query</code> scope authenticates DoH clients in the URL path.
       </p>
@@ -86,7 +86,7 @@ import { CreatedToken, TokenInfo, TokensService, scopesForRole } from './tokens.
     </section>
 
     <section class="panel" aria-labelledby="tl-h">
-      <h2 id="tl-h" class="mb-4 text-lg text-cyan">Your tokens</h2>
+      <h2 id="tl-h" class="mb-4 section-title">Your tokens</h2>
       @if (notice(); as n) {
         <p class="mb-3 text-sm text-secure" role="status">{{ n }}</p>
       }
@@ -118,7 +118,7 @@ import { CreatedToken, TokenInfo, TokensService, scopesForRole } from './tokens.
                 </thead>
                 <tbody>
                   @for (t of tokens(); track t.id) {
-                    <tr class="border-t border-cyan/20">
+                    <tr class="border-t-[0.5px] border-line">
                       <td class="py-2 pr-4 break-all">{{ t.name }}</td>
                       <td class="py-2 pr-4">{{ t.scopes.join(', ') }}</td>
                       <td class="py-2 pr-4 whitespace-nowrap">{{ fmt(t.last_used_at) }}</td>

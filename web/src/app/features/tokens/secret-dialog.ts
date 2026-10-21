@@ -9,7 +9,7 @@ import { copyText, dohUrl } from '../../shared/util/copy';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <app-dialog heading="Token created" (closed)="done.emit()">
-      <p class="mb-4 border border-orange p-3 text-sm text-orange" role="alert">
+      <p class="mb-4 hairline border-amber p-3 text-sm text-amber" role="alert">
         Copy this secret now. It is shown only once and cannot be retrieved again; if you lose it,
         revoke the token and create a new one.
       </p>

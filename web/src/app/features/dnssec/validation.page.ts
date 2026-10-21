@@ -27,7 +27,7 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
   imports: [ConfirmDialog, MascotEmptyComponent, MascotErrorComponent, MascotLoadingComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-2 text-2xl font-bold text-cyan">DNSSEC validation</h1>
+    <h1 class="mb-2 page-title">DNSSEC validation</h1>
     <p class="mb-6 max-w-2xl text-sm text-muted">
       When DNSY resolves for your clients it checks the DNSSEC signatures of answers. These settings
       change that check at run time; they are not written to the configuration file, so a restart
@@ -36,13 +36,13 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
 
     @if (settings(); as s) {
       @if (status()?.clock_trusted === false) {
-        <p class="mb-4 border border-orange p-3 text-sm text-orange" role="alert">
+        <p class="mb-4 hairline border-amber p-3 text-sm text-amber" role="alert">
           The system clock is before the build time, so validation is suspended until it is correct.
         </p>
       }
 
       <section class="panel mb-6" aria-labelledby="vm-h">
-        <h2 id="vm-h" class="mb-3 text-lg text-cyan">Validation mode</h2>
+        <h2 id="vm-h" class="mb-3 section-title">Validation mode</h2>
         <fieldset>
           <legend class="sr-only">Validation mode</legend>
           <div class="grid gap-3">
@@ -58,7 +58,7 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
                   (change)="pickMode(m)"
                 />
                 <span>
-                  <span class="font-bold capitalize">{{ m }}</span>
+                  <span class="font-semibold capitalize">{{ m }}</span>
                   @if (m === 'strict') {
                     <span class="badge badge-ok ml-2">recommended</span>
                   }
@@ -78,15 +78,15 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
           <dl class="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
             <div>
               <dt class="text-xs uppercase tracking-wider text-muted">Secure answers</dt>
-              <dd class="font-display text-xl text-secure">{{ st.secure }}</dd>
+              <dd class="text-xl font-medium tabular-nums text-secure">{{ st.secure }}</dd>
             </div>
             <div>
               <dt class="text-xs uppercase tracking-wider text-muted">Bogus answers</dt>
-              <dd class="font-display text-xl text-bogus">{{ st.bogus }}</dd>
+              <dd class="text-xl font-medium tabular-nums text-amber">{{ st.bogus }}</dd>
             </div>
             <div>
               <dt class="text-xs uppercase tracking-wider text-muted">Signed zones</dt>
-              <dd class="font-display text-xl text-cyan">{{ st.signed_zones }}</dd>
+              <dd class="text-xl font-medium tabular-nums text-text">{{ st.signed_zones }}</dd>
             </div>
             <div>
               <dt class="text-xs uppercase tracking-wider text-muted">Window</dt>
@@ -97,7 +97,7 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
       </section>
 
       <section class="panel mb-6" aria-labelledby="nta-h">
-        <h2 id="nta-h" class="mb-2 text-lg text-cyan">Negative trust anchors</h2>
+        <h2 id="nta-h" class="mb-2 section-title">Negative trust anchors</h2>
         <p class="mb-4 max-w-2xl text-sm text-muted">
           Validation is skipped at and below these names (RFC 7646). Use one to keep a zone
           reachable while its operator fixes a broken DNSSEC setup. Give the anchor an expiry so it
@@ -140,7 +140,7 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
         } @else {
           <ul class="grid gap-2">
             @for (n of s.negative_trust_anchor_entries; track n.name) {
-              <li class="flex items-center justify-between gap-3 border-t border-cyan/20 py-2">
+              <li class="flex items-center justify-between gap-3 border-t-[0.5px] border-line py-2">
                 <span class="break-all">
                   {{ n.name }}
                   <span class="block text-xs text-muted">
@@ -152,7 +152,7 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
                   </span>
                 </span>
                 <button
-                  class="cursor-pointer text-orange underline"
+                  class="cursor-pointer text-amber underline"
                   type="button"
                   [disabled]="busy()"
                   [attr.aria-label]="'Remove negative trust anchor ' + n.name"
@@ -167,7 +167,7 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
       </section>
 
       <section class="panel" aria-labelledby="ta-h">
-        <h2 id="ta-h" class="mb-2 text-lg text-cyan">Trust anchors</h2>
+        <h2 id="ta-h" class="mb-2 section-title">Trust anchors</h2>
         <p class="mb-4 max-w-2xl text-sm text-muted">
           The keys validation starts from, normally the root zone. They come from the configuration
           file and cannot be changed here.
@@ -191,7 +191,7 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
               </thead>
               <tbody>
                 @for (a of s.trust_anchors; track $index) {
-                  <tr class="border-t border-cyan/20">
+                  <tr class="border-t-[0.5px] border-line">
                     <td class="py-2 pr-4">{{ a.owner }}</td>
                     <td class="py-2 pr-4 uppercase">{{ a.kind }}</td>
                     <td class="py-2 pr-4">{{ a.key_tag }}</td>

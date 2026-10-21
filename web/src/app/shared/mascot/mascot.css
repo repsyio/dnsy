@@ -1,112 +1,86 @@
-/* Nox mascot animations. Global (not component styles) because the strict CSP forbids <style>. */
+/* Nox mascot: colours and animations. Global (not component styles) because the strict CSP forbids <style>. */
 .nox {
-  --nox-glow: var(--dnsy-cyan);
-  filter: drop-shadow(0 0 3px var(--nox-glow)) drop-shadow(0 0 8px var(--dnsy-cyan-glow));
+  --nox-eye: var(--dnsy-red);
   overflow: visible;
 }
 .nox-error {
-  --nox-glow: var(--dnsy-bogus);
+  --nox-eye: var(--dnsy-amber);
 }
 .nox-success {
-  --nox-glow: var(--dnsy-secure);
+  --nox-eye: var(--dnsy-secure);
 }
 .nox-offline {
-  --nox-glow: var(--dnsy-muted);
+  --nox-eye: var(--dnsy-muted);
 }
 
 .nox * {
   transform-box: view-box;
 }
-.nox-bob {
-  animation: nox-bob 3s ease-in-out infinite;
+.nox-ln,
+.nox-eye,
+.nox-beak {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
 }
-.nox-empty .nox-bob,
-.nox-offline .nox-bob {
-  animation-duration: 4.5s;
-}
-.nox-error .nox-bob {
-  animation: nox-shake 0.6s ease-in-out 1;
-}
-.nox-success .nox-bob {
-  animation: nox-hop 0.7s ease-out 1;
-}
-.nox-scan {
-  animation: nox-scan 2.4s ease-in-out infinite;
-}
-.nox-spin {
-  transform-origin: 54px 14px;
-  animation: nox-spin 1.2s linear infinite;
+.nox-ln {
+  stroke: var(--dnsy-text);
+  stroke-width: 0.5px;
 }
 .nox-dash {
-  animation: nox-march 1.2s linear infinite;
+  stroke-dasharray: 2 4;
+  opacity: 0.45;
 }
-.nox-flash {
-  animation: nox-flash 1.1s steps(2, jump-none) infinite;
+.nox-eye {
+  stroke: var(--nox-eye);
+  stroke-width: 1px;
 }
-.nox-breathe {
-  animation: nox-breathe 3s ease-in-out infinite;
+.nox-beak {
+  stroke: var(--nox-eye);
+  stroke-width: 0.5px;
 }
-.nox-floor {
-  animation: nox-march 2s linear infinite;
+.nox-offline .nox-ln {
+  opacity: 0.5;
 }
-.nox-draw {
-  stroke-dasharray: 1;
-  stroke-dashoffset: 0;
-  animation: nox-draw 0.6s ease-out 1;
+.nox-offline .nox-dash {
+  opacity: 0.225;
+}
+.nox-broken {
+  stroke-dasharray: 2 3;
+}
+.nox-dim {
+  opacity: 0.25;
+}
+.nox-sweep {
+  fill: var(--dnsy-red);
+  animation: nox-sweep 1.6s ease-in-out infinite;
+}
+.nox-flicker {
+  animation: nox-flicker 1.4s steps(2, jump-none) infinite;
+}
+.nox-success .nox-head {
+  animation: nox-hop 0.5s ease-out 1;
 }
 
-@keyframes nox-bob {
+/* The point of light travels from the left eye's start (x 62) to the right eye's end (x 129). */
+@keyframes nox-sweep {
   50% {
-    transform: translateY(-2px);
+    transform: translateX(67px);
   }
 }
-@keyframes nox-shake {
-  20%,
-  60% {
-    transform: translateX(-1.5px);
+@keyframes nox-flicker {
+  0%,
+  70% {
+    opacity: 1;
   }
-  40%,
-  80% {
-    transform: translateX(1.5px);
+  85% {
+    opacity: 0.2;
   }
 }
 @keyframes nox-hop {
   40% {
-    transform: translateY(-4px);
-  }
-}
-@keyframes nox-scan {
-  0%,
-  100% {
-    transform: translateX(-2px);
-  }
-  50% {
-    transform: translateX(2px);
-  }
-}
-@keyframes nox-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-@keyframes nox-march {
-  to {
-    stroke-dashoffset: -12;
-  }
-}
-@keyframes nox-flash {
-  50% {
-    opacity: 0.25;
-  }
-}
-@keyframes nox-breathe {
-  50% {
-    opacity: 0.5;
-  }
-}
-@keyframes nox-draw {
-  from {
-    stroke-dashoffset: 1;
+    transform: translateY(-6px);
   }
 }
 

@@ -16,7 +16,7 @@ import { expiryFromDate, parseFingerprint } from './fingerprint';
   imports: [ConfirmDialog, MascotEmptyComponent, MascotErrorComponent, MascotLoadingComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="mb-6 text-2xl font-bold text-cyan">Client certificates</h1>
+    <h1 class="mb-6 page-title">Client certificates</h1>
 
     @switch (status()) {
       @case ('loading') {
@@ -31,7 +31,7 @@ import { expiryFromDate, parseFingerprint } from './fingerprint';
       }
       @default {
         <section class="panel mb-6" aria-labelledby="cc-add">
-          <h2 id="cc-add" class="mb-4 text-lg text-cyan">Allow a certificate</h2>
+          <h2 id="cc-add" class="mb-4 section-title">Allow a certificate</h2>
           <form class="grid grid-cols-1 gap-3 sm:grid-cols-6" novalidate (submit)="add($event)">
             <div class="sm:col-span-3">
               <label class="field-label" for="cc-fp">SHA-256 fingerprint</label>
@@ -84,7 +84,7 @@ import { expiryFromDate, parseFingerprint } from './fingerprint';
         </section>
 
         <section class="panel" aria-labelledby="cc-list">
-          <h2 id="cc-list" class="mb-4 text-lg text-cyan">Allowed certificates</h2>
+          <h2 id="cc-list" class="mb-4 section-title">Allowed certificates</h2>
           @if (actionError(); as e) {
             <p class="field-error mb-3" role="alert">{{ e }}</p>
           }
@@ -107,7 +107,7 @@ import { expiryFromDate, parseFingerprint } from './fingerprint';
                 </thead>
                 <tbody>
                   @for (c of certs(); track c.id) {
-                    <tr class="border-t border-cyan/20 align-top">
+                    <tr class="border-t-[0.5px] border-line align-top">
                       <td class="py-2 pr-4">{{ c.label }}</td>
                       <td class="py-2 pr-4 break-all text-xs">{{ c.sha256 }}</td>
                       <td class="py-2 pr-4">{{ fmt(c.expires_at) }}</td>

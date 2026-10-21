@@ -23,7 +23,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
         [attr.aria-labelledby]="'dlg-title'"
         (keydown)="onKey($event)"
       >
-        <h2 id="dlg-title" class="mb-4 text-lg text-cyan">{{ heading() }}</h2>
+        <h2 id="dlg-title" class="mb-4 section-title">{{ heading() }}</h2>
         <ng-content />
       </div>
     </div>
