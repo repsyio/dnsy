@@ -11,12 +11,11 @@ rust-version = "1.99"
 
 [workspace.dependencies]
 # Async runtime, sockets
-tokio = { version = "1.54.0", features = ["full"] }
+tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "fs", "process"] }
 # TLS (ring provider, no OpenSSL)
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 rustls-pki-types = "1.15.1"
-x509-parser = "0.18.1"
 webpki-roots = "1.0.10"
 # HTTP server and client
 axum = "0.8.9"
@@ -24,7 +23,6 @@ hyper = "1.12.0"
 hyper-util = { version = "0.1.21", features = ["tokio", "server-auto", "http1", "http2"] }
 http-body-util = "0.1.5"
 tower = "0.5.3"
-tower-http = "0.7.1"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
 # OpenAPI
@@ -52,17 +50,15 @@ ipnet = "2.12.2"
 # Errors, logs, CLI
 thiserror = "2.0.21"
 tracing = "0.1.44"
-tracing-subscriber = "0.3.23"
-clap = { version = "4.6.7", features = ["derive"] }
-# Time
-time = "0.3.55"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "ansi"] }
+clap = { version = "4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 # UI embedding
 rust-embed = "8.13.0"
 # Test-only
-proptest = "1.12.0"
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 rcgen = "0.14.10"
 tempfile = "3.27.0"
-insta = "1.49.0"
+insta = { version = "1.49.0", default-features = false }
 criterion = "0.8.2"
 
 [workspace.lints.rust]
@@ -72,3 +68,12 @@ unsafe_code = "forbid"
 pedantic = { level = "warn", priority = -1 }
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+overflow-checks = true
+# Keep unwind: the server has no catch_unwind, and abort would turn any panic reachable from
+# hostile input into a whole-resolver outage instead of one failed connection task.
+panic = "unwind"

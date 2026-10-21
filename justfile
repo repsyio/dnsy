@@ -7,11 +7,12 @@ default:
 fmt:
     cargo fmt --all
 
-# fmt --check, clippy (pedantic via workspace lints) with warnings as errors, cargo-deny, OpenAPI drift.
+# fmt --check, clippy (pedantic via workspace lints) with warnings as errors, cargo-deny, cargo-audit (advisory, never fails the recipe), OpenAPI drift.
 check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo deny check
+    -cargo audit
     just openapi-check
 
 # Release binary with the web UI embedded: builds web/dist first, then `dnsy` with `embed-ui`.

@@ -36,6 +36,26 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
 - Protect backups: they contain password hashes and DNSSEC keys ([Backup and restore](backup-restore.md)).
 - Keep the binary current ([Upgrade](upgrade.md)).
 
+## Third-party crates
+
+Everything on the network path is Rust. Crates worth knowing about when you audit:
+
+- `ring` is the only source of cryptographic primitives (TLS through `rustls`, DNSSEC signatures
+  and digests, tokens). It is maintained by a small team and releases are infrequent; if that
+  stops being acceptable the exit is `aws-lc-rs`, which is a dependency decision for a later release.
+- `rust-embed` embeds the web UI and has a single maintainer. It does one thing (include files at
+  compile time) and cannot be replaced cheaply without a build script, so it is accepted and
+  watched through `cargo deny` advisories.
+- `rusqlite` bundles SQLite, compiled from source with the system C compiler.
+- `reqwest` fetches blocklists over HTTPS with the bundled `webpki-roots` trust anchors;
+  certificate verification is always on.
+- mTLS subjects in logs come from a small DER walk in `dnsy-server`, not an X.509 library; it
+  only reads the common name and text subject alternative names, bounds the result and replaces
+  control characters. Chain and validity checks stay in `rustls`.
+
+`just check` runs `cargo deny` (advisories, licenses, bans) and `cargo audit` (advisory only: a
+finding is printed but does not fail the recipe).
+
 ## Known limits
 
 - Settings changed through `PATCH /settings*` are runtime-only (the rate limit excepted).

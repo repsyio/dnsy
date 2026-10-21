@@ -361,6 +361,36 @@ async fn ui_paths_404_without_embedded_ui() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
+/// With the UI embedded (`--features embed-ui`), the SPA shell is served brotli-compressed
+/// when accepted and the response is smaller than the identity one.
+#[tokio::test]
+async fn ui_serves_brotli_when_accepted() {
+    if !cfg!(feature = "embed-ui") {
+        return;
+    }
+    let f = fixture();
+    let plain = send(&f.app, req(Method::GET, "/", &[])).await;
+    assert_eq!(plain.status(), StatusCode::OK);
+    assert!(plain.headers().get(header::CONTENT_ENCODING).is_none());
+    let plain_len = body_bytes_len(plain).await;
+    let br = send(
+        &f.app,
+        req(Method::GET, "/", &[("accept-encoding", "br, gzip")]),
+    )
+    .await;
+    assert_eq!(br.status(), StatusCode::OK);
+    assert_eq!(br.headers()[header::CONTENT_ENCODING], "br");
+    assert_eq!(br.headers()[header::VARY], "Accept-Encoding");
+    assert!(body_bytes_len(br).await < plain_len);
+}
+
+async fn body_bytes_len(res: axum::response::Response) -> usize {
+    axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .len()
+}
+
 #[tokio::test]
 async fn openapi_endpoint_serves_spec() {
     let f = fixture();

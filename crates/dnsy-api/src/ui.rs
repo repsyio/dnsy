@@ -5,7 +5,8 @@
 
 use std::borrow::Cow;
 
-use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
+use axum::body::Body;
+use axum::http::{HeaderMap, HeaderValue, Method, Uri, header};
 use axum::response::{IntoResponse, Response};
 
 use crate::error::ApiError;
@@ -78,16 +79,42 @@ fn embedded(_path: &str) -> Option<Asset> {
 }
 
 /// Router fallback: API paths 404 as problem+json, everything else is the UI.
-pub async fn fallback(method: Method, uri: Uri) -> Response {
+pub async fn fallback(method: Method, uri: Uri, headers: HeaderMap) -> Response {
     if uri.path().starts_with("/api/") || !matches!(method, Method::GET | Method::HEAD) {
         return ApiError::NotFound("no such resource".to_owned()).into_response();
     }
-    serve(uri.path(), embedded)
+    let accept = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    serve(uri.path(), accept, embedded)
+}
+
+/// Content codings the build step precompresses (`<file>.br`, `<file>.gz`), best first.
+const ENCODINGS: [(&str, &str); 2] = [("br", ".br"), ("gzip", ".gz")];
+
+/// Whether an `Accept-Encoding` value allows `coding` (listed with a non-zero q-value).
+fn accepts(header: &str, coding: &str) -> bool {
+    header.split(',').any(|item| {
+        let mut parts = item.split(';');
+        parts
+            .next()
+            .is_some_and(|c| c.trim().eq_ignore_ascii_case(coding))
+            && parts.all(|p| {
+                p.trim()
+                    .strip_prefix("q=")
+                    .is_none_or(|q| q.trim().parse::<f32>().is_ok_and(|q| q > 0.0))
+            })
+    })
 }
 
 /// Resolve `uri_path` against `lookup`: exact file, else `index.html` for extension-less
 /// (client-side route) paths, else 404.
-pub fn serve(uri_path: &str, lookup: impl Fn(&str) -> Option<Asset>) -> Response {
+pub fn serve(
+    uri_path: &str,
+    accept_encoding: &str,
+    lookup: impl Fn(&str) -> Option<Asset>,
+) -> Response {
     let path = uri_path.trim_start_matches('/');
     let not_found = || ApiError::NotFound("no such resource".to_owned()).into_response();
     if path.split('/').any(|s| s == "..") {
@@ -99,10 +126,11 @@ pub fn serve(uri_path: &str, lookup: impl Fn(&str) -> Option<Asset>) -> Response
         .next()
         .and_then(|s| s.rsplit_once('.'))
         .is_some_and(|(_, ext)| ASSET_EXTENSIONS.contains(&ext));
-    let (asset, is_index) = match lookup(if path.is_empty() { "index.html" } else { path }) {
-        Some(a) => (a, path.is_empty() || path == "index.html"),
+    let requested = if path.is_empty() { "index.html" } else { path };
+    let (name, asset, is_index) = match lookup(requested) {
+        Some(a) => (requested, a, requested == "index.html"),
         None if !looks_like_file => match lookup("index.html") {
-            Some(a) => (a, true),
+            Some(a) => ("index.html", a, true),
             None => return not_found(),
         },
         None => return not_found(),
@@ -115,7 +143,29 @@ pub fn serve(uri_path: &str, lookup: impl Fn(&str) -> Option<Asset>) -> Response
     let Ok(mime) = HeaderValue::from_str(&asset.mime) else {
         return not_found();
     };
-    let mut res = (StatusCode::OK, asset.body.into_owned()).into_response();
+    // Serve the precompressed sibling when the client accepts it; the body stays borrowed from
+    // the embedded data (no copy).
+    let encoded = ENCODINGS
+        .iter()
+        .filter(|(coding, _)| accepts(accept_encoding, coding))
+        .find_map(|(coding, ext)| lookup(&format!("{name}{ext}")).map(|a| (*coding, a.body)));
+    let has_variants = encoded.is_some()
+        || ENCODINGS
+            .iter()
+            .any(|(_, ext)| lookup(&format!("{name}{ext}")).is_some());
+    let (body, coding) = match encoded {
+        Some((coding, body)) => (body, Some(coding)),
+        None => (asset.body, None),
+    };
+    let mut res = Response::new(Body::from(body));
+    if let Some(coding) = coding {
+        res.headers_mut()
+            .insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
+    }
+    if has_variants {
+        res.headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    }
     res.headers_mut().insert(header::CONTENT_TYPE, mime);
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
@@ -125,11 +175,14 @@ pub fn serve(uri_path: &str, lookup: impl Fn(&str) -> Option<Asset>) -> Response
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
 
     fn lookup(path: &str) -> Option<Asset> {
         let (body, mime) = match path {
             "index.html" => ("<html>spa</html>", "text/html"),
             "main-abc.js" => ("js", "text/javascript"),
+            "main-abc.js.br" => ("br-bytes", "application/octet-stream"),
+            "main-abc.js.gz" => ("gz-bytes", "application/octet-stream"),
             _ => return None,
         };
         Some(Asset {
@@ -141,7 +194,7 @@ mod tests {
     #[test]
     fn root_and_unknown_route_serve_index() {
         for p in ["/", "/zones/example.com"] {
-            let r = serve(p, lookup);
+            let r = serve(p, "", lookup);
             assert_eq!(r.status(), StatusCode::OK, "{p}");
             assert_eq!(r.headers()[header::CONTENT_TYPE], "text/html");
             assert_eq!(r.headers()[header::CACHE_CONTROL], "no-cache");
@@ -150,7 +203,7 @@ mod tests {
 
     #[test]
     fn assets_are_immutable_and_missing_files_404() {
-        let r = serve("/main-abc.js", lookup);
+        let r = serve("/main-abc.js", "", lookup);
         assert_eq!(r.status(), StatusCode::OK);
         assert!(
             r.headers()[header::CACHE_CONTROL]
@@ -158,12 +211,50 @@ mod tests {
                 .unwrap()
                 .contains("immutable")
         );
-        assert_eq!(serve("/missing.js", lookup).status(), StatusCode::NOT_FOUND);
-        assert_eq!(serve("/a/../x", lookup).status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            serve("/missing.js", "", lookup).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(serve("/a/../x", "", lookup).status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn no_index_is_404() {
-        assert_eq!(serve("/", |_| None).status(), StatusCode::NOT_FOUND);
+        assert_eq!(serve("/", "", |_| None).status(), StatusCode::NOT_FOUND);
+    }
+
+    async fn body(r: Response) -> Vec<u8> {
+        axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    #[tokio::test]
+    async fn precompressed_sibling_is_served_when_accepted() {
+        let r = serve("/main-abc.js", "gzip, br", lookup);
+        assert_eq!(r.headers()[header::CONTENT_ENCODING], "br");
+        assert_eq!(r.headers()[header::VARY], "Accept-Encoding");
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "text/javascript");
+        assert_eq!(body(r).await, b"br-bytes");
+        let r = serve("/main-abc.js", "gzip;q=0.8", lookup);
+        assert_eq!(r.headers()[header::CONTENT_ENCODING], "gzip");
+        assert_eq!(body(r).await, b"gz-bytes");
+    }
+
+    #[tokio::test]
+    async fn identity_when_not_accepted_or_no_sibling() {
+        for accept in ["", "identity", "br;q=0, gzip;q=0", "deflate"] {
+            let r = serve("/main-abc.js", accept, lookup);
+            assert!(
+                r.headers().get(header::CONTENT_ENCODING).is_none(),
+                "{accept}"
+            );
+            assert_eq!(r.headers()[header::VARY], "Accept-Encoding");
+            assert_eq!(body(r).await, b"js");
+        }
+        let r = serve("/", "br", lookup);
+        assert!(r.headers().get(header::CONTENT_ENCODING).is_none());
+        assert!(r.headers().get(header::VARY).is_none());
     }
 }
