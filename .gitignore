@@ -11,3 +11,4 @@ web/test-results/
 web/playwright-report/
 *.log
 /screenshots/
+.superpowers/
