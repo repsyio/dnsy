@@ -76,3 +76,147 @@ pub(crate) fn pad_response(response: &mut Message) {
         edns.options.push(EdnsOption::Padding(n));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dnsy_proto::{Class, Header, Name, Opcode, Question, RecordType};
+
+    fn query(questions: usize, edns: Option<Edns>) -> Message {
+        Message {
+            header: Header {
+                id: 0x1234,
+                qr: false,
+                opcode: Opcode::Query,
+                aa: false,
+                tc: false,
+                rd: true,
+                ra: false,
+                ad: false,
+                cd: false,
+                rcode: Rcode::NoError,
+            },
+            questions: (0..questions)
+                .map(|_| Question {
+                    name: Name::from_ascii("example.com").unwrap(),
+                    qtype: RecordType::A,
+                    qclass: Class::In,
+                })
+                .collect(),
+            answers: Vec::new(),
+            authority: Vec::new(),
+            additional: Vec::new(),
+            edns,
+        }
+    }
+
+    fn wire(m: &Message) -> Vec<u8> {
+        m.encode(4096).unwrap()
+    }
+
+    #[test]
+    fn well_formed_query_is_accepted() {
+        assert!(matches!(parse(&wire(&query(1, None))), Incoming::Query(_)));
+    }
+
+    #[test]
+    fn responses_are_never_answered() {
+        let mut m = query(1, None);
+        m.header.qr = true;
+        assert!(matches!(parse(&wire(&m)), Incoming::Drop));
+    }
+
+    #[test]
+    fn garbage_shorter_than_a_header_is_dropped() {
+        assert!(matches!(parse(&[1, 2, 3]), Incoming::Drop));
+        assert!(matches!(parse(&[]), Incoming::Drop));
+    }
+
+    #[test]
+    fn truncated_body_with_readable_header_gets_formerr_with_same_id() {
+        let mut bytes = wire(&query(1, None));
+        bytes.truncate(14);
+        let Incoming::Reply(reply) = parse(&bytes) else {
+            panic!("expected FORMERR reply");
+        };
+        let m = Message::decode(&reply).unwrap();
+        assert_eq!(m.header.id, 0x1234);
+        assert!(m.header.qr);
+        assert_eq!(m.header.rcode, Rcode::FormErr);
+    }
+
+    #[test]
+    fn zero_or_many_questions_get_formerr_without_edns() {
+        for n in [0, 2] {
+            let q = query(n, Some(Edns::default()));
+            let Incoming::Reply(reply) = parse(&wire(&q)) else {
+                panic!("expected FORMERR for {n} questions");
+            };
+            let m = Message::decode(&reply).unwrap();
+            assert_eq!(m.header.rcode, Rcode::FormErr);
+            assert!(m.edns.is_none());
+        }
+    }
+
+    #[test]
+    fn udp_limit_follows_edns_within_bounds() {
+        assert_eq!(udp_limit(&query(1, None)), MIN_UDP_PAYLOAD);
+        let with = |p| {
+            udp_limit(&query(
+                1,
+                Some(Edns {
+                    udp_payload: p,
+                    ..Edns::default()
+                }),
+            ))
+        };
+        assert_eq!(with(100), MIN_UDP_PAYLOAD);
+        assert_eq!(with(1400), 1400_usize.min(MAX_UDP_PAYLOAD));
+        assert_eq!(with(u16::MAX), MAX_UDP_PAYLOAD);
+    }
+
+    #[test]
+    fn encode_response_falls_back_to_servfail_when_too_big() {
+        let q = query(1, None);
+        let mut r = Message::response_to(&q);
+        for i in 0..40 {
+            r.answers.push(dnsy_proto::Record {
+                name: Name::from_ascii(&format!("host{i}.example.com")).unwrap(),
+                rtype: RecordType::A,
+                class: Class::In,
+                ttl: 60,
+                data: dnsy_proto::RData::A([192, 0, 2, 1].into()),
+            });
+        }
+        // A limit below the header+question size cannot hold the answer; if even SERVFAIL
+        // cannot fit, there is no reply at all.
+        assert!(encode_response(&q, &r, 12).is_none());
+        let bytes = encode_response(&q, &r, 512).unwrap();
+        assert!(bytes.len() <= 512);
+    }
+
+    #[test]
+    fn padding_reaches_a_block_multiple_and_replaces_existing_padding() {
+        let q = query(1, None);
+        let mut r = Message::response_to(&q);
+        r.edns = Some(Edns {
+            options: vec![EdnsOption::Padding(7)],
+            ..Edns::default()
+        });
+        pad_response(&mut r);
+        let len = r.encode(u16::MAX.into()).unwrap().len();
+        assert_eq!(len % PADDING_BLOCK, 0);
+        let paddings = r
+            .edns
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .filter(|o| matches!(o, EdnsOption::Padding(_)))
+            .count();
+        assert_eq!(paddings, 1);
+        // Idempotent: padding an already padded response keeps the size.
+        pad_response(&mut r);
+        assert_eq!(r.encode(u16::MAX.into()).unwrap().len(), len);
+    }
+}

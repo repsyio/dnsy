@@ -7,7 +7,7 @@ This page covers the end-to-end tests.
 
 The crate `tests/e2e` (`dnsy-e2e`) starts the real `dnsy` binary with a temporary configuration
 and talks to it over the wire, the way a client would. It is excluded from `just test` and
-`just cov` (coverage measures the crates, and these tests need the built binary) and has its own
+`just cov-rust` (coverage measures the crates, and these tests need the built binary) and has its own
 recipe, which `just ci` runs last:
 
 ```sh
@@ -158,3 +158,59 @@ python3 scripts/demo/optimize.py /tmp/dnsy-shots docs/book/src/images
 Keep each image to a few hundred KB at most, write outputs outside the repository, and never commit
 logs. `just docs` checks the book (`mdbook test`), and the `config_reference_lists_all_keys` test in
 `dnsy-config` fails when the configuration reference and the schema disagree.
+
+## Code coverage
+
+Coverage is a merge gate. `just ci` runs `just cov-rust` and the web gate (inside `just web`).
+
+```sh
+just cov        # Rust gate, then web gate
+just cov-rust   # cargo llvm-cov via nextest, per-crate table, HTML report
+just cov-web    # ng test --coverage (Vitest, v8)
+```
+
+### What is measured
+
+- **Rust:** line coverage from `cargo llvm-cov nextest --workspace --exclude dnsy-e2e`, that is
+  unit and integration tests. The end-to-end suites (`just e2e`, `just e2e-ui`) are **not**
+  counted: they spawn the real binary, so the instrumentation would have to follow child processes,
+  and a gate that depends on timing-sensitive wire tests would be flaky. The e2e suites are
+  additional safety, not a way to reach the numbers.
+- **Web:** `ng test --coverage` over `web/src`. The thresholds live in `web/angular.json`.
+- **Exclusions:** none. No `#[cfg(coverage)]`, no ignore regions and no ignore-filename regex;
+  `main.rs` glue and the `gen-openapi` binary are measured like everything else.
+
+### Gates
+
+| Scope | Metric | Floor |
+| --- | --- | --- |
+| Rust workspace | lines | 80% |
+| every crate | lines | 80% |
+| `dnsy-proto`, `dnsy-dnssec` | lines | 90% |
+| web | lines, statements, functions | 80% |
+| web | branches | 70% |
+
+The floors are set in the `justfile` (`cov-rust`) and enforced by `scripts/cov-crate-gates.sh`,
+which also prints the table. Percentages are exact, so 89.99% fails a 90% gate. Raise a floor in
+the same change that earns it; never lower one to merge.
+
+### Reading the report
+
+`just cov-rust` ends with one row per crate (`lines`, `covered`, `percent`, `min`, `ok`/`FAIL`) and
+a `workspace` total. For the per-file view open `target/llvm-cov/html/index.html`, or list the
+uncovered lines of a file from the last run:
+
+```sh
+cargo llvm-cov report --show-missing-lines | grep dnsy-server
+```
+
+The web table is printed by Vitest (`% Stmts`, `% Branch`, `% Funcs`, `% Lines`, uncovered line
+numbers per file).
+
+### Filling gaps
+
+Look at uncovered lines first, then ask what behaviour they encode: error paths, limits, parsers
+fed malformed input, auth, throttles, ACLs, redaction, the DNSSEC validator. Write a test that
+asserts that behaviour (the right error, nothing added, memory bounded), not one that merely calls
+the function. Put new tests in their own `*_tests.rs` module or `tests/` file. Untestable code
+(process glue) stays measured and is justified in the PR, not hidden.

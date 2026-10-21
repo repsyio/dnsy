@@ -24,10 +24,19 @@ build:
 test:
     cargo nextest run --workspace --exclude dnsy-e2e --no-tests=pass
 
-# Line coverage gates: workspace >= 80%, dnsy-proto and dnsy-dnssec >= 90% once they have code.
-cov:
-    cargo llvm-cov nextest --workspace --exclude dnsy-e2e --no-tests=pass --fail-under-lines 80
-    ./scripts/cov-crate-gates.sh 90 dnsy-proto dnsy-dnssec
+# Rust line coverage (unit + integration; e2e is excluded): workspace >= 80%, every crate >= 80%,
+# dnsy-proto and dnsy-dnssec >= 90%. Prints a per-crate table; HTML at target/llvm-cov/html.
+cov-rust:
+    cargo llvm-cov nextest --workspace --exclude dnsy-e2e --no-tests=pass --html
+    ./scripts/cov-crate-gates.sh 80 80 dnsy-proto=90 dnsy-dnssec=90
+
+# Web coverage gate: `ng test --coverage` fails below the thresholds in web/angular.json
+# (lines/statements/functions 80%, branches 70%); prints the Vitest table (no-op without node/pnpm).
+cov-web:
+    @if [ -f web/package.json ] && command -v node >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then cd web && pnpm install --frozen-lockfile && pnpm ng test --coverage --no-watch; else echo "node/pnpm or web/ missing; skipping web coverage"; fi
+
+# Both coverage gates, Rust then web.
+cov: cov-rust cov-web
 
 # End-to-end suite (crate tests/e2e): builds the dnsy binary, then runs the harness tests in parallel.
 e2e:
@@ -81,7 +90,8 @@ docs:
     fi
 
 # Local merge gate until the pipelines epic exists.
-ci: check test cov web e2e e2e-ui
+# `web` already runs the web coverage gate, so only the Rust half of `cov` is listed.
+ci: check test cov-rust web e2e e2e-ui
 
 # Validate branding SVGs (wellformedness, viewBox, no external refs, size budget).
 check-svg:

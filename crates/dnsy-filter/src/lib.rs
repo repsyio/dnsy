@@ -33,4 +33,6 @@ pub use sources::{
 #[cfg(test)]
 mod blocklist_tests;
 #[cfg(test)]
+mod parse_edge_tests;
+#[cfg(test)]
 mod source_tests;

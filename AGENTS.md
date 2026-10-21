@@ -44,13 +44,13 @@ Dependency direction: `core` <- everything; `proto` <- `dnssec`, `zone`, `resolv
 | `just fmt` | format Rust code |
 | `just check` | `cargo fmt --check`, clippy (pedantic) with `-D warnings`, `cargo deny check` |
 | `just test` | `cargo nextest run --workspace` |
-| `just cov` | `cargo llvm-cov` gate: workspace lines >= 80%, `dnsy-proto` and `dnsy-dnssec` >= 90% |
+| `just cov` | coverage gates: `cov-rust` (`cargo llvm-cov`: workspace and every crate lines >= 80%, `dnsy-proto` and `dnsy-dnssec` >= 90%, per-crate table) and `cov-web` (Vitest: lines >= 80%); e2e not counted |
 | `just e2e` | end-to-end suite |
 | `just e2e-ui` | browser end-to-end suite (Playwright, Chromium) against the real binary with the embedded UI |
 | `just web` | pnpm install, `ng lint`, `ng test --coverage`, `ng build` |
 | `just openapi` | regenerate `openapi/dnsy.json` |
 | `just docs` | rustdoc and mdBook into `target/site/` |
-| `just ci` | `check` + `test` + `cov` + `web` + `e2e` + `e2e-ui`; the local merge gate |
+| `just ci` | `check` + `test` + `cov` + `web` + `e2e` + `e2e-ui`; the local merge gate (runs `cov-rust`; `web` carries the web gate) |
 
 Required tools: `just`, `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `jq`. The toolchain is pinned in `rust-toolchain.toml`. Fast loop: `cargo nextest run -p <crate>`.
 
@@ -58,6 +58,7 @@ Required tools: `just`, `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `jq`. T
 
 - **DNS layer is in-house.** No DNS or DNSSEC crate anywhere (`deny.toml` bans `hickory-*`, `trust-dns-*`, `domain`, `simple-dns`, `dns-parser`, `dnsclient`, `dnssec-prover`, `openssl`, `openssl-sys`). DNSSEC logic (canonical form, RRSIG, DS, NSEC/NSEC3, chain of trust, signing) is written in `dnsy-proto`/`dnsy-dnssec`; only `ring` primitives (signatures, digests) and `zeroize` are used. `dnsy-proto` has zero runtime dependencies.
 - **Dependencies** are declared once in root `[workspace.dependencies]`; crates use `{ workspace = true }`. A story needing a crate not on the list says so in its PR.
+- **Coverage exclusions:** none. No `#[cfg(coverage)]`, ignore regions or ignore-filename regexes; `main.rs` glue is measured. Details in `docs/book/src/contributing.md`.
 - **Lints:** `unsafe_code = "forbid"`, clippy pedantic with `-D warnings`, `allow_attributes` and `allow_attributes_without_reason` denied. Use `#[expect(lint, reason = "...")]`, never a bare `#[allow]`.
 - **Migration table rule:** migration numbers (`crates/dnsy-store/migrations/NNNN_name.sql`) are pre-assigned in the plan. Never renumber; never edit an applied migration.
 - **Port-0 rule:** tests bind port 0. No fixed ports in tests.

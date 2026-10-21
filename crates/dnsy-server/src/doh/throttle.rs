@@ -82,3 +82,52 @@ mod tests {
         assert_eq!(t.blocked("10.0.0.1".parse().unwrap(), now), None);
     }
 }
+
+#[cfg(test)]
+mod eviction_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    fn ip(n: u32) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from(n))
+    }
+
+    #[test]
+    fn full_table_purges_expired_entries_and_keeps_live_ones() {
+        let t = Throttle::new(1, Duration::from_secs(60));
+        let start = Instant::now();
+        for n in 0..u32::try_from(MAX_TRACKED).unwrap() {
+            t.failure(ip(n), start);
+        }
+        // Every entry is expired by now, so a new client purges them all.
+        let later = start + Duration::from_secs(61);
+        t.failure(ip(u32::MAX), later);
+        assert_eq!(t.table.lock().unwrap().len(), 1);
+        assert!(t.blocked(ip(u32::MAX), later).is_some());
+    }
+
+    #[test]
+    fn full_table_of_live_entries_is_reset_rather_than_grown() {
+        let t = Throttle::new(1, Duration::from_secs(60));
+        let now = Instant::now();
+        for n in 0..u32::try_from(MAX_TRACKED).unwrap() {
+            t.failure(ip(n), now);
+        }
+        t.failure(ip(u32::MAX), now);
+        let table = t.table.lock().unwrap();
+        assert_eq!(table.len(), 1, "memory stays bounded under an IP flood");
+        assert!(table.contains_key(&ip(u32::MAX)));
+    }
+
+    #[test]
+    fn failure_on_a_tracked_client_never_evicts_when_full() {
+        let t = Throttle::new(2, Duration::from_secs(60));
+        let now = Instant::now();
+        for n in 0..u32::try_from(MAX_TRACKED).unwrap() {
+            t.failure(ip(n), now);
+        }
+        t.failure(ip(0), now);
+        assert_eq!(t.table.lock().unwrap().len(), MAX_TRACKED);
+        assert!(t.blocked(ip(0), now).is_some());
+    }
+}
