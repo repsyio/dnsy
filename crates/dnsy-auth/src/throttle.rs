@@ -3,7 +3,10 @@
 //! Entries are keyed by [`ClientKey`] (IPv4 `/32`, IPv6 `/64`) and an optional secondary key,
 //! counted in a fixed window and held in a bounded, sharded table. A client that reached the
 //! failure limit is never evicted to make room, so flooding the table with other clients cannot
-//! unblock it.
+//! unblock it. When a shard is full of blocked entries, failures of clients that cannot be
+//! tracked share one aggregate counter per shard that blocks all untracked clients of the shard
+//! once it reaches the limit: the table fails closed, at the price that those clients are
+//! throttled together while the table is under attack.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher as _, RandomState};
@@ -31,7 +34,14 @@ pub struct FailureThrottle {
     window: Duration,
     shard_capacity: usize,
     hasher: RandomState,
-    shards: [Mutex<HashMap<Key, Entry>>; SHARDS],
+    shards: [Mutex<Shard>; SHARDS],
+}
+
+#[derive(Debug, Default)]
+struct Shard {
+    table: HashMap<Key, Entry>,
+    /// Failures of clients that did not fit into a saturated shard.
+    overflow: Option<Entry>,
 }
 
 impl FailureThrottle {
@@ -44,11 +54,11 @@ impl FailureThrottle {
             window,
             shard_capacity: max_tracked.div_ceil(SHARDS).max(1),
             hasher: RandomState::new(),
-            shards: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+            shards: std::array::from_fn(|_| Mutex::new(Shard::default())),
         }
     }
 
-    fn shard(&self, key: &Key) -> &Mutex<HashMap<Key, Entry>> {
+    fn shard(&self, key: &Key) -> &Mutex<Shard> {
         let index = usize::try_from(self.hasher.hash_one(key) % SHARDS as u64).unwrap_or(0);
         &self.shards[index]
     }
@@ -61,19 +71,27 @@ impl FailureThrottle {
     #[must_use]
     pub fn blocked(&self, client: ClientKey, secondary: Option<&str>, now: Instant) -> Option<u64> {
         let key = (client, secondary.map(Box::from));
-        let table = self.shard(&key).lock().ok()?;
-        let entry = table.get(&key)?;
+        let shard = self.shard(&key).lock().ok()?;
+        let entry = match shard.table.get(&key) {
+            Some(entry) => entry,
+            None if shard.table.len() >= self.shard_capacity => shard.overflow.as_ref()?,
+            None => return None,
+        };
         self.is_blocked(entry, now)
             .then(|| (entry.start + self.window - now).as_secs().max(1))
     }
 
     /// Counts one failure. When the shard is full of live entries, a key that is not yet tracked
-    /// displaces an unblocked entry; if every entry is blocked the new failure is not recorded.
+    /// displaces an unblocked entry; if every entry is blocked the failure goes to the shard's
+    /// aggregate counter instead.
     pub fn failure(&self, client: ClientKey, secondary: Option<&str>, now: Instant) {
         let key = (client, secondary.map(Box::from));
-        let Ok(mut table) = self.shard(&key).lock() else {
+        let Ok(mut shard) = self.shard(&key).lock() else {
             return;
         };
+        let shard = &mut *shard;
+        let table = &mut shard.table;
+        let mut slot = None;
         if !table.contains_key(&key) && table.len() >= self.shard_capacity {
             table.retain(|_, e| now < e.start + self.window);
             if table.len() >= self.shard_capacity {
@@ -86,14 +104,20 @@ impl FailureThrottle {
                     Some(k) => {
                         table.remove(&k);
                     }
-                    None => return,
+                    None => slot = Some(&mut shard.overflow),
                 }
             }
         }
-        let entry = table.entry(key).or_insert(Entry {
-            count: 0,
-            start: now,
-        });
+        let entry = match slot {
+            Some(overflow) => overflow.get_or_insert(Entry {
+                count: 0,
+                start: now,
+            }),
+            None => table.entry(key).or_insert(Entry {
+                count: 0,
+                start: now,
+            }),
+        };
         if now >= entry.start + self.window {
             *entry = Entry {
                 count: 0,
@@ -105,7 +129,10 @@ impl FailureThrottle {
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.shards.iter().map(|s| s.lock().unwrap().len()).sum()
+        self.shards
+            .iter()
+            .map(|s| s.lock().unwrap().table.len())
+            .sum()
     }
 }
 
@@ -193,14 +220,37 @@ mod tests {
     }
 
     #[test]
-    fn table_of_blocked_entries_ignores_new_clients_instead_of_growing() {
-        let t = FailureThrottle::new(1, Duration::from_secs(60), 16);
+    fn table_saturated_with_blocked_entries_fails_closed_for_new_clients() {
+        let t = FailureThrottle::new(3, Duration::from_secs(60), 16);
         let now = Instant::now();
-        for n in 0..1000 {
-            t.failure(v4(n), None, now);
+        // Block enough clients to fill every shard.
+        let blocked: Vec<_> = (0..1000).map(v4).collect();
+        for k in &blocked {
+            for _ in 0..3 {
+                t.failure(*k, None, now);
+            }
         }
-        assert!(t.len() <= 16);
-        let tracked = (0..1000).filter(|&n| t.blocked(v4(n), None, now).is_some());
-        assert_eq!(tracked.count(), t.len(), "every survivor is still blocked");
+        assert!(t.len() <= 16, "the table does not grow");
+        let still_blocked = |t: &FailureThrottle| {
+            blocked
+                .iter()
+                .filter(|k| t.blocked(**k, None, now).is_some())
+                .count()
+        };
+        // A new attacker address gets a bounded number of guesses, then is blocked, and the
+        // clients that were blocked stay blocked.
+        let before = still_blocked(&t);
+        let attacker = key("203.0.113.77");
+        for _ in 0..3 {
+            t.failure(attacker, None, now);
+        }
+        assert!(t.blocked(attacker, None, now).is_some());
+        assert_eq!(still_blocked(&t), before);
+        assert!(before >= t.len());
+        // The aggregate counter expires with the window.
+        assert_eq!(
+            t.blocked(attacker, None, now + Duration::from_secs(61)),
+            None
+        );
     }
 }

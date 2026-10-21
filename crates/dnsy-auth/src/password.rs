@@ -1,8 +1,10 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use argon2::{Algorithm, Argon2, Params, Version};
 
+use dnsy_core::net::ClientKey;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::UserError;
@@ -33,9 +35,43 @@ pub(crate) fn verify(password: &str, phc: &str) -> bool {
 /// Longest password accepted anywhere, checked before any hashing.
 pub const MAX_PASSWORD_BYTES: usize = 1024;
 
-/// Bounds concurrent argon2 work (each run holds 19 MiB and a core).
+/// Concurrent argon2 runs one client key may hold, so one address cannot take every slot.
+pub(crate) const PER_CLIENT_HASHES: usize = 2;
+
+type KeyCounts = Arc<Mutex<HashMap<ClientKey, usize>>>;
+
+/// Bounds concurrent argon2 work (each run holds 19 MiB and a core), globally and per client.
 #[derive(Clone, Debug)]
-pub(crate) struct HashGate(pub(crate) Arc<Semaphore>);
+pub(crate) struct HashGate {
+    pub(crate) sem: Arc<Semaphore>,
+    keys: KeyCounts,
+}
+
+/// Capacity for one argon2 run, held from admission until the hash finishes.
+#[derive(Debug)]
+pub(crate) struct HashSlot {
+    _permit: OwnedSemaphorePermit,
+    _key: Option<KeyGuard>,
+}
+
+#[derive(Debug)]
+struct KeyGuard {
+    keys: KeyCounts,
+    key: ClientKey,
+}
+
+impl Drop for KeyGuard {
+    fn drop(&mut self) {
+        if let Ok(mut keys) = self.keys.lock()
+            && let Some(n) = keys.get_mut(&self.key)
+        {
+            *n -= 1;
+            if *n == 0 {
+                keys.remove(&self.key);
+            }
+        }
+    }
+}
 
 impl HashGate {
     /// One permit per available CPU.
@@ -44,7 +80,39 @@ impl HashGate {
     }
 
     pub(crate) fn with_permits(n: usize) -> HashGate {
-        HashGate(Arc::new(Semaphore::new(n)))
+        HashGate {
+            sem: Arc::new(Semaphore::new(n)),
+            keys: KeyCounts::default(),
+        }
+    }
+
+    /// Takes a slot without waiting, also bounded per `client` when one is given.
+    ///
+    /// # Errors
+    /// [`UserError::Busy`] when the global or the per-client limit is reached.
+    pub(crate) fn try_slot(&self, client: Option<ClientKey>) -> Result<HashSlot, UserError> {
+        let permit = Arc::clone(&self.sem)
+            .try_acquire_owned()
+            .map_err(|_| UserError::Busy)?;
+        let key = match client {
+            Some(key) => {
+                let mut keys = self.keys.lock().map_err(|_| UserError::Hash)?;
+                let n = keys.entry(key).or_insert(0);
+                if *n >= PER_CLIENT_HASHES {
+                    return Err(UserError::Busy);
+                }
+                *n += 1;
+                Some(KeyGuard {
+                    keys: Arc::clone(&self.keys),
+                    key,
+                })
+            }
+            None => None,
+        };
+        Ok(HashSlot {
+            _permit: permit,
+            _key: key,
+        })
     }
 
     /// Run a CPU-heavy closure off the async executor, waiting for a free permit.
@@ -52,31 +120,35 @@ impl HashGate {
         &self,
         f: impl FnOnce() -> T + Send + 'static,
     ) -> Result<T, UserError> {
-        let permit = Arc::clone(&self.0)
+        let permit = Arc::clone(&self.sem)
             .acquire_owned()
             .await
             .map_err(|_| UserError::Hash)?;
-        Self::spawn(permit, f).await
+        Self::spawn(
+            HashSlot {
+                _permit: permit,
+                _key: None,
+            },
+            f,
+        )
+        .await
     }
 
-    /// Like [`HashGate::run`] but fails with [`UserError::Busy`] instead of waiting.
-    pub(crate) async fn try_run<T: Send + 'static>(
-        &self,
+    /// Run a closure holding an already admitted `slot`.
+    pub(crate) async fn run_in<T: Send + 'static>(
+        slot: HashSlot,
         f: impl FnOnce() -> T + Send + 'static,
     ) -> Result<T, UserError> {
-        let permit = Arc::clone(&self.0)
-            .try_acquire_owned()
-            .map_err(|_| UserError::Busy)?;
-        Self::spawn(permit, f).await
+        Self::spawn(slot, f).await
     }
 
     async fn spawn<T: Send + 'static>(
-        permit: OwnedSemaphorePermit,
+        slot: HashSlot,
         f: impl FnOnce() -> T + Send + 'static,
     ) -> Result<T, UserError> {
         tokio::task::spawn_blocking(move || {
             let out = f();
-            drop(permit);
+            drop(slot);
             out
         })
         .await

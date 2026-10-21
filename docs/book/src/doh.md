@@ -43,7 +43,9 @@ Rejected tokens are counted per client (an IPv4 address or an IPv6 `/64`; defaul
 429 before any token is looked at, so the response never reveals whether a token exists. Malformed,
 unknown, revoked, expired and wrong-secret tokens all give the same 401.
 The table holds at most 10 000 clients; clients that reached the limit are never evicted to make
-room, so flooding it with other addresses cannot unblock them.
+room, so flooding it with other addresses cannot unblock them. If a part of the table is full of
+blocked clients, failures from further clients share one counter that blocks them all once it
+reaches the limit (the table fails closed).
 
 ## Secrets are not logged
 

@@ -4,7 +4,8 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::UserError;
 use crate::bootstrap::{self, BootstrapCode};
-use crate::password::{self, HashGate, MAX_PASSWORD_BYTES};
+use crate::password::{self, HashGate, HashSlot, MAX_PASSWORD_BYTES};
+use dnsy_core::net::ClientKey;
 
 /// A stored user (never carries the password hash).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,9 +303,24 @@ impl UserService {
     /// # Errors
     /// [`UserError::InvalidCredentials`] or a store failure.
     pub async fn verify_password(&self, username: &str, password: &str) -> Result<User, UserError> {
-        if password.len() > MAX_PASSWORD_BYTES {
-            return Err(UserError::PasswordTooLong);
-        }
+        check_password_len(password)?;
+        let slot = self.gate.try_slot(None)?;
+        self.verify_in(slot, username, password).await
+    }
+
+    /// Admission for one hash on behalf of `client`, taken before a login attempt is recorded so a
+    /// busy refusal never counts as a failed password.
+    pub(crate) fn hash_slot(&self, client: ClientKey) -> Result<HashSlot, UserError> {
+        self.gate.try_slot(Some(client))
+    }
+
+    /// [`UserService::verify_password`] with capacity admitted by [`UserService::hash_slot`].
+    pub(crate) async fn verify_in(
+        &self,
+        slot: HashSlot,
+        username: &str,
+        password: &str,
+    ) -> Result<User, UserError> {
         let name = username.trim().to_owned();
         let row = self
             .store
@@ -318,18 +334,16 @@ impl UserService {
             })
             .await?;
         let password = password.to_owned();
-        let (user, ok) = self
-            .gate
-            .try_run(move || {
-                if let Some((user, phc)) = row {
-                    let ok = password::verify(&password, &phc);
-                    (Some(user), ok)
-                } else {
-                    let _ = password::hash(&password);
-                    (None, false)
-                }
-            })
-            .await?;
+        let (user, ok) = HashGate::run_in(slot, move || {
+            if let Some((user, phc)) = row {
+                let ok = password::verify(&password, &phc);
+                (Some(user), ok)
+            } else {
+                let _ = password::hash(&password);
+                (None, false)
+            }
+        })
+        .await?;
         match (user, ok) {
             // A disabled account answers like a wrong password.
             (Some(user), true) if user.is_active() => Ok(user),
@@ -398,10 +412,16 @@ impl UserService {
     }
 }
 
-async fn hash_off_thread(gate: &HashGate, password: &str) -> Result<String, UserError> {
+/// Rejects oversized passwords before any hashing work.
+pub(crate) fn check_password_len(password: &str) -> Result<(), UserError> {
     if password.len() > MAX_PASSWORD_BYTES {
         return Err(UserError::PasswordTooLong);
     }
+    Ok(())
+}
+
+async fn hash_off_thread(gate: &HashGate, password: &str) -> Result<String, UserError> {
+    check_password_len(password)?;
     let password = password.to_owned();
     gate.run(move || password::hash(&password)).await?
 }
@@ -425,7 +445,7 @@ mod tests {
         s.create("alice", "pw", Role::Viewer).await.unwrap();
         let s = s.with_hash_permits(2);
         // Both permits taken: a login hash is refused, not queued.
-        let held = Arc::clone(&s.gate.0).try_acquire_many_owned(2).unwrap();
+        let held = Arc::clone(&s.gate.sem).try_acquire_many_owned(2).unwrap();
         assert!(matches!(
             s.verify_password("alice", "pw").await,
             Err(UserError::Busy)
@@ -443,7 +463,28 @@ mod tests {
             busy += usize::from(matches!(r.unwrap(), Err(UserError::Busy)));
         }
         assert!(busy > 0, "excess concurrent hashes are refused");
-        assert_eq!(s.gate.0.available_permits(), 2, "permits are returned");
+        assert_eq!(s.gate.sem.available_permits(), 2, "permits are returned");
+    }
+
+    #[tokio::test]
+    async fn one_client_cannot_hold_every_hash_slot() {
+        let (s, _d) = svc();
+        let (a, b) = (
+            dnsy_core::net::client_key("192.0.2.1".parse().unwrap()),
+            dnsy_core::net::client_key("192.0.2.2".parse().unwrap()),
+        );
+        let held: Vec<_> = (0..crate::password::PER_CLIENT_HASHES)
+            .map(|_| s.hash_slot(a).unwrap())
+            .collect();
+        assert!(matches!(s.hash_slot(a), Err(UserError::Busy)));
+        // Another client still gets capacity (the host has more than the per-client share).
+        if std::thread::available_parallelism().map_or(1, usize::from)
+            > crate::password::PER_CLIENT_HASHES
+        {
+            drop(s.hash_slot(b).unwrap());
+        }
+        drop(held);
+        drop(s.hash_slot(a).unwrap());
     }
 
     #[tokio::test]

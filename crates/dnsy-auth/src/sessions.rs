@@ -1,13 +1,16 @@
+use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dnsy_core::UserId;
-use dnsy_core::net::client_key;
+use dnsy_core::net::{ClientKey, client_key};
 use dnsy_store::Store;
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
+use crate::users::check_password_len;
 use crate::{AuthError, User, UserService, unix_now};
 
 /// A session expires after this long without use. `dnsy-observe` retention deletes expired
@@ -25,7 +28,16 @@ pub const MAX_FAILURES: i64 = 5;
 pub const USERNAME_FREE_ATTEMPTS: i64 = 10;
 /// Longest wait the per-username backoff imposes.
 pub const USERNAME_BACKOFF_CAP_SECS: i64 = 60;
+/// Attempts allowed per client key across all usernames within [`THROTTLE_WINDOW_SECS`].
+pub const MAX_ATTEMPTS_PER_CLIENT: i64 = 20;
+/// How long a client that logged in as a user stays exempt from that user's backoff.
+pub const KNOWN_CLIENT_TTL_SECS: i64 = 7 * 24 * 60 * 60;
+/// Remembered login clients per user.
+pub const MAX_KNOWN_CLIENTS: usize = 8;
+const MAX_KNOWN_USERS: usize = 10_000;
 pub const THROTTLE_WINDOW_SECS: i64 = 15 * 60;
+
+type KnownClients = HashMap<String, Vec<(ClientKey, i64)>>;
 
 /// A live session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,12 +55,17 @@ fn hash_id(id: &str) -> Vec<u8> {
 #[derive(Clone)]
 pub struct SessionService {
     store: Store,
+    /// Per lower-case username: client keys that completed a login and when.
+    known: Arc<Mutex<KnownClients>>,
 }
 
 impl SessionService {
     #[must_use]
     pub fn new(store: Store) -> SessionService {
-        SessionService { store }
+        SessionService {
+            store,
+            known: Arc::default(),
+        }
     }
 
     /// Check credentials with throttling and open a fresh session. A session id
@@ -79,33 +96,79 @@ impl SessionService {
         now: i64,
     ) -> Result<(String, User), AuthError> {
         let name = username.trim().to_owned();
-        let key = client_key(ip).to_string();
-        self.reserve_attempt(&name, &key, now).await?;
-        match users.verify_password(&name, password).await {
-            Ok(user) => {
-                // Correct credentials prove the owner is present: forget the account's failures.
-                self.clear_failures(&name).await?;
-                if let Some(prev) = previous {
-                    self.destroy(prev).await?;
-                }
-                let id = self.create_at(user.id, now).await?;
-                Ok((id, user))
+        let key = client_key(ip);
+        // Refuse oversized passwords and a busy hasher before anything is recorded: neither is a
+        // failed password, and a request that has passed the throttle already owns its slot.
+        check_password_len(password)?;
+        let slot = users.hash_slot(key)?;
+        self.reserve_attempt(&name, key, now).await?;
+        let user = users.verify_in(slot, &name, password).await?;
+        // Correct credentials prove the owner is present: forget the account's failures and
+        // remember where the owner logs in from (see `reserve_attempt`).
+        self.clear_failures(&name).await?;
+        self.remember_client(&name, key, now);
+        if let Some(prev) = previous {
+            self.destroy(prev).await?;
+        }
+        let id = self.create_at(user.id, now).await?;
+        Ok((id, user))
+    }
+
+    fn remember_client(&self, name: &str, key: ClientKey, now: i64) {
+        let Ok(mut known) = self.known.lock() else {
+            return;
+        };
+        if known.len() >= MAX_KNOWN_USERS && !known.contains_key(name) {
+            known.retain(|_, v| v.iter().any(|&(_, at)| now - at < KNOWN_CLIENT_TTL_SECS));
+            if known.len() >= MAX_KNOWN_USERS {
+                return;
             }
-            Err(e) => Err(e.into()),
+        }
+        let list = known.entry(name.to_lowercase()).or_default();
+        list.retain(|&(k, at)| k != key && now - at < KNOWN_CLIENT_TTL_SECS);
+        list.push((key, now));
+        if list.len() > MAX_KNOWN_CLIENTS {
+            list.remove(0);
         }
     }
 
-    /// Checks both limits and records the attempt in one write transaction, so concurrent
+    fn known_clients(&self, name: &str, now: i64) -> Vec<ClientKey> {
+        self.known.lock().map_or_else(
+            |_| Vec::new(),
+            |known| {
+                known.get(&name.to_lowercase()).map_or_else(Vec::new, |v| {
+                    v.iter()
+                        .filter(|&&(_, at)| now - at < KNOWN_CLIENT_TTL_SECS)
+                        .map(|&(k, _)| k)
+                        .collect()
+                })
+            },
+        )
+    }
+
+    /// Checks the limits and records the attempt in one write transaction, so concurrent
     /// requests cannot all pass the check before any is recorded. Rejected attempts are not
     /// recorded, so hammering a locked key does not extend the lock.
     ///
-    /// 1. At most [`MAX_FAILURES`] attempts per `(username, client key)` per window.
-    /// 2. Across all addresses, once a username has [`USERNAME_FREE_ATTEMPTS`] attempts in the
-    ///    window, each further attempt must wait `2^n` seconds (capped at
-    ///    [`USERNAME_BACKOFF_CAP_SECS`]) after the previous one. It is a delay, never a lockout,
-    ///    and correct credentials are delayed the same way.
-    async fn reserve_attempt(&self, name: &str, key: &str, now: i64) -> Result<(), AuthError> {
-        let (name, key) = (name.to_owned(), key.to_owned());
+    /// 1. At most [`MAX_FAILURES`] attempts per `(username, client key)` per window, and at most
+    ///    [`MAX_ATTEMPTS_PER_CLIENT`] per client key across all usernames, so a few addresses
+    ///    cannot keep the account-wide backoff alive by rotating through usernames.
+    /// 2. Across clients, once a username has [`USERNAME_FREE_ATTEMPTS`] attempts in the window
+    ///    from clients that have not recently logged in as that user, each further attempt from
+    ///    such a client must wait `2^n` seconds (capped at [`USERNAME_BACKOFF_CAP_SECS`]) after
+    ///    the previous one. It is a delay, never a lockout, and correct credentials are delayed
+    ///    the same way. Clients that completed a login as the user in the last
+    ///    [`KNOWN_CLIENT_TTL_SECS`] (remembered in memory, at most [`MAX_KNOWN_CLIENTS`] per user,
+    ///    lost on restart) are exempt from the delay and their attempts do not feed it, so an
+    ///    attacker cannot slow the owner's usual address. Only the per-client limit applies there.
+    ///    Behind a reverse proxy all users share the proxy's key, which is then "known" for every
+    ///    user who logged in through it: the account-wide delay is effectively off and the
+    ///    per-client limits are the only protection.
+    async fn reserve_attempt(&self, name: &str, key: ClientKey, now: i64) -> Result<(), AuthError> {
+        let known = self.known_clients(name, now);
+        let exempt = known.contains(&key);
+        let known: Vec<String> = known.iter().map(ToString::to_string).collect();
+        let (name, key) = (name.to_owned(), key.to_string());
         let since = now - THROTTLE_WINDOW_SECS;
         let wait = self
             .store
@@ -117,25 +180,49 @@ impl SessionService {
                     params![name, key],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )?;
-                if per_key >= MAX_FAILURES {
-                    return Ok(Some(
-                        oldest.map_or(THROTTLE_WINDOW_SECS, |t| t + THROTTLE_WINDOW_SECS - now),
-                    ));
-                }
-                let (total, last): (i64, Option<i64>) = tx.query_row(
-                    "SELECT COUNT(*), MAX(at) FROM login_attempts WHERE username = ?1",
-                    [&name],
+                let (all_names, oldest_any): (i64, Option<i64>) = tx.query_row(
+                    "SELECT COUNT(*), MIN(at) FROM login_attempts WHERE ip = ?1",
+                    [&key],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )?;
-                if total >= USERNAME_FREE_ATTEMPTS {
-                    let exp = u32::try_from(total - USERNAME_FREE_ATTEMPTS).unwrap_or(u32::MAX);
-                    let delay = 1_i64
-                        .checked_shl(exp)
-                        .unwrap_or(i64::MAX)
-                        .min(USERNAME_BACKOFF_CAP_SECS);
-                    let remaining = last.map_or(0, |t| t + delay - now);
-                    if remaining > 0 {
-                        return Ok(Some(remaining));
+                let limited = if per_key >= MAX_FAILURES {
+                    oldest
+                } else if all_names >= MAX_ATTEMPTS_PER_CLIENT {
+                    oldest_any
+                } else {
+                    None
+                };
+                if per_key >= MAX_FAILURES || all_names >= MAX_ATTEMPTS_PER_CLIENT {
+                    return Ok(Some(
+                        limited.map_or(THROTTLE_WINDOW_SECS, |t| t + THROTTLE_WINDOW_SECS - now),
+                    ));
+                }
+                if !exempt {
+                    let placeholders = (0..known.len()).fold(String::new(), |mut acc, i| {
+                        use std::fmt::Write as _;
+                        let _ = write!(acc, ",?{}", i + 2);
+                        acc
+                    });
+                    let mut args: Vec<&dyn rusqlite::ToSql> = vec![&name];
+                    args.extend(known.iter().map(|k| k as &dyn rusqlite::ToSql));
+                    let (total, last): (i64, Option<i64>) = tx.query_row(
+                        &format!(
+                            "SELECT COUNT(*), MAX(at) FROM login_attempts
+                             WHERE username = ?1 AND ip NOT IN (''{placeholders})"
+                        ),
+                        args.as_slice(),
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?;
+                    if total >= USERNAME_FREE_ATTEMPTS {
+                        let exp = u32::try_from(total - USERNAME_FREE_ATTEMPTS).unwrap_or(u32::MAX);
+                        let delay = 1_i64
+                            .checked_shl(exp)
+                            .unwrap_or(i64::MAX)
+                            .min(USERNAME_BACKOFF_CAP_SECS);
+                        let remaining = last.map_or(0, |t| t + delay - now);
+                        if remaining > 0 {
+                            return Ok(Some(remaining));
+                        }
                     }
                 }
                 tx.execute(
@@ -455,27 +542,76 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_attempts_cannot_exceed_limit() {
-        let (s, users, _user, _d) = setup().await;
-        let tasks = (0..20).map(|_| {
-            let (s, users) = (s.clone(), users.clone());
-            tokio::spawn(async move { bad(&s, &users, IP, 100).await })
-        });
-        let results = futures_collect(tasks).await;
-        let throttled = results
-            .iter()
-            .filter(|e| matches!(e, AuthError::Throttled { .. }))
-            .count();
-        assert_eq!(throttled, 20 - usize::try_from(MAX_FAILURES).unwrap());
+        let (s, _users, _user, _d) = setup().await;
+        let key = client_key(IP);
+        let mut tasks = Vec::new();
+        for _ in 0..20 {
+            let s = s.clone();
+            tasks.push(tokio::spawn(async move {
+                s.reserve_attempt("alice", key, 100).await
+            }));
+        }
+        let mut admitted = 0;
+        for t in tasks {
+            admitted += usize::from(t.await.unwrap().is_ok());
+        }
+        assert_eq!(admitted, usize::try_from(MAX_FAILURES).unwrap());
     }
 
-    async fn futures_collect(
-        tasks: impl Iterator<Item = tokio::task::JoinHandle<AuthError>>,
-    ) -> Vec<AuthError> {
-        let mut out = Vec::new();
-        for t in tasks.collect::<Vec<_>>() {
-            out.push(t.await.unwrap());
+    #[tokio::test]
+    async fn busy_hasher_refusal_does_not_burn_the_throttle_budget() {
+        let (s, users, _user, _d) = setup().await;
+        let key = client_key(IP);
+        let held: Vec<_> = (0..crate::password::PER_CLIENT_HASHES)
+            .map(|_| users.hash_slot(key).unwrap())
+            .collect();
+        for _ in 0..10 {
+            let r = s.login_at(&users, "alice", "pw", IP, None, 100).await;
+            assert!(matches!(r, Err(AuthError::User(UserError::Busy))));
         }
-        out
+        drop(held);
+        // None of the refusals was recorded: the full budget of failures is still there.
+        for _ in 0..MAX_FAILURES {
+            assert!(matches!(
+                bad(&s, &users, IP, 101).await,
+                AuthError::User(UserError::InvalidCredentials)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn known_login_address_is_not_slowed_by_a_distributed_attack() {
+        let (s, users, _user, _d) = setup().await;
+        let home = ip("198.51.100.4");
+        s.login_at(&users, "alice", "pw", home, None, 50)
+            .await
+            .unwrap();
+        for n in 0..USERNAME_FREE_ATTEMPTS + 3 {
+            let _ = bad(&s, &users, ip(&format!("192.0.2.{}", n + 1)), 100).await;
+        }
+        // Strangers are now slowed, the owner's usual address is not.
+        assert!(matches!(
+            bad(&s, &users, ip("192.0.2.200"), 100).await,
+            AuthError::Throttled { .. }
+        ));
+        s.login_at(&users, "alice", "pw", home, None, 100)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_address_cannot_keep_attempts_going_by_rotating_usernames() {
+        let (s, users, _user, _d) = setup().await;
+        let key = client_key(ip("203.0.113.5"));
+        let per_name = usize::try_from(MAX_FAILURES).unwrap();
+        let total = usize::try_from(MAX_ATTEMPTS_PER_CLIENT).unwrap();
+        for n in 0..total {
+            let name = format!("user{}", n / per_name);
+            s.reserve_attempt(&name, key, 100).await.unwrap();
+        }
+        let r = s.reserve_attempt("another", key, 100).await;
+        assert!(matches!(r, Err(AuthError::Throttled { .. })));
+        let _ = &users;
     }
 
     #[tokio::test]
