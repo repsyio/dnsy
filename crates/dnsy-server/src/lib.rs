@@ -26,11 +26,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::admission::SlotLimit;
 use dnsy_engine::Handler;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+pub use admission::{Slot, SlotLimit};
 pub use doh::{DohAuthenticator, DohConfig, DohDenied, TokenAuth};
 pub use dot::DotConfig;
 pub use dot::mtls::{AllowedCert, Allowlist, Clock as MtlsClock, MtlsMode, MtlsVerifier};

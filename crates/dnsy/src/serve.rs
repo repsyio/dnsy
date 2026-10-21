@@ -107,7 +107,7 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
             app.clone(),
             tls.clone(),
             stop_rx.clone(),
-            http::HttpLimits::new(count(config.api.max_conns)),
+            http::HttpLimits::from_config(&config),
         )));
     }
 

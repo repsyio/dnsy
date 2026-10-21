@@ -1,16 +1,14 @@
 //! Serves the API router over plain HTTP or TLS with graceful shutdown.
 
-use std::io;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::{Context, Poll};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::extract::ConnectInfo;
 use axum::response::IntoResponse as _;
+use dnsy_server::SlotLimit;
 use hyper::StatusCode;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -18,9 +16,8 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use rustls_pki_types::pem::PemObject as _;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
@@ -57,57 +54,79 @@ const STREAM_PATH: &str = "/api/v1/querylog/stream";
 pub(crate) struct HttpLimits {
     /// Concurrent connections; further ones are closed at accept.
     pub max_conns: usize,
-    /// Time for a client to send its first bytes (TLS handshake included) and each request head.
+    /// Concurrent connections per client (`client_key`); further ones are closed at accept.
+    pub max_conns_per_client: usize,
+    /// Time for a client to finish the TLS handshake and each request head, and the longest a
+    /// connection may sit with no request in progress (HTTP/1.1 keep-alive and HTTP/2 alike).
     pub header_read: Duration,
     /// Time for a handler to produce a response (headers), except on [`STREAM_PATH`].
     pub request: Duration,
 }
 
 impl HttpLimits {
-    pub(crate) fn new(max_conns: usize) -> Self {
+    pub(crate) fn from_config(config: &dnsy_config::Config) -> Self {
+        let count = |n: u32| usize::try_from(n).unwrap_or(usize::MAX);
+        Self::new(
+            count(config.api.max_conns),
+            count(config.limits.max_conns_per_client),
+        )
+    }
+
+    pub(crate) fn new(max_conns: usize, max_conns_per_client: usize) -> Self {
         Self {
             max_conns,
+            max_conns_per_client,
             header_read: Duration::from_secs(30),
             request: Duration::from_secs(30),
         }
     }
 }
 
-/// Reports whether the peer has sent any byte yet (hyper's protocol detection waits for the first
-/// bytes without a timer of its own).
-struct Watched<T> {
-    inner: T,
-    seen: Arc<AtomicBool>,
+/// Requests in progress on one connection and when the connection last had one.
+#[derive(Debug)]
+struct Activity {
+    started: Instant,
+    active: AtomicUsize,
+    last_ms: AtomicU64,
 }
 
-impl<T: AsyncRead + Unpin> AsyncRead for Watched<T> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let before = buf.filled().len();
-        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
-        if buf.filled().len() > before {
-            self.seen.store(true, Ordering::Relaxed);
+impl Activity {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            started: Instant::now(),
+            active: AtomicUsize::new(0),
+            last_ms: AtomicU64::new(0),
+        })
+    }
+
+    fn touch(&self) {
+        let ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.last_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// Marks a request as started; it ends when the guard drops.
+    fn begin(self: &Arc<Self>) -> RequestGuard {
+        self.active.fetch_add(1, Ordering::Relaxed);
+        self.touch();
+        RequestGuard(Arc::clone(self))
+    }
+
+    /// How long the connection has had no request in progress, `None` while one is.
+    fn idle_for(&self) -> Option<Duration> {
+        if self.active.load(Ordering::Relaxed) > 0 {
+            return None;
         }
-        poll
+        let last = Duration::from_millis(self.last_ms.load(Ordering::Relaxed));
+        Some(self.started.elapsed().saturating_sub(last))
     }
 }
 
-impl<T: AsyncWrite + Unpin> AsyncWrite for Watched<T> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+struct RequestGuard(Arc<Activity>);
+
+impl Drop for RequestGuard {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::Relaxed);
+        self.0.touch();
     }
 }
 
@@ -119,7 +138,7 @@ pub(crate) async fn serve(
     mut shutdown: watch::Receiver<bool>,
     limits: HttpLimits,
 ) {
-    let slots = Arc::new(Semaphore::new(limits.max_conns));
+    let slots = SlotLimit::new(limits.max_conns, limits.max_conns_per_client);
     let mut conns = JoinSet::new();
     loop {
         while conns.try_join_next().is_some() {}
@@ -134,8 +153,8 @@ pub(crate) async fn serve(
                 }
             },
         };
-        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
-            tracing::debug!(%peer, "api connection limit reached; closing");
+        let Some(permit) = slots.try_acquire(peer.ip()) else {
+            tracing::debug!(%peer, "api connection limit reached (shared or per client); closing");
             continue;
         };
         let app = app.clone();
@@ -158,21 +177,22 @@ pub(crate) async fn serve(
                 }
                 None => Box::new(stream),
             };
-            let seen = Arc::new(AtomicBool::new(false));
-            let io = Watched {
-                inner: io,
-                seen: Arc::clone(&seen),
-            };
+            let activity = Activity::new();
+            let tracker = Arc::clone(&activity);
             // Handlers read the peer address from `ConnectInfo` (login throttling is keyed on it).
             let service = service_fn(move |req: hyper::Request<Incoming>| {
                 let mut req = req.map(axum::body::Body::new);
                 req.extensions_mut().insert(ConnectInfo(peer));
                 let exempt = req.uri().path() == STREAM_PATH;
                 let call = app.clone().oneshot(req);
+                let guard = tracker.begin();
                 async move {
                     if exempt {
+                        // An open-ended stream: the connection counts as busy until it closes.
+                        std::mem::forget(guard);
                         return call.await;
                     }
+                    let _guard = guard;
                     match timeout(limits.request, call).await {
                         Ok(response) => response,
                         Err(_) => Ok(StatusCode::REQUEST_TIMEOUT.into_response()),
@@ -192,19 +212,18 @@ pub(crate) async fn serve(
                 .keep_alive_timeout(limits.header_read);
             let conn = builder.serve_connection(TokioIo::new(io), service);
             tokio::pin!(conn);
-            let first_bytes = tokio::time::sleep(limits.header_read);
-            tokio::pin!(first_bytes);
-            let mut waiting = true;
+            let mut deadline = tokio::time::Instant::now() + limits.header_read;
             let result = loop {
                 tokio::select! {
                     r = conn.as_mut() => break r,
-                    () = &mut first_bytes, if waiting => {
-                        if !seen.load(Ordering::Relaxed) {
-                            tracing::debug!(%peer, "api connection sent nothing; closing");
+                    () = tokio::time::sleep_until(deadline) => match activity.idle_for() {
+                        Some(idle) if idle >= limits.header_read => {
+                            tracing::debug!(%peer, "api connection idle; closing");
                             break Ok(());
                         }
-                        waiting = false;
-                    }
+                        Some(idle) => deadline = tokio::time::Instant::now() + limits.header_read.saturating_sub(idle),
+                        None => deadline = tokio::time::Instant::now() + limits.header_read,
+                    },
                     _ = stop.changed() => {
                         conn.as_mut().graceful_shutdown();
                         break conn.await;
@@ -247,7 +266,7 @@ mod tests {
     }
 
     async fn server() -> Server {
-        server_with(HttpLimits::new(256)).await
+        server_with(HttpLimits::new(256, 256)).await
     }
 
     async fn server_with(limits: HttpLimits) -> Server {
@@ -349,6 +368,7 @@ mod tests {
     fn short(max_conns: usize) -> HttpLimits {
         HttpLimits {
             max_conns,
+            max_conns_per_client: max_conns,
             header_read: Duration::from_millis(300),
             request: Duration::from_millis(300),
         }
@@ -378,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_idle_connections_do_not_block_healthz() {
-        let s = server_with(HttpLimits::new(4096)).await;
+        let s = server_with(HttpLimits::new(4096, 4096)).await;
         let mut idle = Vec::new();
         for _ in 0..2000 {
             idle.push(tokio::net::TcpStream::connect(s.addr).await.unwrap());
@@ -391,11 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_connection_cap_closes_the_excess() {
-        let s = server_with(HttpLimits {
-            max_conns: 1,
-            ..HttpLimits::new(1)
-        })
-        .await;
+        let s = server_with(HttpLimits::new(1, 1)).await;
         let _held = tokio::net::TcpStream::connect(s.addr).await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let mut extra = tokio::net::TcpStream::connect(s.addr).await.unwrap();
@@ -422,5 +438,71 @@ mod tests {
             .expect("stalled request is answered")
             .unwrap();
         assert!(raw.starts_with("HTTP/1.1 408"), "{raw}");
+    }
+
+    /// Opens a connection from the loopback address `from`.
+    async fn connect_from(from: &str, to: SocketAddr) -> tokio::net::TcpStream {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket
+            .bind(SocketAddr::new(from.parse().unwrap(), 0))
+            .unwrap();
+        socket.connect(to).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn api_per_client_cap_leaves_room_for_other_clients() {
+        let s = server_with(HttpLimits::new(256, 2)).await;
+        let _a = connect_from("127.0.0.2", s.addr).await;
+        let _b = connect_from("127.0.0.2", s.addr).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut third = connect_from("127.0.0.2", s.addr).await;
+        let mut rest = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), third.read_to_end(&mut rest))
+            .await
+            .expect("the third connection from one client is closed")
+            .ok();
+        assert_eq!(rest, Vec::<u8>::new());
+        let mut other = connect_from("127.0.0.3", s.addr).await;
+        other
+            .write_all(b"GET /healthz HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut raw = String::new();
+        other.read_to_string(&mut raw).await.unwrap();
+        assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+    }
+
+    /// An HTTP/2 client that answers PING frames, so keep-alive pings alone never close it.
+    #[tokio::test]
+    async fn api_h2_connection_without_streams_is_closed() {
+        let s = server_with(short(256)).await;
+        let mut c = tokio::net::TcpStream::connect(s.addr).await.unwrap();
+        c.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00")
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let mut head = [0_u8; 9];
+                if c.read_exact(&mut head).await.is_err() {
+                    return;
+                }
+                let len =
+                    usize::from(head[0]) << 16 | usize::from(head[1]) << 8 | usize::from(head[2]);
+                let mut payload = vec![0_u8; len];
+                if c.read_exact(&mut payload).await.is_err() {
+                    return;
+                }
+                // PING without ACK: answer it, as a live peer would.
+                if head[3] == 6 && head[4] & 1 == 0 {
+                    let mut ack = vec![0, 0, 8, 6, 1, 0, 0, 0, 0];
+                    ack.extend_from_slice(&payload);
+                    if c.write_all(&ack).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "idle h2 connection stayed open");
     }
 }

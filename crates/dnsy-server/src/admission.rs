@@ -18,21 +18,23 @@ struct ClientCounts {
 
 /// A global cap with a per-client cap on top. Clone-free: share it behind an [`Arc`].
 #[derive(Debug)]
-pub(crate) struct SlotLimit {
+pub struct SlotLimit {
     total: Arc<Semaphore>,
     clients: Arc<ClientCounts>,
 }
 
 /// Holds one global slot and one per-client slot; both are released on drop.
 #[derive(Debug)]
-pub(crate) struct Slot {
+pub struct Slot {
     _total: OwnedSemaphorePermit,
     clients: Arc<ClientCounts>,
     key: ClientKey,
 }
 
 impl SlotLimit {
-    pub(crate) fn new(total: usize, per_client: usize) -> Arc<Self> {
+    /// A pool of `total` slots of which one client (`client_key`) may hold `per_client`.
+    #[must_use]
+    pub fn new(total: usize, per_client: usize) -> Arc<Self> {
         Arc::new(Self {
             total: Arc::new(Semaphore::new(total)),
             clients: Arc::new(ClientCounts {
@@ -43,7 +45,8 @@ impl SlotLimit {
     }
 
     /// A slot for `ip`, or `None` when the global pool or the client's own share is exhausted.
-    pub(crate) fn try_acquire(&self, ip: IpAddr) -> Option<Slot> {
+    #[must_use]
+    pub fn try_acquire(&self, ip: IpAddr) -> Option<Slot> {
         let key = client_key(ip);
         let total = Arc::clone(&self.total).try_acquire_owned().ok()?;
         {
