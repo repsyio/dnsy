@@ -33,6 +33,22 @@ for (const width of [360, 1280]) {
   });
 }
 
+for (const width of [360, 768, 1280]) {
+  test.describe(`login at ${width}px`, () => {
+    test.use({ viewport: { width, height: 800 }, storageState: { cookies: [], origins: [] } });
+
+    test('the login page does not overflow and the form stays in view', async ({ page }) => {
+      await page.goto('/login');
+      await expect(page.getByRole('button', { name: 'Sign in' })).toBeInViewport();
+      await expect(page.getByLabel('Username')).toBeInViewport();
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(overflow, `/login overflows by ${overflow}px`).toBeLessThanOrEqual(0);
+    });
+  });
+}
+
 test.describe('off-canvas sidebar at 360px', () => {
   test.use({ viewport: { width: 360, height: 800 } });
 

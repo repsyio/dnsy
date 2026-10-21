@@ -1,172 +1,162 @@
 import {
-  AdditiveBlending,
-  BoxGeometry,
-  CircleGeometry,
-  Color,
-  Fog,
-  GridHelper,
-  Group,
-  Mesh,
-  MeshBasicMaterial,
-  PerspectiveCamera,
-  Scene,
-  Sprite,
-  SpriteMaterial,
-  TextureLoader,
-  TorusGeometry,
-  WebGLRenderer,
-  type BufferGeometry,
-  type Material,
-  type Object3D,
-  type Texture,
-} from 'three';
-import { cappedPixelRatio } from './scene-support';
-
-const CYAN = 0x19e6ff;
-const ORANGE = 0xff8a1f;
-const BG = 0x05080d;
-const CELL = 4;
-const MASCOT_URL = 'mascot/nox-idle.svg';
+  BLOB,
+  type Pulse,
+  bucketAlpha,
+  depthBucket,
+  icosphere,
+  inPulse,
+  makeLobes,
+  project,
+  stepLobes,
+  stepPulses,
+} from './blob';
+import { IDLE_PAUSE_MS, cappedPixelRatio } from './scene-support';
 
 export interface LoginScene {
   dispose(): void;
 }
 
-interface Cycle {
-  mesh: Mesh;
-  speed: number;
-  length: number;
+export interface SceneOptions {
+  /** Draw one still frame without pulses and never animate. */
+  reducedMotion: boolean;
+  /** Injected for tests; defaults to Math.random. */
+  random?: () => number;
 }
 
-/** Light-grid floor, light-cycle trails and a hovering Nox hologram. Owns every GPU resource it makes. */
-export function createLoginScene(canvas: HTMLCanvasElement): LoginScene {
-  const renderer = new WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(cappedPixelRatio(window.devicePixelRatio));
-  renderer.setClearColor(BG);
+/**
+ * The login blob on a plain 2D canvas: a morphing wireframe icosphere in white hairlines with red
+ * pulses sweeping across it. Animates only while the tab is visible, the visitor is active (pointer
+ * or keyboard in the last 30 s) and the password field is not focused.
+ */
+export function createLoginScene(canvas: HTMLCanvasElement, options: SceneOptions): LoginScene {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return { dispose: () => undefined };
+  const random = options.random ?? Math.random;
+  const mesh = icosphere(BLOB.subdivisions);
+  const lobes = makeLobes(random);
+  const pulses: Pulse[] = [];
+  const style = getComputedStyle(canvas);
+  const line = style.getPropertyValue('--dnsy-text').trim();
+  const red = style.getPropertyValue('--dnsy-red').trim();
+  let width = 0;
+  let height = 0;
+  let t = 0;
 
-  const scene = new Scene();
-  scene.fog = new Fog(BG, 20, 110);
-  const camera = new PerspectiveCamera(60, 1, 0.1, 200);
-  camera.position.set(0, 3, 14);
+  const resize = (): void => {
+    const ratio = cappedPixelRatio(window.devicePixelRatio);
+    width = canvas.clientWidth;
+    height = canvas.clientHeight;
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  };
 
-  const grid = new GridHelper(400, 100, CYAN, new Color(CYAN).multiplyScalar(0.35));
-  grid.position.z = -100;
-  scene.add(grid);
+  const draw = (): void => {
+    ctx.clearRect(0, 0, width, height);
+    const points = project(mesh, lobes, t, width, height);
+    const buckets: number[][] = Array.from({ length: BLOB.buckets }, () => []);
+    for (const [a, b] of mesh.edges) {
+      buckets[depthBucket((points[a][2] + points[b][2]) / 2)].push(a, b);
+    }
+    ctx.lineWidth = 0.5;
+    ctx.strokeStyle = line;
+    buckets.forEach((list, i) => {
+      ctx.globalAlpha = bucketAlpha(i);
+      ctx.beginPath();
+      for (let k = 0; k < list.length; k += 2) {
+        const [p, q] = [points[list[k]], points[list[k + 1]]];
+        ctx.moveTo(p[0], p[1]);
+        ctx.lineTo(q[0], q[1]);
+      }
+      ctx.stroke();
+    });
+    if (pulses.length) {
+      ctx.strokeStyle = red;
+      ctx.globalAlpha = BLOB.pulseAlpha;
+      ctx.beginPath();
+      for (const pulse of pulses) {
+        for (const [a, b] of mesh.edges) {
+          if (points[a][2] > BLOB.pulseFront && inPulse(mesh.verts[a], pulse)) {
+            ctx.moveTo(points[a][0], points[a][1]);
+            ctx.lineTo(points[b][0], points[b][1]);
+          }
+        }
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  };
 
-  const sun = new Mesh(
-    new CircleGeometry(22, 48),
-    new MeshBasicMaterial({ color: ORANGE, transparent: true, opacity: 0.18, fog: false }),
-  );
-  sun.position.set(0, 12, -120);
-  scene.add(sun);
-
-  const cycles: Cycle[] = [];
-  for (let i = 0; i < 10; i++) {
-    const length = 6 + (i % 4) * 4;
-    const mesh = new Mesh(
-      new BoxGeometry(0.12, 0.12, length),
-      new MeshBasicMaterial({ color: i % 3 === 0 ? ORANGE : CYAN }),
-    );
-    const lane = (i - 4.5) * CELL * 1.5;
-    mesh.position.set(lane, 0.1, -((i * 37) % 120));
-    scene.add(mesh);
-    cycles.push({ mesh, speed: 14 + (i % 5) * 5, length });
+  if (options.reducedMotion) {
+    const still = (): void => {
+      resize();
+      draw();
+    };
+    still();
+    window.addEventListener('resize', still);
+    return { dispose: () => window.removeEventListener('resize', still) };
   }
 
-  const holo = new Group();
-  holo.position.set(6, 2.6, -6);
-  const ring = new Mesh(
-    new TorusGeometry(1.8, 0.03, 8, 64),
-    new MeshBasicMaterial({ color: CYAN, blending: AdditiveBlending, transparent: true }),
-  );
-  ring.rotation.x = Math.PI / 2;
-  ring.position.y = -1.7;
-  holo.add(ring);
-  let texture: Texture | null = null;
-  let disposed = false;
-  new TextureLoader().load(
-    MASCOT_URL,
-    (t) => {
-      if (disposed) {
-        t.dispose();
-        return;
-      }
-      texture = t;
-      const sprite = new Sprite(
-        new SpriteMaterial({ map: t, blending: AdditiveBlending, transparent: true, fog: false }),
-      );
-      sprite.scale.set(4, 4, 1);
-      holo.add(sprite);
-    },
-    undefined,
-    () => undefined, // the hologram is decoration; the scene works without it
-  );
-  scene.add(holo);
+  let handle: number | null = null;
+  let last = 0;
+  let lastActive = performance.now();
+  let passwordFocused = false;
 
-  const pointer = { x: 0, y: 0 };
-  const onPointer = (e: PointerEvent): void => {
-    pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
-    pointer.y = (e.clientY / window.innerHeight) * 2 - 1;
-  };
-  const resize = (): void => {
-    const w = canvas.clientWidth || window.innerWidth;
-    const h = canvas.clientHeight || window.innerHeight;
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-  };
-
-  let last = performance.now();
-  let t = 0;
   const frame = (now: number): void => {
+    handle = null;
+    if (now - lastActive > IDLE_PAUSE_MS) return; // idle: stay paused until the next activity
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
     t += dt;
-    grid.position.z += dt * 6;
-    if (grid.position.z > -100 + CELL) grid.position.z = -100;
-    for (const c of cycles) {
-      c.mesh.position.z += c.speed * dt;
-      if (c.mesh.position.z - c.length / 2 > 16) c.mesh.position.z = -150;
+    stepLobes(lobes, dt, random);
+    stepPulses(pulses, dt, random);
+    draw();
+    handle = requestAnimationFrame(frame);
+  };
+  const stop = (): void => {
+    if (handle !== null) cancelAnimationFrame(handle);
+    handle = null;
+  };
+  const sync = (): void => {
+    if (document.hidden || passwordFocused) stop();
+    else if (handle === null) {
+      last = performance.now();
+      handle = requestAnimationFrame(frame);
     }
-    holo.position.y = 2.6 + Math.sin(t * 1.2) * 0.2;
-    ring.rotation.z = t * 0.6;
-    const tx = Math.sin(t * 0.12) * 1.5 + pointer.x * 2.5;
-    const ty = 3 + Math.sin(t * 0.17) * 0.4 - pointer.y * 0.8;
-    camera.position.x += (tx - camera.position.x) * Math.min(dt * 2, 1);
-    camera.position.y += (ty - camera.position.y) * Math.min(dt * 2, 1);
-    camera.lookAt(0, 3, -40);
-    renderer.render(scene, camera);
   };
-  const start = (): void => {
-    last = performance.now();
-    renderer.setAnimationLoop(frame);
+  const onActivity = (): void => {
+    lastActive = performance.now();
+    sync();
   };
-  const onVisibility = (): void => {
-    if (document.hidden) renderer.setAnimationLoop(null);
-    else start();
+  const onFocus = (e: FocusEvent): void => {
+    const password = e.target instanceof HTMLInputElement && e.target.type === 'password';
+    if (password) passwordFocused = e.type === 'focusin';
+    sync();
+  };
+  const onResize = (): void => {
+    resize();
+    if (handle === null) draw();
   };
 
   resize();
-  window.addEventListener('resize', resize);
-  window.addEventListener('pointermove', onPointer, { passive: true });
-  document.addEventListener('visibilitychange', onVisibility);
-  if (!document.hidden) start();
+  draw();
+  window.addEventListener('resize', onResize);
+  window.addEventListener('pointermove', onActivity, { passive: true });
+  window.addEventListener('keydown', onActivity);
+  document.addEventListener('visibilitychange', sync);
+  document.addEventListener('focusin', onFocus);
+  document.addEventListener('focusout', onFocus);
+  sync();
 
   return {
     dispose(): void {
-      disposed = true;
-      renderer.setAnimationLoop(null);
-      window.removeEventListener('resize', resize);
-      window.removeEventListener('pointermove', onPointer);
-      document.removeEventListener('visibilitychange', onVisibility);
-      scene.traverse((o: Object3D) => {
-        const obj = o as Object3D & { geometry?: BufferGeometry; material?: Material | Material[] };
-        obj.geometry?.dispose();
-        for (const m of [obj.material ?? []].flat()) m.dispose();
-      });
-      texture?.dispose();
-      renderer.dispose();
-      renderer.forceContextLoss();
+      stop();
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('pointermove', onActivity);
+      window.removeEventListener('keydown', onActivity);
+      document.removeEventListener('visibilitychange', sync);
+      document.removeEventListener('focusin', onFocus);
+      document.removeEventListener('focusout', onFocus);
     },
   };
 }
