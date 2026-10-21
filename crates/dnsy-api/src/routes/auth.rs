@@ -1,6 +1,6 @@
 //! Login, logout, current user, first-admin bootstrap and password change.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, State};
 use axum::http::header::SET_COOKIE;
@@ -66,11 +66,10 @@ pub fn router() -> OpenApiRouter<ApiState> {
         .routes(routes!(change_password))
 }
 
-fn client_ip(info: Option<Extension<ConnectInfo<SocketAddr>>>) -> IpAddr {
-    info.map_or(
-        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        |Extension(ConnectInfo(a))| a.ip(),
-    )
+/// The peer address, or an internal error: without it the throttle would key everyone together.
+fn client_ip(info: Option<Extension<ConnectInfo<SocketAddr>>>) -> Result<IpAddr, ApiError> {
+    info.map(|Extension(ConnectInfo(a))| a.ip())
+        .ok_or_else(|| ApiError::Internal("the server did not provide the peer address".to_owned()))
 }
 
 fn cookie_header(
@@ -155,7 +154,7 @@ async fn login(
             &state.users,
             &body.username,
             &body.password,
-            client_ip(connect),
+            client_ip(connect)?,
             previous,
         )
         .await?;
@@ -267,7 +266,7 @@ async fn change_password(
             &state.users,
             &user.username,
             &body.new_password,
-            client_ip(connect),
+            client_ip(connect)?,
             None,
         )
         .await?;

@@ -9,7 +9,6 @@
 //! Secrets: the request URI and `Authorization` header are never logged, copied into error
 //! bodies or handed to the engine; the only thing that travels on is the [`Principal`].
 
-mod throttle;
 mod wire;
 
 use std::convert::Infallible;
@@ -20,7 +19,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dnsy_auth::{AuthError, TokenVerifier};
+use dnsy_auth::{AuthError, FailureThrottle, TokenVerifier};
+use dnsy_core::net::client_key;
 use dnsy_core::{Principal, Scope, Transport};
 use dnsy_engine::{Handler, RequestContext};
 use dnsy_proto::Edns;
@@ -42,7 +42,6 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::query::{Incoming as Parsed, encode_response, pad_response, parse};
 use crate::tcp::Limits;
-use throttle::Throttle;
 use wire::{MAX_MESSAGE, MAX_TOKEN, MEDIA_TYPE};
 
 /// ALPN protocols, in preference order.
@@ -107,6 +106,8 @@ pub struct DohConfig {
     pub max_auth_failures: u32,
     /// Throttle window (default 60 s).
     pub auth_window: Duration,
+    /// Client keys (IPv4 address, IPv6 `/64`) the throttle tracks at once (default 10 000).
+    pub max_tracked_clients: usize,
 }
 
 impl std::fmt::Debug for DohConfig {
@@ -138,6 +139,7 @@ impl DohConfig {
             require_token: true,
             max_auth_failures: 10,
             auth_window: Duration::from_secs(60),
+            max_tracked_clients: dnsy_auth::DEFAULT_MAX_TRACKED,
         }
     }
 }
@@ -147,7 +149,7 @@ pub(crate) struct State<H> {
     path: String,
     auth: Arc<dyn DohAuthenticator>,
     require_token: bool,
-    throttle: Throttle,
+    throttle: FailureThrottle,
     body_timeout: Duration,
 }
 
@@ -158,7 +160,11 @@ impl<H> State<H> {
             path: config.path.clone(),
             auth: Arc::clone(&config.auth),
             require_token: config.require_token,
-            throttle: Throttle::new(config.max_auth_failures, config.auth_window),
+            throttle: FailureThrottle::new(
+                config.max_auth_failures,
+                config.auth_window,
+                config.max_tracked_clients,
+            ),
             body_timeout,
         })
     }
@@ -350,8 +356,8 @@ async fn authenticate<H>(
     req: &Request<Incoming>,
     path_token: Option<&str>,
 ) -> Result<Option<Principal>, Rejection> {
-    let ip = client.ip();
-    if let Some(secs) = state.throttle.blocked(ip, Instant::now()) {
+    let ip = client_key(client.ip());
+    if let Some(secs) = state.throttle.blocked(ip, None, Instant::now()) {
         let mut response = reply(StatusCode::TOO_MANY_REQUESTS);
         response
             .headers_mut()
@@ -371,13 +377,13 @@ async fn authenticate<H>(
         };
     };
     if token.len() > MAX_TOKEN {
-        state.throttle.failure(ip, Instant::now());
+        state.throttle.failure(ip, None, Instant::now());
         return Err(Box::new(unauthorized()));
     }
     match state.auth.authenticate(token).await {
         Ok(principal) => Ok(Some(principal)),
         Err(DohDenied::Invalid) => {
-            state.throttle.failure(ip, Instant::now());
+            state.throttle.failure(ip, None, Instant::now());
             Err(Box::new(unauthorized()))
         }
         Err(DohDenied::MissingScope) => Err(Box::new(reply(StatusCode::FORBIDDEN))),

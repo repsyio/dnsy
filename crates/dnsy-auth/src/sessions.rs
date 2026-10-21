@@ -3,11 +3,12 @@ use std::net::IpAddr;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dnsy_core::UserId;
+use dnsy_core::net::client_key;
 use dnsy_store::Store;
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
-use crate::{AuthError, User, UserError, UserService, unix_now};
+use crate::{AuthError, User, UserService, unix_now};
 
 /// A session expires after this long without use. `dnsy-observe` retention deletes expired
 /// rows with copies of both lifetimes; keep them in sync.
@@ -17,8 +18,13 @@ pub const ABSOLUTE_TIMEOUT_SECS: i64 = 12 * 60 * 60;
 /// `last_seen_at` is only rewritten when it is older than this, so most requests need no write;
 /// the idle timeout is therefore accurate to this many seconds.
 pub const LAST_SEEN_GRANULARITY_SECS: i64 = 60;
-/// Failed logins allowed per username+IP within [`THROTTLE_WINDOW_SECS`].
+/// Login attempts allowed per username and client key (IPv4 address or IPv6 `/64`) within
+/// [`THROTTLE_WINDOW_SECS`].
 pub const MAX_FAILURES: i64 = 5;
+/// Attempts on one username, from any addresses, before the per-username backoff starts.
+pub const USERNAME_FREE_ATTEMPTS: i64 = 10;
+/// Longest wait the per-username backoff imposes.
+pub const USERNAME_BACKOFF_CAP_SECS: i64 = 60;
 pub const THROTTLE_WINDOW_SECS: i64 = 15 * 60;
 
 /// A live session.
@@ -73,71 +79,85 @@ impl SessionService {
         now: i64,
     ) -> Result<(String, User), AuthError> {
         let name = username.trim().to_owned();
-        self.check_throttle(&name, ip, now).await?;
+        let key = client_key(ip).to_string();
+        self.reserve_attempt(&name, &key, now).await?;
         match users.verify_password(&name, password).await {
             Ok(user) => {
-                self.clear_failures(&name, ip).await?;
+                // Correct credentials prove the owner is present: forget the account's failures.
+                self.clear_failures(&name).await?;
                 if let Some(prev) = previous {
                     self.destroy(prev).await?;
                 }
                 let id = self.create_at(user.id, now).await?;
                 Ok((id, user))
             }
-            Err(UserError::InvalidCredentials) => {
-                self.record_failure(&name, ip, now).await?;
-                Err(UserError::InvalidCredentials.into())
-            }
             Err(e) => Err(e.into()),
         }
     }
 
-    async fn check_throttle(&self, name: &str, ip: IpAddr, now: i64) -> Result<(), AuthError> {
-        let (name, ip) = (name.to_owned(), ip.to_string());
+    /// Checks both limits and records the attempt in one write transaction, so concurrent
+    /// requests cannot all pass the check before any is recorded. Rejected attempts are not
+    /// recorded, so hammering a locked key does not extend the lock.
+    ///
+    /// 1. At most [`MAX_FAILURES`] attempts per `(username, client key)` per window.
+    /// 2. Across all addresses, once a username has [`USERNAME_FREE_ATTEMPTS`] attempts in the
+    ///    window, each further attempt must wait `2^n` seconds (capped at
+    ///    [`USERNAME_BACKOFF_CAP_SECS`]) after the previous one. It is a delay, never a lockout,
+    ///    and correct credentials are delayed the same way.
+    async fn reserve_attempt(&self, name: &str, key: &str, now: i64) -> Result<(), AuthError> {
+        let (name, key) = (name.to_owned(), key.to_owned());
         let since = now - THROTTLE_WINDOW_SECS;
-        let (count, oldest): (i64, Option<i64>) = self
+        let wait = self
             .store
-            .read(move |c| {
-                Ok(c.query_row(
-                    "SELECT COUNT(*), MIN(at) FROM login_attempts
-                     WHERE username = ?1 AND ip = ?2 AND at > ?3",
-                    params![name, ip, since],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )?)
-            })
-            .await?;
-        if count >= MAX_FAILURES {
-            let wait = oldest.map_or(THROTTLE_WINDOW_SECS, |t| t + THROTTLE_WINDOW_SECS - now);
-            return Err(AuthError::Throttled {
-                retry_after_secs: u64::try_from(wait.max(1)).unwrap_or(1),
-            });
-        }
-        Ok(())
-    }
-
-    async fn record_failure(&self, name: &str, ip: IpAddr, now: i64) -> Result<(), AuthError> {
-        let (name, ip) = (name.to_owned(), ip.to_string());
-        let since = now - THROTTLE_WINDOW_SECS;
-        self.store
             .write(move |tx| {
                 tx.execute("DELETE FROM login_attempts WHERE at <= ?1", [since])?;
+                let (per_key, oldest): (i64, Option<i64>) = tx.query_row(
+                    "SELECT COUNT(*), MIN(at) FROM login_attempts
+                     WHERE username = ?1 AND ip = ?2",
+                    params![name, key],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                if per_key >= MAX_FAILURES {
+                    return Ok(Some(
+                        oldest.map_or(THROTTLE_WINDOW_SECS, |t| t + THROTTLE_WINDOW_SECS - now),
+                    ));
+                }
+                let (total, last): (i64, Option<i64>) = tx.query_row(
+                    "SELECT COUNT(*), MAX(at) FROM login_attempts WHERE username = ?1",
+                    [&name],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                if total >= USERNAME_FREE_ATTEMPTS {
+                    let exp = u32::try_from(total - USERNAME_FREE_ATTEMPTS).unwrap_or(u32::MAX);
+                    let delay = 1_i64
+                        .checked_shl(exp)
+                        .unwrap_or(i64::MAX)
+                        .min(USERNAME_BACKOFF_CAP_SECS);
+                    let remaining = last.map_or(0, |t| t + delay - now);
+                    if remaining > 0 {
+                        return Ok(Some(remaining));
+                    }
+                }
                 tx.execute(
                     "INSERT INTO login_attempts (username, ip, at) VALUES (?1, ?2, ?3)",
-                    params![name, ip, now],
+                    params![name, key, now],
                 )?;
-                Ok(())
+                Ok(None)
             })
             .await?;
-        Ok(())
+        match wait {
+            Some(secs) => Err(AuthError::Throttled {
+                retry_after_secs: u64::try_from(secs.max(1)).unwrap_or(1),
+            }),
+            None => Ok(()),
+        }
     }
 
-    async fn clear_failures(&self, name: &str, ip: IpAddr) -> Result<(), AuthError> {
-        let (name, ip) = (name.to_owned(), ip.to_string());
+    async fn clear_failures(&self, name: &str) -> Result<(), AuthError> {
+        let name = name.to_owned();
         self.store
             .write(move |tx| {
-                tx.execute(
-                    "DELETE FROM login_attempts WHERE username = ?1 AND ip = ?2",
-                    params![name, ip],
-                )?;
+                tx.execute("DELETE FROM login_attempts WHERE username = ?1", [name])?;
                 Ok(())
             })
             .await?;
@@ -256,6 +276,8 @@ impl SessionService {
 #[cfg(test)]
 mod tests {
     use dnsy_core::Role;
+
+    use crate::UserError;
 
     use super::*;
 
@@ -419,6 +441,132 @@ mod tests {
         s.login_at(&users, "alice", "pw", IP, None, 100 + THROTTLE_WINDOW_SECS)
             .await
             .unwrap();
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    async fn bad(s: &SessionService, users: &UserService, from: IpAddr, now: i64) -> AuthError {
+        s.login_at(users, "alice", "bad", from, None, now)
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn concurrent_attempts_cannot_exceed_limit() {
+        let (s, users, _user, _d) = setup().await;
+        let tasks = (0..20).map(|_| {
+            let (s, users) = (s.clone(), users.clone());
+            tokio::spawn(async move { bad(&s, &users, IP, 100).await })
+        });
+        let results = futures_collect(tasks).await;
+        let throttled = results
+            .iter()
+            .filter(|e| matches!(e, AuthError::Throttled { .. }))
+            .count();
+        assert_eq!(throttled, 20 - usize::try_from(MAX_FAILURES).unwrap());
+    }
+
+    async fn futures_collect(
+        tasks: impl Iterator<Item = tokio::task::JoinHandle<AuthError>>,
+    ) -> Vec<AuthError> {
+        let mut out = Vec::new();
+        for t in tasks.collect::<Vec<_>>() {
+            out.push(t.await.unwrap());
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn throttle_counts_ipv6_rotation_within_slash64() {
+        let (s, users, _user, _d) = setup().await;
+        for host in 1..=MAX_FAILURES {
+            bad(&s, &users, ip(&format!("2001:db8:0:1::{host:x}")), 100).await;
+        }
+        // Another address in the same /64 shares the budget; a different /64 does not.
+        let r = s
+            .login_at(&users, "alice", "pw", ip("2001:db8:0:1:ffff::1"), None, 101)
+            .await;
+        assert!(matches!(r, Err(AuthError::Throttled { .. })));
+        s.login_at(&users, "alice", "pw", ip("2001:db8:0:2::1"), None, 101)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mapped_ipv4_shares_the_budget_of_the_plain_address() {
+        let (s, users, _user, _d) = setup().await;
+        for _ in 0..MAX_FAILURES {
+            bad(&s, &users, ip("192.0.2.7"), 100).await;
+        }
+        let r = s
+            .login_at(&users, "alice", "pw", ip("::ffff:192.0.2.7"), None, 101)
+            .await;
+        assert!(matches!(r, Err(AuthError::Throttled { .. })));
+    }
+
+    #[tokio::test]
+    async fn legitimate_user_logs_in_from_other_address_after_remote_lockout() {
+        let (s, users, _user, _d) = setup().await;
+        for _ in 0..MAX_FAILURES {
+            bad(&s, &users, ip("203.0.113.9"), 100).await;
+        }
+        assert!(matches!(
+            bad(&s, &users, ip("203.0.113.9"), 101).await,
+            AuthError::Throttled { .. }
+        ));
+        s.login_at(&users, "alice", "pw", ip("198.51.100.4"), None, 101)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn distributed_guessing_on_one_username_is_slowed_with_a_capped_delay() {
+        let (s, users, _user, _d) = setup().await;
+        // Many addresses, each within its own budget: the account still slows down.
+        let free = USERNAME_FREE_ATTEMPTS;
+        for n in 0..free {
+            bad(&s, &users, ip(&format!("198.51.100.{}", n + 1)), 100).await;
+        }
+        let Err(AuthError::Throttled { retry_after_secs }) = s
+            .login_at(&users, "alice", "bad", ip("198.51.100.200"), None, 100)
+            .await
+        else {
+            panic!("expected a backoff");
+        };
+        assert_eq!(retry_after_secs, 1);
+        // Correct credentials during the backoff are delayed too, never exempt.
+        let r = s
+            .login_at(&users, "alice", "pw", ip("198.51.100.201"), None, 100)
+            .await;
+        assert!(matches!(r, Err(AuthError::Throttled { .. })));
+        // The delay is short and a different user is unaffected.
+        s.login_at(&users, "alice", "pw", ip("198.51.100.201"), None, 101)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn username_backoff_grows_but_never_exceeds_the_cap() {
+        let (s, users, _user, _d) = setup().await;
+        let mut now = 100;
+        let mut last = 0;
+        for n in 0..40_i64 {
+            // Always wait out the previous delay, so every attempt is recorded.
+            let from = ip(&format!("10.1.{}.{}", n / 200, n % 200 + 1));
+            loop {
+                match s.login_at(&users, "alice", "bad", from, None, now).await {
+                    Err(AuthError::Throttled { retry_after_secs }) => {
+                        last = i64::try_from(retry_after_secs).unwrap();
+                        assert!(last <= USERNAME_BACKOFF_CAP_SECS);
+                        now += last;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        assert_eq!(last, USERNAME_BACKOFF_CAP_SECS, "delay reached the cap");
     }
 
     #[tokio::test]

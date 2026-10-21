@@ -39,9 +39,11 @@ A presented token is always verified, even when tokens are not required. Verific
 comparison are constant time and done by the token verifier in `dnsy-auth`. The authenticated
 principal is attached to the request, so the query log shows which token asked.
 
-Rejected tokens are counted per client IP (default 10 per 60 s). Past that limit the client gets
+Rejected tokens are counted per client (an IPv4 address or an IPv6 `/64`; default 10 per 60 s). Past that limit the client gets
 429 before any token is looked at, so the response never reveals whether a token exists. Malformed,
 unknown, revoked, expired and wrong-secret tokens all give the same 401.
+The table holds at most 10 000 clients; clients that reached the limit are never evicted to make
+room, so flooding it with other addresses cannot unblock them.
 
 ## Secrets are not logged
 

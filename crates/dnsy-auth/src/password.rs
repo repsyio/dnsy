@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use argon2::{Algorithm, Argon2, Params, Version};
+
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::UserError;
 
@@ -26,11 +30,56 @@ pub(crate) fn verify(password: &str, phc: &str) -> bool {
     })
 }
 
-/// Run a CPU-heavy closure off the async executor.
-pub(crate) async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, UserError> {
-    tokio::task::spawn_blocking(f)
+/// Longest password accepted anywhere, checked before any hashing.
+pub const MAX_PASSWORD_BYTES: usize = 1024;
+
+/// Bounds concurrent argon2 work (each run holds 19 MiB and a core).
+#[derive(Clone, Debug)]
+pub(crate) struct HashGate(pub(crate) Arc<Semaphore>);
+
+impl HashGate {
+    /// One permit per available CPU.
+    pub(crate) fn new() -> HashGate {
+        HashGate::with_permits(std::thread::available_parallelism().map_or(1, usize::from))
+    }
+
+    pub(crate) fn with_permits(n: usize) -> HashGate {
+        HashGate(Arc::new(Semaphore::new(n)))
+    }
+
+    /// Run a CPU-heavy closure off the async executor, waiting for a free permit.
+    pub(crate) async fn run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, UserError> {
+        let permit = Arc::clone(&self.0)
+            .acquire_owned()
+            .await
+            .map_err(|_| UserError::Hash)?;
+        Self::spawn(permit, f).await
+    }
+
+    /// Like [`HashGate::run`] but fails with [`UserError::Busy`] instead of waiting.
+    pub(crate) async fn try_run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, UserError> {
+        let permit = Arc::clone(&self.0)
+            .try_acquire_owned()
+            .map_err(|_| UserError::Busy)?;
+        Self::spawn(permit, f).await
+    }
+
+    async fn spawn<T: Send + 'static>(
+        permit: OwnedSemaphorePermit,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, UserError> {
+        tokio::task::spawn_blocking(move || {
+            let out = f();
+            drop(permit);
+            out
+        })
         .await
         .map_err(|_| UserError::Hash)
+    }
 }

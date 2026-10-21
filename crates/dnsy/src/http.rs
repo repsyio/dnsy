@@ -110,8 +110,8 @@ mod tests {
 
     use dnsy_api::{ApiConfig, ApiState, router};
     use dnsy_core::Role;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use serde_json::json;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
 
@@ -145,7 +145,9 @@ mod tests {
     /// Posts a login from the given loopback source address; returns status and headers text.
     async fn login(s: &Server, from: &str, password: &str) -> (u16, String) {
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
-        socket.bind(SocketAddr::new(from.parse().unwrap(), 0)).unwrap();
+        socket
+            .bind(SocketAddr::new(from.parse().unwrap(), 0))
+            .unwrap();
         let mut stream = socket.connect(s.addr).await.unwrap();
         let body = json!({"username": "admin", "password": password}).to_string();
         let request = format!(

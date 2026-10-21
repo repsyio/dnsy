@@ -75,7 +75,13 @@ enum Cred {
     Session { id: String, csrf: String },
 }
 
-async fn call(f: &Fixture, r: Request<Body>) -> Response<Body> {
+/// Like the real listener, the request carries its peer address.
+async fn call(f: &Fixture, mut r: Request<Body>) -> Response<Body> {
+    r.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40_000,
+        ))));
     f.app.clone().oneshot(r).await.unwrap()
 }
 
@@ -204,6 +210,31 @@ async fn login_throttled_429() {
     let res = login(&f, "alice", PW).await;
     assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(res.headers().contains_key(header::RETRY_AFTER));
+}
+
+#[tokio::test]
+async fn login_without_a_peer_address_fails_closed() {
+    let f = fixture();
+    f.state
+        .users
+        .create("alice", PW, Role::Viewer)
+        .await
+        .unwrap();
+    let r = req(
+        Method::POST,
+        "/api/v1/auth/login",
+        None,
+        Some(json!({"username": "alice", "password": PW})),
+    );
+    let res = f.app.clone().oneshot(r).await.unwrap();
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn password_over_1_kib_is_a_400_without_hashing() {
+    let f = fixture();
+    let res = login(&f, "alice", &"x".repeat(1025)).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

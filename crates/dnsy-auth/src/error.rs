@@ -15,6 +15,11 @@ pub enum UserError {
     InvalidCredentials,
     #[error("invalid, expired or already used bootstrap code")]
     InvalidBootstrapCode,
+    #[error("password must not exceed 1024 bytes")]
+    PasswordTooLong,
+    /// Every password-hashing slot is busy; retry shortly.
+    #[error("too many concurrent password checks")]
+    Busy,
     #[error("password hashing failed")]
     Hash,
     #[error(transparent)]

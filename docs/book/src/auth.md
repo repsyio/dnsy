@@ -41,9 +41,27 @@ count as one. `dnsy user disable|enable <username>` does the same offline.
 
 ## Login throttling
 
-After 5 failed logins for the same username and client IP within 15 minutes, further attempts
-are refused with HTTP 429 and a `Retry-After` header until the oldest failure leaves the
-window. A successful login clears the counter.
+The API takes the client address from the TCP peer. Behind a reverse proxy every client shares
+the proxy's address, so the limits below apply to all of them together; trusted-proxy headers are
+not interpreted. Addresses are grouped before counting: an IPv6 client counts as its `/64`, and an
+IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) counts as the plain IPv4 address.
+
+Two limits apply to every login attempt, counted in one write transaction so concurrent requests
+cannot exceed them:
+
+- **Per username and client**: at most 5 attempts within 15 minutes. Further attempts get HTTP
+  429 with `Retry-After` until the oldest one leaves the window. A client that is locked out
+  cannot lock the account out for anyone else.
+- **Per username, all clients**: after 10 attempts on one username within the window, each
+  further attempt must wait `2^n` seconds (n counts attempts beyond ten) after the previous
+  one, capped at 60 seconds. This slows distributed guessing without ever locking the account.
+  The correct password is delayed in the same way (429, never exempt), so the delay cannot be
+  used to test guesses.
+
+Refused attempts are not counted, so hammering a locked client does not extend the lock. A
+successful login clears the username's counters. Passwords longer than 1 KiB are refused (400)
+before hashing, and at most as many argon2 hashes as CPUs run at once: when all are busy a login
+gets 503 with `Retry-After: 1`.
 
 ## Web UI
 
