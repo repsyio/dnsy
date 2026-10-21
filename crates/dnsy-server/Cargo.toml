@@ -24,6 +24,7 @@ hyper-util = { workspace = true }
 notify = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
+socket2 = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 sha2 = { workspace = true }

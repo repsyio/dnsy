@@ -43,6 +43,19 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
   and a non-zero `per_client_qps`. `dnsy serve` and `dnsy config check` warn about an open,
   unlimited non-loopback listener. This was an open, unlimited forwarder before; see the
   changelog.
+- Connection and in-flight caps are on by default: each of TCP, DoT and DoH has one pool of
+  `limits.max_tcp_conns` (1024) shared by all its listen addresses, and one client (IPv4 address
+  or IPv6 `/64`) may hold `limits.max_conns_per_client` (16) of them, so a single source cannot
+  take every slot; excess connections are closed at accept. UDP is bounded by
+  `limits.udp_in_flight` (4096) requests in flight with `limits.udp_in_flight_per_client` (64)
+  per client; excess datagrams are dropped. The API listener closes connections that send nothing
+  or an incomplete request head within 30 s, closes connections (HTTP/1.1 or HTTP/2, pings notwithstanding) that have had no request in progress for 30 s, serves at most `api.max_conns` (256) connections (and `api.max_conns_per_client` (64) per client address, so one address cannot lock out the admin API) and
+  answers 408 to a request whose handler takes longer than 30 s (the live-tail stream is exempt).
+  UDP slots are keyed on the unauthenticated source address, so a spoofed source can occupy that
+  address's share for the milliseconds a request is in flight; spoofed floods stay bounded by the
+  global pool, the rate limiter and the private-only default ACL.
+  Behind a NAT or proxy many users share one address: raise `max_conns_per_client` for DoT/DoH
+  front-ends that multiplex many users.
 - Protect backups: they contain password hashes and DNSSEC keys ([Backup and restore](backup-restore.md)).
 - Keep the binary current ([Upgrade](upgrade.md)).
 

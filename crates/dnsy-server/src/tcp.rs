@@ -11,10 +11,11 @@ use dnsy_engine::{Handler, RequestContext};
 use dnsy_proto::Edns;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
+use crate::admission::SlotLimit;
 use crate::dot::mtls::ClientSession;
 use crate::query::{Incoming, encode_response, pad_response, parse_admitted};
 
@@ -24,7 +25,6 @@ const MAX_IN_FLIGHT_PER_CONN: usize = 32;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Limits {
     pub idle: Duration,
-    pub max_conns: usize,
     pub drain: Duration,
 }
 
@@ -33,9 +33,19 @@ pub(crate) async fn serve<H: Handler>(
     handler: Arc<H>,
     shutdown: watch::Receiver<bool>,
     limits: Limits,
+    slots: Arc<SlotLimit>,
 ) {
     let wrap = |stream: TcpStream| std::future::ready(Some((stream, None)));
-    serve_with(listener, handler, shutdown, limits, Flavor::PLAIN, wrap).await;
+    serve_with(
+        listener,
+        handler,
+        shutdown,
+        limits,
+        slots,
+        Flavor::PLAIN,
+        wrap,
+    )
+    .await;
 }
 
 /// What differs between plain TCP and `DoT` once the stream is established.
@@ -62,6 +72,7 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
     handler: Arc<H>,
     mut shutdown: watch::Receiver<bool>,
     limits: Limits,
+    slots: Arc<SlotLimit>,
     flavor: Flavor,
     wrap: F,
 ) where
@@ -70,7 +81,6 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
     F: Fn(TcpStream) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Option<(S, Option<ClientSession>)>> + Send,
 {
-    let slots = Arc::new(Semaphore::new(limits.max_conns));
     let mut conns = JoinSet::new();
     loop {
         while conns.try_join_next().is_some() {}
@@ -86,8 +96,8 @@ pub(crate) async fn serve_with<H, S, F, Fut>(
                 }
             },
         };
-        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
-            tracing::debug!(%client, "tcp connection limit reached; closing");
+        let Some(permit) = slots.try_acquire(client.ip()) else {
+            tracing::debug!(%client, "tcp connection limit reached (shared or per client); closing");
             continue; // dropping the stream closes it
         };
         // Answers are small frames; Nagle plus the peer's delayed ACK would hold each for ~40 ms.

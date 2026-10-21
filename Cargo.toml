@@ -11,6 +11,7 @@ rust-version = "1.99"
 
 [workspace.dependencies]
 # Async runtime, sockets
+socket2 = { version = "0.6.1", features = ["all"] }
 tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "fs", "process"] }
 # TLS (ring provider, no OpenSSL)
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }

@@ -4,6 +4,9 @@
 
 [server]
 data_dir = "/var/lib/dnsy"
+# UDP sockets (and receive loops) per listen address, via SO_REUSEPORT. The default is the
+# available parallelism on Linux; other platforms always use 1.
+# udp_sockets_per_address = 4
 
 [dns]
 udp = ["0.0.0.0:53"]
@@ -36,6 +39,8 @@ listen = ["127.0.0.1:5380"]
 # password-hashing slot before 503 (burst logins from one address succeed within these bounds).
 # login_hash_per_client = 16
 # login_hash_wait_ms = 5000
+# max_conns = 256 # concurrent API connections
+# max_conns_per_client = 64 # per client address (IPv6 /64)
 
 [zones]
 dir = "/var/lib/dnsy/zones"
@@ -88,7 +93,10 @@ per_client_qps = 50 # 0 = unlimited
 # with a non-zero per_client_qps and ACL rules.
 open_resolver = false
 tcp_idle_ms = 10000
-max_tcp_conns = 1024
+max_tcp_conns = 1024 # per transport (TCP, DoT, DoH), shared by all its listen addresses
+max_conns_per_client = 16 # per client (IPv4 address or IPv6 /64) within each pool
+udp_in_flight = 4096 # UDP requests in flight, all sockets; excess datagrams are dropped
+udp_in_flight_per_client = 64
 
 [querylog]
 enabled = true

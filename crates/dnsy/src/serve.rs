@@ -16,6 +16,7 @@ use dnsy_proto::Name;
 use dnsy_server::{
     Allowlist, DohConfig, DotConfig, MtlsMode, MtlsVerifier, Server, ServerConfig, TokenAuth,
 };
+use dnsy_zone::ZoneStore;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -67,10 +68,7 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
 
     // Zones: hot reload from disk, DNSSEC re-signing and key rollover timer.
     let zones = engine.zone_store().cloned();
-    let _zone_watcher = match &zones {
-        Some(zones) => Some(zones.watch()?),
-        None => None,
-    };
+    let _zone_watcher = zones.as_ref().map(ZoneStore::watch).transpose()?;
     let signing = engine.zone_signing().cloned();
     if let (Some(signing), Some(zones)) = (&signing, &zones) {
         background.push(signing.clone().spawn(SIGN_INTERVAL));
@@ -109,6 +107,7 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
             app.clone(),
             tls.clone(),
             stop_rx.clone(),
+            http::HttpLimits::from_config(&config),
         )));
     }
 
@@ -241,6 +240,11 @@ fn rollover_timings(zones: &dnsy_zone::ZoneStore, zone: &str) -> Option<Rollover
     Some(policy.rollover_timings())
 }
 
+/// A configured `u32` limit as a `usize`.
+fn count(n: u32) -> usize {
+    usize::try_from(n).unwrap_or(usize::MAX)
+}
+
 /// Listener settings from the configuration, plus the mTLS verifier (for SIGHUP reloads).
 fn server_config(
     config: &Config,
@@ -249,7 +253,11 @@ fn server_config(
 ) -> Result<(ServerConfig, Option<Arc<MtlsVerifier>>, Option<Allowlist>)> {
     let mut sc = ServerConfig::new(config.dns.udp.clone(), config.dns.tcp.clone());
     sc.tcp_idle = Duration::from_millis(config.limits.tcp_idle_ms);
-    sc.max_tcp_conns = usize::try_from(config.limits.max_tcp_conns).unwrap_or(usize::MAX);
+    sc.max_tcp_conns = count(config.limits.max_tcp_conns);
+    sc.max_conns_per_client = count(config.limits.max_conns_per_client);
+    sc.udp_in_flight = count(config.limits.udp_in_flight);
+    sc.udp_in_flight_per_client = count(config.limits.udp_in_flight_per_client);
+    sc.udp_sockets_per_address = config.server.udp_sockets_per_address;
     let mut verifier = None;
     let mut list = None;
     if !config.dot.listen.is_empty() {

@@ -35,11 +35,12 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
+use crate::admission::SlotLimit;
 use crate::query::{Incoming as Parsed, encode_response, pad_response, parse};
 use crate::tcp::Limits;
 use wire::{MAX_MESSAGE, MAX_TOKEN, MEDIA_TYPE};
@@ -176,8 +177,8 @@ pub(crate) async fn serve<H: Handler>(
     state: Arc<State<H>>,
     mut shutdown: watch::Receiver<bool>,
     limits: Limits,
+    slots: Arc<SlotLimit>,
 ) {
-    let slots = Arc::new(Semaphore::new(limits.max_conns));
     let mut conns = JoinSet::new();
     loop {
         while conns.try_join_next().is_some() {}
@@ -192,7 +193,7 @@ pub(crate) async fn serve<H: Handler>(
                 }
             },
         };
-        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
+        let Some(permit) = slots.try_acquire(client.ip()) else {
             tracing::debug!(%client, "doh connection limit reached; closing");
             continue;
         };
