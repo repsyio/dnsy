@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::http::{Method, Request};
 use dnsy_config::Config;
 use dnsy_core::{DnssecStatus, Role, Scope};
-use dnsy_dnssec::SystemClock;
+use dnsy_dnssec::{Clock as _, ManualClock, SystemClock};
 use dnsy_engine::{Engine, EngineBuilder};
 use dnsy_proto::{Class, Header, Message, Opcode, Question, RData, Rcode, Record, RecordType};
 use dnsy_resolver::forward::DnssecPolicy as ResolverPolicy;
@@ -41,6 +41,7 @@ struct Fx {
     state: ApiState,
     zones: Arc<ZoneStore>,
     engine: Arc<Engine<NoUp>>,
+    clock: ManualClock,
     admin: String,
     operator: String,
     viewer: String,
@@ -69,7 +70,9 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
             .dnssec(ResolverPolicy::from_config(&cfg.dnssec).unwrap())
             .build(),
     );
+    let clock = ManualClock::new(SystemClock.now());
     let mut state = ApiState::new(store.clone())
+        .with_clock(Arc::new(clock.clone()))
         .with_zones(Arc::clone(&zones))
         .with_cache(Arc::clone(engine.cache()))
         .with_validation(engine.clone());
@@ -118,6 +121,7 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
         state,
         zones,
         engine,
+        clock,
         admin,
         operator,
         viewer,
@@ -698,7 +702,7 @@ async fn nta_management_at_runtime() {
             .dnssec_policy()
             .validator
             .anchors()
-            .is_negative(&Name::from_ascii("a.broken.example.").unwrap())
+            .is_negative(&Name::from_ascii("a.broken.example.").unwrap(), 0)
     );
     let res = admin(
         &fx,
@@ -812,6 +816,9 @@ fn hex(bytes: &[u8]) -> String {
     hex_upper(bytes).to_lowercase()
 }
 
+const BACKUP_PASSPHRASE: &str = "backup-pass-phrase-77";
+const NEW_PASSPHRASE: &str = "rotated-pass-phrase-88";
+
 async fn assert_no_secret_leaks(passphrase: Option<&str>) {
     let buf = Buf::default();
     let sink = buf.clone();
@@ -850,6 +857,21 @@ async fn assert_no_secret_leaks(passphrase: Option<&str>) {
         ),
         (Method::GET, "/api/v1/settings/dnssec".to_owned(), None),
         (Method::GET, "/api/v1/dnssec/status".to_owned(), None),
+        (
+            Method::POST,
+            "/api/v1/dnssec/keys/export".to_owned(),
+            Some(json!({"passphrase": BACKUP_PASSPHRASE})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/dnssec/passphrase".to_owned(),
+            Some(json!({"new_passphrase": NEW_PASSPHRASE})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/dnssec/keys/export".to_owned(),
+            Some(json!({"passphrase": "short"})),
+        ),
         // Error responses too.
         (Method::POST, format!("{Z}/keys/{id}/rollover"), None),
         (Method::POST, format!("{Z}/keys/99999/rollover"), None),
@@ -878,6 +900,9 @@ async fn assert_no_secret_leaks(passphrase: Option<&str>) {
     for text in &haystacks {
         assert!(!text.contains("pkcs8"), "{text}");
         if let Some(p) = passphrase {
+            assert!(!text.contains(p), "passphrase leaked");
+        }
+        for p in [BACKUP_PASSPHRASE, NEW_PASSPHRASE] {
             assert!(!text.contains(p), "passphrase leaked");
         }
         for secret in secrets.iter().filter(|s| !s.is_empty()) {
@@ -938,4 +963,412 @@ fn key_errors_map_to_problems() {
         key_error(&KeyStoreError::PassphraseRequired),
         ApiError::Internal(_)
     ));
+}
+
+// ---------------------------------------------------------------------------------------
+// DNSY-70: operations gaps
+
+fn keys_of(view: &Value) -> usize {
+    view["keys"].as_array().unwrap().len()
+}
+
+#[tokio::test]
+async fn enabling_signing_again_or_concurrently_keeps_one_key_set() {
+    let fx = fx().await;
+    create_zone(&fx).await;
+    let body = || Some(json!({"enabled": true, "key_layout": "ksk_zsk"}));
+    let (a, b, c) = tokio::join!(
+        admin(&fx, Method::PUT, Z, body()),
+        admin(&fx, Method::PUT, Z, body()),
+        admin(&fx, Method::PUT, Z, body())
+    );
+    for r in [a, b, c] {
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    }
+    let again = admin(&fx, Method::PUT, Z, body()).await.json();
+    assert_eq!(keys_of(&again), 2, "one KSK and one ZSK, no duplicates");
+
+    // Disable, enable: the existing keys are reused.
+    admin(&fx, Method::PUT, Z, Some(json!({"enabled": false}))).await;
+    let back = admin(&fx, Method::PUT, Z, Some(json!({"enabled": true})))
+        .await
+        .json();
+    assert_eq!(keys_of(&back), 2);
+}
+
+#[tokio::test]
+async fn propagation_delay_is_a_policy_field() {
+    let fx = fx().await;
+    let view = signed_zone(&fx).await;
+    assert_eq!(view["propagation_delay"], 3600);
+    let res = admin(
+        &fx,
+        Method::PUT,
+        Z,
+        Some(json!({"enabled": true, "propagation_delay": 120})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.json()["propagation_delay"], 120);
+    let res = admin(
+        &fx,
+        Method::PUT,
+        Z,
+        Some(json!({"enabled": true, "propagation_delay": 604_801})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    assert_eq!(
+        admin(&fx, Method::GET, Z, None).await.json()["propagation_delay"],
+        120,
+        "a rejected change leaves the policy alone"
+    );
+}
+
+async fn split_zone(fx: &Fx) -> Value {
+    create_zone(fx).await;
+    let res = admin(
+        fx,
+        Method::PUT,
+        Z,
+        Some(json!({"enabled": true, "key_layout": "ksk_zsk"})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    res.json()
+}
+
+fn key_id(view: &Value, role: &str) -> i64 {
+    view["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["role"] == role && k["state"] == "active")
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn rollover_view_lists_concurrent_roles() {
+    let fx = fx().await;
+    let view = split_zone(&fx).await;
+    assert_eq!(view["rollover"]["rollovers"], json!([]));
+    let (ksk, zsk) = (key_id(&view, "ksk"), key_id(&view, "zsk"));
+    let k = admin(&fx, Method::POST, &format!("{Z}/keys/{ksk}/rollover"), None).await;
+    let z = admin(&fx, Method::POST, &format!("{Z}/keys/{zsk}/rollover"), None).await;
+    assert_eq!(k.status, StatusCode::ACCEPTED, "{}", k.body);
+    assert_eq!(z.status, StatusCode::ACCEPTED, "{}", z.body);
+
+    let view = admin(&fx, Method::GET, Z, None).await.json();
+    let roll = &view["rollover"];
+    assert_eq!(roll["state"], "awaiting_ds_confirmation");
+    let list = roll["rollovers"].as_array().unwrap();
+    assert_eq!(list.len(), 2);
+    let find = |role: &str| list.iter().find(|r| r["role"] == role).unwrap();
+    assert_eq!(find("ksk")["state"], "awaiting_ds_confirmation");
+    assert_eq!(find("ksk")["new_key_id"], k.json()["id"]);
+    assert_eq!(find("zsk")["state"], "in_progress");
+    assert_eq!(find("zsk")["new_key_id"], z.json()["id"]);
+    assert_eq!(
+        roll["role"], list[0]["role"],
+        "legacy fields name the first"
+    );
+}
+
+#[tokio::test]
+async fn abort_rollover_restores_the_previous_state() {
+    let fx = fx().await;
+    let view = split_zone(&fx).await;
+    let abort = format!("{Z}/rollover/abort");
+    let res = admin(&fx, Method::POST, &abort, None).await;
+    assert_eq!(
+        res.status,
+        StatusCode::CONFLICT,
+        "nothing to abort: {}",
+        res.body
+    );
+
+    let (ksk, zsk) = (key_id(&view, "ksk"), key_id(&view, "zsk"));
+    admin(&fx, Method::POST, &format!("{Z}/keys/{ksk}/rollover"), None).await;
+    admin(&fx, Method::POST, &format!("{Z}/keys/{zsk}/rollover"), None).await;
+
+    // Operators cannot abort; admins can, one role at a time.
+    let denied = call_with(&fx, &fx.operator, Method::POST, &abort, &[], None).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    let res = admin(&fx, Method::POST, &abort, Some(json!({"role": "ksk"}))).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let roll = res.json()["rollover"].clone();
+    assert_eq!(roll["rollovers"].as_array().unwrap().len(), 1);
+    assert_eq!(roll["rollovers"][0]["role"], "zsk");
+    let res = admin(&fx, Method::POST, &abort, Some(json!({"role": "ksk"}))).await;
+    assert_eq!(res.status, StatusCode::CONFLICT);
+
+    let res = admin(&fx, Method::POST, &abort, None).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let after = res.json();
+    assert_eq!(after["rollover"]["state"], "idle");
+    assert_eq!(after["rollover"]["rollovers"], json!([]));
+    assert_eq!(keys_of(&after), 2, "only the original keys remain");
+    assert_eq!(key_id(&after, "ksk"), ksk);
+    assert_eq!(key_id(&after, "zsk"), zsk);
+    let ds = admin(&fx, Method::GET, &format!("{Z}/ds"), None)
+        .await
+        .json();
+    assert_eq!(
+        ds["dnskey"].as_array().unwrap().len(),
+        1,
+        "DNSKEY withdrawn"
+    );
+
+    // A fresh rollover can start again.
+    let res = admin(&fx, Method::POST, &format!("{Z}/keys/{zsk}/rollover"), None).await;
+    assert_eq!(res.status, StatusCode::ACCEPTED);
+    let res = admin(
+        &fx,
+        Method::POST,
+        "/api/v1/zones/nope.test./dnssec/rollover/abort",
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn key_export_is_encrypted_and_admin_only() {
+    let fx = fx_with(Some(PASSPHRASE), true).await;
+    signed_zone(&fx).await;
+    let url = "/api/v1/dnssec/keys/export";
+    let res = admin(
+        &fx,
+        Method::POST,
+        url,
+        Some(json!({"passphrase": BACKUP_PASSPHRASE})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let bundle = STANDARD
+        .decode(res.json()["bundle"].as_str().unwrap())
+        .unwrap();
+
+    // The bundle restores into a store with another key passphrase.
+    let dir = tempfile::tempdir().unwrap();
+    let other = KeyStore::open(
+        dnsy_store::Store::open(&dir.path().join("o.db")).unwrap(),
+        Some(Passphrase::new("another-key-passphrase")),
+        Arc::new(SystemClock),
+    )
+    .with_kdf_cost(KdfCost {
+        memory_kib: 64,
+        iterations: 1,
+    });
+    assert!(
+        other
+            .import_bundle(&bundle, &Passphrase::new("wrong-wrong-wrong"))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        other
+            .import_bundle(&bundle, &Passphrase::new(BACKUP_PASSPHRASE))
+            .await
+            .unwrap(),
+        1
+    );
+
+    let one = admin(
+        &fx,
+        Method::POST,
+        url,
+        Some(json!({"passphrase": BACKUP_PASSPHRASE, "zone": "example.com."})),
+    )
+    .await;
+    assert_eq!(one.status, StatusCode::OK);
+    for (body, status) in [
+        (
+            json!({"passphrase": BACKUP_PASSPHRASE, "zone": "nope.test."}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json!({"passphrase": "short"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let res = admin(&fx, Method::POST, url, Some(body)).await;
+        assert_eq!(res.status, status, "{}", res.body);
+    }
+    for token in [&fx.operator, &fx.viewer] {
+        let res = call_with(
+            &fx,
+            token,
+            Method::POST,
+            url,
+            &[],
+            Some(json!({"passphrase": BACKUP_PASSPHRASE})),
+        )
+        .await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN);
+    }
+}
+
+#[tokio::test]
+async fn passphrase_change_reencrypts_keys_and_signing_continues() {
+    let fx = fx_with(Some(PASSPHRASE), true).await;
+    signed_zone(&fx).await;
+    let before = stored_secrets(&fx).await;
+    let url = "/api/v1/dnssec/passphrase";
+
+    let res = admin(
+        &fx,
+        Method::POST,
+        url,
+        Some(json!({"new_passphrase": "short"})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        stored_secrets(&fx).await,
+        before,
+        "a rejected change touches nothing"
+    );
+    for token in [&fx.operator, &fx.viewer] {
+        let res = call_with(
+            &fx,
+            token,
+            Method::POST,
+            url,
+            &[],
+            Some(json!({"new_passphrase": NEW_PASSPHRASE})),
+        )
+        .await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN);
+    }
+
+    let res = admin(
+        &fx,
+        Method::POST,
+        url,
+        Some(json!({"new_passphrase": NEW_PASSPHRASE})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.json()["keys_reencrypted"], 1);
+    assert_ne!(stored_secrets(&fx).await, before);
+    assert!(!res.body.contains(NEW_PASSPHRASE));
+
+    // The running signer keeps working with the new passphrase: a rollover signs the DNSKEY
+    // set with keys decrypted under it.
+    let view = admin(&fx, Method::GET, Z, None).await.json();
+    assert_eq!(view["keys_encrypted"], true);
+    let old = key_id(&view, "csk");
+    let res = admin(&fx, Method::POST, &format!("{Z}/keys/{old}/rollover"), None).await;
+    assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.body);
+    let export = admin(
+        &fx,
+        Method::GET,
+        "/api/v1/zones/example.com./export?signed=true",
+        None,
+    )
+    .await;
+    assert_eq!(export.status, StatusCode::OK);
+    assert!(export.body.contains("RRSIG"));
+}
+
+#[tokio::test]
+async fn dnssec_ops_need_signing() {
+    let fx = fx_with(None, false).await;
+    for (uri, body) in [
+        (
+            "/api/v1/dnssec/keys/export",
+            json!({"passphrase": BACKUP_PASSPHRASE}),
+        ),
+        (
+            "/api/v1/dnssec/passphrase",
+            json!({"new_passphrase": NEW_PASSPHRASE}),
+        ),
+        (
+            "/api/v1/zones/example.com./dnssec/rollover/abort",
+            json!({}),
+        ),
+    ] {
+        let res = admin(&fx, Method::POST, uri, Some(body)).await;
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn nta_expiry_through_the_api() {
+    let fx = fx().await;
+    let url = "/api/v1/settings/dnssec";
+    let now = fx.clock.now();
+    let res = admin(
+        &fx,
+        Method::PATCH,
+        url,
+        Some(json!({"negative_trust_anchors": [
+            "forever.example",
+            {"name": "Lab.Test", "expires_at": now + 100},
+            {"name": "plain.test"},
+        ]})),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let v = res.json();
+    assert_eq!(
+        v["negative_trust_anchors"],
+        json!(["forever.example.", "lab.test.", "plain.test."])
+    );
+    assert_eq!(
+        v["negative_trust_anchor_entries"],
+        json!([
+            {"name": "forever.example.", "expires_at": null},
+            {"name": "lab.test.", "expires_at": now + 100},
+            {"name": "plain.test.", "expires_at": null},
+        ])
+    );
+    let anchors = fx.engine.dnssec_policy();
+    assert_eq!(
+        anchors.validator.anchors().negative_entries().len(),
+        3,
+        "the engine holds the expiry"
+    );
+
+    // Past the expiry the anchor is gone from the listing.
+    fx.clock.advance(100);
+    let v = admin(&fx, Method::GET, url, None).await.json();
+    assert_eq!(
+        v["negative_trust_anchors"],
+        json!(["forever.example.", "plain.test."])
+    );
+    assert_eq!(
+        v["negative_trust_anchor_entries"].as_array().unwrap().len(),
+        2
+    );
+
+    // An expiry that is not in the future, or does not fit, is refused; nothing changes.
+    for expires in [json!(now + 100), json!(0), json!(-5), json!(i64::MAX)] {
+        let res = admin(
+            &fx,
+            Method::PATCH,
+            url,
+            Some(json!({"negative_trust_anchors": [{"name": "late.test", "expires_at": expires}]})),
+        )
+        .await;
+        assert_eq!(
+            res.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{expires}: {}",
+            res.body
+        );
+    }
+    let res = admin(
+        &fx,
+        Method::PATCH,
+        url,
+        Some(json!({"negative_trust_anchors": [{"name": "x.test", "bogus": 1}]})),
+    )
+    .await;
+    assert!(res.status.is_client_error());
+    let v = admin(&fx, Method::GET, url, None).await.json();
+    assert_eq!(v["negative_trust_anchors"].as_array().unwrap().len(), 2);
 }

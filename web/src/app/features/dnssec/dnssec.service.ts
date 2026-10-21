@@ -9,6 +9,7 @@ export type DnssecPolicyInput = Schemas['DnssecPolicyInput'];
 export type DsExport = Schemas['DsExport'];
 export type DsRecord = Schemas['DsRecordView'];
 export type KeyView = Schemas['KeyView'];
+export type RolloverRole = Schemas['RolloverRoleView'];
 export type ValidationSettings = Schemas['ValidationSettings'];
 export type ValidationPatch = Schemas['ValidationPatch'];
 export type ValidationMode = Schemas['ValidationMode'];
@@ -41,6 +42,10 @@ export class DnssecService {
   }
   confirmDs(zone: string, keyId: number): Observable<unknown> {
     return this.api.post(this.path(zone, `/keys/${keyId}/ds-confirmed`), {});
+  }
+
+  abortRollover(zone: string, role?: string): Observable<DnssecView> {
+    return this.api.post(this.path(zone, '/rollover/abort'), role ? { role } : {});
   }
 
   validation(): Observable<ValidationSettings> {

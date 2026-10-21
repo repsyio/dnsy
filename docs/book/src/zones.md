@@ -24,7 +24,8 @@ name does not match its `origin` is rejected.
   ],
   "dnssec": {"enabled": false, "algorithm": 13, "key_layout": "csk", "denial": "nsec3",
              "nsec3": {"iterations": 0, "salt": "", "opt_out": false},
-             "signature_validity_days": 14, "refresh_days": 5, "dnskey_ttl": 3600}
+             "signature_validity_days": 14, "refresh_days": 5, "dnskey_ttl": 3600,
+             "propagation_delay": 3600}
 }
 ```
 

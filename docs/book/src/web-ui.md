@@ -285,8 +285,10 @@ announced through `role="status"`.
 **Users** (`/users`, admins only; other roles are redirected to the dashboard and the nav entry is
 hidden) lists accounts and lets an admin create a user, change a role, reset a password and delete
 a user after a confirmation. The role and password changes end that user's sessions. You cannot
-delete your own account from here. The API has no "disable" operation, so accounts are removed
-rather than disabled.
+delete or disable your own account from here. **Disable** (after a confirmation) blocks login and
+ends the user's sessions and tokens at once; **Enable** restores the account (tokens work again,
+old sessions do not). Disabled users carry a badge. The last active admin cannot be disabled or
+deleted (the API answers 409 and the dialog shows it).
 
 **Tokens** (`/tokens`) manages the signed-in user's own API tokens:
 
@@ -332,10 +334,13 @@ Open a zone and choose the **DNSSEC** tab. It reads `GET /zones/{name}/dnssec`.
   validating resolvers return SERVFAIL for the zone) and asks you to type the zone name.
 - **Keys**: role, key tag, state (`generated`, `published`, `active`, `retired`, `removed`) and
   the timers present (created, published, active, retired, removed, DS confirmed), plus the
-  algorithm, denial settings and the **next re-sign** time.
+  algorithm, denial settings, the **propagation delay** and the **next re-sign** time.
 - **Rollover**: "Start rollover" on an active key opens a confirmation, then calls
-  `POST .../keys/{id}/rollover`. A KSK or CSK rollover waits for the new DS: publish it at the
-  registrar, then use "DS confirmed at registrar" on the new key.
+  `POST .../keys/{id}/rollover`. It is offered for every role that has no rollover under way, so
+  a ZSK can roll while a KSK rollover waits. A KSK or CSK rollover waits for the new DS: publish
+  it at the registrar, then use "DS confirmed at registrar" on the new key. While rollovers run
+  a panel lists **every** one (role and state), and "Abort rollover" (after a confirmation that
+  reminds you to remove a published new DS) calls `POST .../dnssec/rollover/abort`.
 - **Unencrypted keys**: when `keys_encrypted` is false a warning banner (`role="alert"`) tells you
   to set a key passphrase.
 - **DS for the registrar**: DS records are listed SHA-256 first; "Copy for registrar (SHA-256)"
@@ -351,9 +356,11 @@ The **DNSSEC** entry in the navigation (`/dnssec`) shows and changes validation 
 - **Mode**: `strict` (recommended; bogus answers become SERVFAIL), `permissive` (validated and
   logged, bogus answers still returned) or `off`. Choosing a weaker mode asks for confirmation and
   says what it exposes you to. Changes are not saved to the configuration file.
-- **Negative trust anchors**: names at and below which validation is skipped (RFC 7646). The API
-  stores names only, so there is no expiry: remove an entry when the zone is fixed. A name is
-  checked and lowercased before it is sent.
+- **Negative trust anchors**: names at and below which validation is skipped (RFC 7646). Each
+  entry shows its expiry or "no expiry". The add form takes an optional expiry in whole hours
+  from now (1 to 8760); after it passes the anchor stops applying and disappears from the list.
+  Without an expiry, remove the entry when the zone is fixed. A name is checked and lowercased
+  before it is sent.
 - **Trust anchors**: read-only table (zone, kind, key tag, algorithm, digest); they come from the
   configuration.
 - **Counters**: secure and bogus answers and signed zones for the status window, and a banner when

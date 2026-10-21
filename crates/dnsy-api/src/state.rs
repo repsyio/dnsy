@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dnsy_auth::{BootstrapCode, ClientCertService, SessionService, TokenService, UserService};
+use dnsy_dnssec::{Clock, SystemClock};
 use dnsy_engine::Engine;
 use dnsy_filter::{RuleStore, SourceStore};
 use dnsy_resolver::Cache;
@@ -67,6 +68,8 @@ pub struct ApiState {
     pub signing: Option<ZoneSigning>,
     /// Run-time validation settings (the engine); the settings routes answer 503 without it.
     pub validation: Option<Arc<dyn ValidationControl>>,
+    /// Time source for negative-trust-anchor expiry; tests inject a manual clock.
+    pub clock: Arc<dyn Clock>,
 }
 
 /// Default cap on concurrent live-tail connections.
@@ -99,6 +102,7 @@ impl ApiState {
             dnssec_clock_untrusted: Arc::new(AtomicBool::new(false)),
             signing: None,
             validation: None,
+            clock: Arc::new(SystemClock),
         }
     }
 
@@ -171,6 +175,13 @@ impl ApiState {
     #[must_use]
     pub fn with_signing(mut self, signing: ZoneSigning) -> ApiState {
         self.signing = Some(signing);
+        self
+    }
+
+    /// Use `clock` for negative-trust-anchor expiry instead of the system clock.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> ApiState {
+        self.clock = clock;
         self
     }
 

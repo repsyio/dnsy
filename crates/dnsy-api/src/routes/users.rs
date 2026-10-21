@@ -36,6 +36,10 @@ pub struct UserInfo {
     pub role: Role,
     /// Unix seconds.
     pub created_at: i64,
+    /// A disabled user cannot log in and their tokens are refused.
+    pub disabled: bool,
+    /// Unix seconds when the user was disabled.
+    pub disabled_at: Option<i64>,
 }
 
 impl From<User> for UserInfo {
@@ -45,6 +49,8 @@ impl From<User> for UserInfo {
             username: u.username,
             role: u.role,
             created_at: u.created_at,
+            disabled: u.disabled_at.is_some(),
+            disabled_at: u.disabled_at,
         }
     }
 }
@@ -67,6 +73,9 @@ pub struct UpdateUser {
     pub role: Option<Role>,
     /// Reset the password (at least 8 characters); ends all of the user's sessions.
     pub password: Option<String>,
+    /// `true` disables the user (sessions end at once, tokens are refused, login fails);
+    /// `false` enables them again. The last active admin cannot be disabled.
+    pub disabled: Option<bool>,
 }
 
 /// Routes relative to `/api/v1`.
@@ -130,7 +139,7 @@ async fn get_user(
     Ok(Json(state.users.get(UserId(id)).await?.into()))
 }
 
-/// Change a user's role and/or reset the password.
+/// Change a user's role, reset the password, and/or disable or enable the user.
 #[utoipa::path(patch, path = "/users/{id}", tag = "users", security(("bearer" = []), ("session" = [])),
     params(("id" = i64, Path, description = "User id")),
     request_body = UpdateUser,
@@ -139,7 +148,7 @@ async fn get_user(
         (status = 400, body = Problem, content_type = "application/problem+json"),
         (status = 403, body = Problem, content_type = "application/problem+json"),
         (status = 404, body = Problem, content_type = "application/problem+json"),
-        (status = 409, description = "Would demote the last admin", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "Would demote or disable the last active admin", body = Problem, content_type = "application/problem+json"),
     ))]
 async fn update_user(
     _: RequireScope<AdminScope>,
@@ -156,13 +165,17 @@ async fn update_user(
     if let Some(role) = body.role {
         user = state.users.update_role(id, role).await?;
     }
+    if let Some(disabled) = body.disabled {
+        user = state.users.set_disabled(id, disabled).await?;
+    }
     if let Some(password) = &body.password {
         state.users.set_password(id, password).await?;
     }
     Ok(Json(user.into()))
 }
 
-/// Delete a user. Their tokens and sessions go with them.
+/// Delete a user. Their tokens and sessions go with them. The last active admin cannot be
+/// deleted.
 #[utoipa::path(delete, path = "/users/{id}", tag = "users", security(("bearer" = []), ("session" = [])),
     params(("id" = i64, Path, description = "User id")),
     responses(

@@ -34,8 +34,9 @@ pub struct TrustAnchorInfo {
 pub trait ValidationControl: Send + Sync {
     fn mode(&self) -> Validation;
     fn set_mode(&self, mode: Validation);
-    fn negative_trust_anchors(&self) -> Vec<Name>;
-    fn set_negative_trust_anchors(&self, names: Vec<Name>);
+    /// The negative trust anchors with their expiry (Unix seconds), expired ones included.
+    fn negative_trust_anchors(&self) -> Vec<(Name, Option<u32>)>;
+    fn set_negative_trust_anchors(&self, entries: Vec<(Name, Option<u32>)>);
     fn trust_anchors(&self) -> Vec<TrustAnchorInfo>;
 }
 
@@ -48,16 +49,16 @@ impl<E: Exchange + 'static> ValidationControl for Engine<E> {
         self.set_dnssec_mode(mode);
     }
 
-    fn negative_trust_anchors(&self) -> Vec<Name> {
+    fn negative_trust_anchors(&self) -> Vec<(Name, Option<u32>)> {
         self.dnssec_policy()
             .validator
             .anchors()
-            .negative_anchors()
+            .negative_entries()
             .to_vec()
     }
 
-    fn set_negative_trust_anchors(&self, names: Vec<Name>) {
-        self.set_negative_trust_anchors(names);
+    fn set_negative_trust_anchors(&self, entries: Vec<(Name, Option<u32>)>) {
+        self.set_negative_trust_anchor_entries(entries);
     }
 
     fn trust_anchors(&self) -> Vec<TrustAnchorInfo> {

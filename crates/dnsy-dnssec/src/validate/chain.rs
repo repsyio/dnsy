@@ -53,6 +53,21 @@ impl<'a, F: DnssecFetcher> Ctx<'a, F> {
         self.min_ttl
     }
 
+    /// True when `name` is under an unexpired negative trust anchor. An answer accepted
+    /// because of an expiring anchor must not be cached past that expiry, so its remaining
+    /// time caps the TTL.
+    pub(super) fn negative_anchor(&mut self, name: &Name) -> bool {
+        match self.validator.anchors.negative_ttl(name, self.now) {
+            None => false,
+            Some(cap) => {
+                if let Some(cap) = cap {
+                    self.note_ttl(cap);
+                }
+                true
+            }
+        }
+    }
+
     fn note_ttl(&mut self, ttl: u32) {
         self.min_ttl = Some(self.min_ttl.map_or(ttl, |m| m.min(ttl)));
     }
@@ -95,7 +110,7 @@ impl<'a, F: DnssecFetcher> Ctx<'a, F> {
         section: &[Record],
     ) -> Res<(Verdict, Option<Name>)> {
         let owner = &rrset[0].name;
-        if self.validator.anchors.is_negative(owner) {
+        if self.negative_anchor(owner) {
             return Ok((Verdict::Insecure(None), None));
         }
         let anchor = self.closest_anchor(owner)?;

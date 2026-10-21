@@ -6,6 +6,8 @@ import {
   normalizeNta,
   nsec3Error,
   ntaError,
+  ntaExpiresAt,
+  ntaExpiryError,
   orderDs,
   preferredDs,
 } from './dnssec-logic';
@@ -73,5 +75,20 @@ describe('dnssec logic', () => {
       { label: 'Created', at: 1 },
       { label: 'Active', at: 2 },
     ]);
+  });
+});
+
+describe('negative trust anchor expiry', () => {
+  it('accepts whole hours or nothing', () => {
+    expect(ntaExpiryError('')).toBeNull();
+    expect(ntaExpiryError(' 24 ')).toBeNull();
+    for (const bad of ['0', '-1', '1.5', 'x', '8761']) {
+      expect(ntaExpiryError(bad), bad).toContain('whole number of hours');
+    }
+  });
+
+  it('computes the expiry from the clock', () => {
+    expect(ntaExpiresAt('', 1000)).toBeNull();
+    expect(ntaExpiresAt('2', 1000)).toBe(1000 + 7200);
   });
 });

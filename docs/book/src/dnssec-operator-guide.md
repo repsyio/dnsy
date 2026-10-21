@@ -88,10 +88,23 @@ curl -s -X PATCH -H "$A" -H 'Content-Type: application/json' \
   -d '{"negative_trust_anchors":["dnssec-failed.org"]}' http://127.0.0.1:5380/api/v1/settings/dnssec
 ```
 
-The list replaces the old one and the cache is flushed. The root cannot be an NTA (422, "use
-mode off"). NTAs set through the API are lost on restart; put long-lived ones in the file and
-remove them as soon as the zone is fixed. While an NTA is active the reply still carries the
-EDE explaining why the chain does not validate.
+The list replaces the old one and the cache is flushed. An entry is a name, or an object with an
+expiry (Unix time in the future); the anchor stops applying by itself at that moment:
+
+```sh
+curl -s -X PATCH -H "$A" -H 'Content-Type: application/json' \
+  -d '{"negative_trust_anchors":[{"name":"dnssec-failed.org","expires_at":1893456000}]}' \
+  http://127.0.0.1:5380/api/v1/settings/dnssec
+```
+
+`GET` returns `negative_trust_anchors` (names) and `negative_trust_anchor_entries` (name and
+`expires_at`, `null` for none); expired anchors are left out. Answers accepted because of an
+expiring anchor are cached for no longer than the time it has left, so nothing outlives it.
+The web UI takes the expiry as hours from now. Give an NTA an expiry whenever you can: without
+one it stays until you remove it. The root cannot be an NTA (422, "use mode off"). NTAs set
+through the API are lost on restart; put long-lived ones in the file and remove them as soon
+as the zone is fixed. While an NTA is active the reply still carries the EDE explaining why
+the chain does not validate.
 
 ### Clock requirements
 
@@ -197,9 +210,11 @@ Signing is configured per zone in the `dnssec` block of its JSON file (see
 | `signature_validity_days` | 14 | |
 | `refresh_days` | 5 | re-sign this long before expiry; must be below the validity |
 | `dnskey_ttl` | 3600 | drives rollover timing |
+| `propagation_delay` | 3600 | seconds added to `dnskey_ttl` before a published key may sign; 0 to 604800 |
 
 Enable by editing the file (hot reload picks it up within a second or so, and the timer signs
-within a minute), or through the API:
+within a minute), or through the API. Enabling is idempotent: sending `enabled: true` again, or
+concurrently with a zone reload, never creates a second key set:
 
 ```sh
 curl -s -X PUT -H "$A" -H 'Content-Type: application/json' \
@@ -247,10 +262,8 @@ Supply it as `DNSY_DNSSEC_PASSPHRASE` (an empty value counts as unset) or as the
 
 Set it **before** the first key is created. Without a passphrase the keys are stored
 unencrypted, `dnsy` warns `private keys are stored unencrypted` at every start and the API
-shows `keys_encrypted: false`. Keys are encrypted individually when they are created, so
-adding a passphrase later does not encrypt existing keys, and there is no command to change the
-passphrase: plan it up front and store it in your secret manager, apart from the database
-backups. A lost or wrong passphrase makes the keys unusable:
+shows `keys_encrypted: false`. Store the passphrase in your secret manager, apart from the
+database backups. A lost or wrong passphrase makes the keys unusable:
 
 ```console
 $ DNSY_DNSSEC_PASSPHRASE=wrong dnsy zone export example.com --signed
@@ -258,13 +271,51 @@ ERROR dnsy_zone::signed: zone signing failed zone=example.com. error=cannot decr
 dnsy: zone `example.com.` could not be signed (see the log)
 ```
 
+#### Changing the passphrase
+
+The change re-encrypts every stored key under the new passphrase in one database transaction:
+all keys move or none does. It also encrypts keys that were stored unencrypted, so it is the
+way to add a passphrase to an existing installation. While it runs no key is created or read.
+
+```sh
+# offline, with the current passphrase in the environment:
+DNSY_DNSSEC_PASSPHRASE=old-phrase DNSY_DNSSEC_NEW_PASSPHRASE=new-phrase \
+  dnsy dnssec passphrase change
+# or against the running server (admin token); it switches to the new passphrase at once:
+curl -s -X POST -H "$A" -H 'Content-Type: application/json' \
+  -d '{"new_passphrase":"new-phrase"}' http://127.0.0.1:5380/api/v1/dnssec/passphrase
+```
+
+Passphrases need at least 8 characters. The CLI also reads the new passphrase from stdin
+(`--new-passphrase-stdin`). **Afterwards update `DNSY_DNSSEC_PASSPHRASE` or the passphrase
+file** before the next start; a server started with the old passphrase cannot read the keys.
+After the offline command, restart a running server with the new passphrase. The passphrase
+never appears in logs or responses.
+
 ### Where the keys live and backups
 
 Keys are rows of the `dnssec_keys` table in `<server.data_dir>/dnsy.db` (default
-`/var/lib/dnsy/dnsy.db`); the public part is also in the DNSKEY records. There is no key
-export command or API (the bundle functions in the library are not exposed). The backup is
-the SQLite database, taken as described in [Operations](operations.md#backups), plus the
-passphrase kept separately. Test a restore: start a copy with the passphrase and run
+`/var/lib/dnsy/dnsy.db`); the public part is also in the DNSKEY records. Two backups work:
+
+- An **encrypted key bundle**: every non-removed key (or one zone's), sealed with AES-256-GCM
+  under a bundle passphrase that may differ from the key passphrase:
+
+  ```sh
+  DNSY_DNSSEC_BACKUP_PASSPHRASE=bundle-phrase dnsy dnssec keys export keys.bundle
+  DNSY_DNSSEC_BACKUP_PASSPHRASE=bundle-phrase dnsy dnssec keys import keys.bundle
+  curl -s -X POST -H "$A" -H 'Content-Type: application/json' \
+    -d '{"passphrase":"bundle-phrase","zone":"example.com."}' \
+    http://127.0.0.1:5380/api/v1/dnssec/keys/export   # {"bundle":"<base64>"}
+  ```
+
+  The CLI creates the file with mode 0600 and refuses to overwrite one; `--zone` limits it and
+  `--passphrase-stdin` reads the passphrase from stdin. Import re-seals the keys under the
+  store's passphrase and skips keys that already exist. The API export needs the admin scope
+  (the response is ciphertext only). Keep the bundle passphrase apart from the bundle.
+- The SQLite database, taken as described in [Operations](operations.md#backups), plus the
+  passphrase kept separately.
+
+Test a restore: start a copy with the passphrase and run
 `dnsy dnssec keys ds <zone>`; the DS must equal the one at your registrar. The database file is
 created with the process umask (0644 in the test above); restrict `data_dir` to the service
 user. Removed keys have their private key wiped from the row.
@@ -318,9 +369,10 @@ Keys move through `generated -> published -> active -> retired -> removed`. A ti
 changes show up within about a minute of their due time. Timings used (for `dnskey_ttl` T and
 a signature validity V of 14 days):
 
-- **Propagation** is a fixed 3600 s on top of T (not configurable).
-- A published key may become active after `T + 3600` s.
-- A retired key is removed (and its private key wiped) `T + 3600 + V` after retirement, so
+- **Propagation** (P) is the zone policy's `propagation_delay`, default 3600 s, on top of T.
+  Raise it when secondaries or resolvers are slow to see a new DNSKEY.
+- A published key may become active after `T + P` s (3600 + 3600 with the defaults).
+- A retired key is removed (and its private key wiped) `T + P + V` after retirement, so
   that the last signature it made has expired.
 - A ZSK rolls by itself (pre-publish). A KSK or CSK also waits for you to confirm that its DS
   is at the parent (double-DS); DNSY never contacts the registrar.
@@ -361,21 +413,24 @@ from key tag 44434 to 31218 on the pass after.
    Add the new DS at the registrar and **keep the old one**.
 3. Wait for the parent to publish it, and then for the DS TTL of the *old* DS records to
    pass, so every cache holds both. Check with `dig +short DS example.com @<parent server>`.
-4. Confirm to DNSY (the CLI has no command for this, use the API):
+4. Confirm to DNSY, with the CLI (it picks the one published KSK or CSK waiting for a DS;
+   `--key <id>` names it when there are several), the API or the zone's DNSSEC tab:
 
    ```console
+   $ dnsy dnssec ds-confirmed example.com
+   DS of key 4 confirmed
    $ curl -s -X POST -H "$A" -w '%{http_code}\n' \
        http://127.0.0.1:5380/api/v1/zones/example.com./dnssec/keys/4/ds-confirmed
    204
    ```
 
-5. DNSY activates the new key once `T + 3600` s have passed since publication, retires the old
+5. DNSY activates the new key once `T + P` s have passed since publication, retires the old
    one and re-signs the DNSKEY set with the new KSK. Watch
    `GET /api/v1/zones/example.com./dnssec` (`rollover.state` is `in_progress` and key 4 shows
    `ds_confirmed_at`; it returns to `idle` when done) or `dnsy dnssec keys list`.
 6. When the new KSK is active and `T` plus the propagation time have elapsed, remove the
    **old** DS at the registrar. DNSY does not track this step, and it removes the old
-   DNSKEY after `T + 3600 + V`; remove the old DS well before that, never after.
+   DNSKEY after `T + P + V`; remove the old DS well before that, never after.
 
 ### Timeline example (T = 3600, parent DS TTL 24 h)
 
@@ -398,20 +453,35 @@ the old DNSKEY set for T, the old DS for the parent's DS TTL, and signatures for
 - `GET /api/v1/dnssec/status` and the query log for a rise in `bogus`.
 - The server logs `dnssec key states advanced transitions=N` for every change.
 
-The `rollover` view only names one role at a time; if you start a ZSK and a KSK rollover
-together it shows the ZSK one, so use the key list. Do ZSK and KSK rollovers one after the
-other anyway.
+The `rollover` view lists every rollover under way in `rollover.rollovers` (role, state, new
+key id), so a KSK and a ZSK rollover running together both show, in the API and in the UI.
+(`rollover.state`, `role` and `new_key_id` summarise: `awaiting_ds_confirmation` wins, and the
+last two name the first entry.) Doing ZSK and KSK rollovers one after the other is still the
+easier path.
 
 ### Abort and rollback
 
-There is no abort command. What you can do:
+A rollover that has not yet switched keys can be aborted: the incoming key is withdrawn (its
+private key destroyed), the current key stays active, and the DNSKEY set is re-signed without
+the new key. A new rollover can start right after.
 
-- **Before confirming a KSK/CSK DS** nothing at the parent depends on the new key, so you can
-  simply wait. The new key stays `published` (a harmless extra DNSKEY) until you confirm, but
-  it blocks further rollovers of that role. Remove the new DS from the registrar if you
-  added it. Do not delete rows from the database by hand unless you have a backup.
-- **After activation** the old key is `retired`, still published and still validates old
-  signatures. Do not remove the old DS yet; fix the problem and roll again.
+```console
+$ dnsy dnssec rollover abort example.com            # every rollover of the zone
+$ dnsy dnssec rollover abort example.com --role ksk # only the KSK one
+aborted ksk rollover: key 4 (tag 51234) withdrawn; its DS was confirmed, remove it at the registrar
+$ curl -s -X POST -H "$A" -H 'Content-Type: application/json' -d '{"role":"ksk"}' \
+    http://127.0.0.1:5380/api/v1/zones/example.com./dnssec/rollover/abort
+```
+
+The API answers with the zone's DNSSEC state; the zone's DNSSEC tab has an **Abort rollover**
+button that asks for confirmation. It answers 409 when no rollover is in progress. Admin
+scope is required.
+
+- **Remove the new DS** from the registrar if you already added it; leaving a DS for a key the
+  zone no longer serves makes validators fail once the old DS is gone. If you confirmed the
+  DS, the CLI reminds you.
+- **After activation** the old key is `retired` (the new one is already `active`) and the
+  rollover cannot be aborted. Do not remove the old DS yet; fix the problem and roll again.
 - If the new DS was wrong (typo), the old KSK is still active: replace the DS at the registrar
   with the correct value. Because the old DS stayed, nothing breaks meanwhile.
 
@@ -419,7 +489,7 @@ There is no abort command. What you can do:
 
 - **Key compromised.** Start a rollover of that role now. For a KSK the compromised key still
   signs until you confirm the DS, so confirm as soon as the new DS is visible, then remove the
-  old DS promptly. Note that waiting out `T + 3600 + V` for removal cannot be shortened with
+  old DS promptly. Note that waiting out `T + P + V` for removal cannot be shortened with
   a command.
 - **Zone is bogus and you can't fix it quickly.** Remove the DS at the registrar. After the
   parent's DS TTL the zone becomes insecure (resolvers accept it unsigned). Then repair and
@@ -438,7 +508,6 @@ There is no abort command. What you can do:
 | forgot to update the DS during a KSK rollover | new key never confirmed, or the old DS removed before the new KSK became active | do not remove the old DS; confirm the new one |
 | signing fails after a restart | passphrase env or file not set (`keys are encrypted but no passphrase is configured`) or changed (`cannot decrypt key material`) | restore the original passphrase |
 | lost keys (database lost, no backup) | cannot re-create the same key | remove the DS at the registrar, wait for its TTL, enable signing again to get new keys, then publish the new DS |
-| duplicate keys after enabling over the API | in the tested build, `PUT .../dnssec` with `enabled: true` on a zone without keys created a second set of keys (visible in `keys list`); enabling by editing the zone file created one | check `keys list` after enabling; prefer the file |
 
 ## Security notes
 

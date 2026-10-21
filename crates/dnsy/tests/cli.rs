@@ -354,6 +354,235 @@ fn users_and_tokens() {
     );
 }
 
+/// Runs a command with extra environment variables and optional stdin.
+fn run_with(env: &Env, vars: &[(&str, &str)], stdin: Option<&str>, args: &[&str]) -> Output {
+    let mut c = env.command(args);
+    for (k, v) in vars {
+        c.env(k, v);
+    }
+    c.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    let mut pipe = child.stdin.take().unwrap();
+    if let Some(text) = stdin {
+        pipe.write_all(text.as_bytes()).unwrap();
+    }
+    drop(pipe);
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn user_disable_and_enable() {
+    let env = Env::new(false);
+    let create = |name: &str, role: &str| {
+        let out = run_with(
+            &env,
+            &[],
+            Some("a-long-password\n"),
+            &["user", "create", name, "--role", role, "--password-stdin"],
+        );
+        assert!(out.status.success());
+    };
+    create("root", "admin");
+    create("bob", "viewer");
+    assert!(
+        !env.run(&["user", "disable", "root"]).status.success(),
+        "the last active admin stays enabled"
+    );
+    assert!(env.ok(&["user", "disable", "bob"]).contains("bob disabled"));
+    assert!(env.ok(&["user", "list"]).contains("(disabled)"));
+    assert!(!env.run(&["user", "disable", "nobody"]).status.success());
+    assert!(env.ok(&["user", "enable", "bob"]).contains("bob enabled"));
+    assert!(!env.ok(&["user", "list"]).contains("(disabled)"));
+}
+
+#[test]
+fn dnssec_ds_confirmed_and_rollover_abort() {
+    let env = Env::new(true);
+    env.ok(&["zone", "export", "example.test", "--signed"]);
+    assert!(
+        !env.run(&["dnssec", "ds-confirmed", "example.test"])
+            .status
+            .success(),
+        "nothing waits for a DS"
+    );
+    assert!(
+        !env.run(&["dnssec", "rollover", "abort", "example.test"])
+            .status
+            .success(),
+        "nothing to abort"
+    );
+    env.ok(&["dnssec", "keys", "rollover", "example.test"]);
+    let confirmed = env.ok(&["dnssec", "ds-confirmed", "example.test"]);
+    assert!(confirmed.contains("confirmed"), "{confirmed}");
+    assert!(
+        !env.run(&["dnssec", "ds-confirmed", "example.test"])
+            .status
+            .success(),
+        "already confirmed"
+    );
+    assert!(
+        !env.run(&[
+            "dnssec",
+            "rollover",
+            "abort",
+            "example.test",
+            "--role",
+            "xsk"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        !env.run(&[
+            "dnssec",
+            "rollover",
+            "abort",
+            "example.test",
+            "--role",
+            "zsk"
+        ])
+        .status
+        .success(),
+        "no zsk rollover"
+    );
+    let aborted = env.ok(&["dnssec", "rollover", "abort", "example.test"]);
+    assert!(
+        aborted.contains("aborted csk rollover") && aborted.contains("remove it at the registrar"),
+        "{aborted}"
+    );
+    let keys = env.ok(&["dnssec", "keys", "list", "example.test"]);
+    assert!(
+        keys.contains("removed") && keys.contains("active"),
+        "{keys}"
+    );
+    env.ok(&["dnssec", "keys", "rollover", "example.test"]);
+    let ds = env.run(&["dnssec", "ds-confirmed", "example.test", "--key", "99"]);
+    assert!(!ds.status.success());
+}
+
+#[test]
+fn dnssec_key_backup_and_restore() {
+    let env = Env::new(true);
+    env.ok(&["zone", "export", "example.test", "--signed"]);
+    let file = env.dir.path().join("keys.bundle");
+    let file_arg = file.to_str().unwrap();
+    let pass = ("DNSY_DNSSEC_BACKUP_PASSPHRASE", "backup-pass-phrase");
+
+    assert!(
+        !env.run(&["dnssec", "keys", "export", file_arg])
+            .status
+            .success(),
+        "no passphrase"
+    );
+    let short = run_with(
+        &env,
+        &[("DNSY_DNSSEC_BACKUP_PASSPHRASE", "short")],
+        None,
+        &["dnssec", "keys", "export", file_arg],
+    );
+    assert!(!short.status.success());
+    let out = run_with(&env, &[pass], None, &["dnssec", "keys", "export", file_arg]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bytes = std::fs::read(&file).unwrap();
+    assert!(!bytes.is_empty() && !String::from_utf8_lossy(&bytes).contains("example.test"));
+    assert!(
+        !run_with(&env, &[pass], None, &["dnssec", "keys", "export", file_arg])
+            .status
+            .success(),
+        "an existing file is never overwritten"
+    );
+
+    // Restore into another installation (stdin passphrase), then again: nothing new.
+    let other = Env::new(false);
+    let wrong = run_with(
+        &other,
+        &[],
+        Some("not-the-passphrase\n"),
+        &["dnssec", "keys", "import", file_arg, "--passphrase-stdin"],
+    );
+    assert!(!wrong.status.success());
+    let ok = run_with(
+        &other,
+        &[],
+        Some("backup-pass-phrase\n"),
+        &["dnssec", "keys", "import", file_arg, "--passphrase-stdin"],
+    );
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("1 key(s) imported"));
+    let again = run_with(
+        &other,
+        &[pass],
+        None,
+        &["dnssec", "keys", "import", file_arg],
+    );
+    assert!(String::from_utf8_lossy(&again.stdout).contains("0 key(s) imported"));
+    let keys = other.ok(&["dnssec", "keys", "list", "example.test"]);
+    assert!(keys.contains("csk") && keys.contains("active"), "{keys}");
+}
+
+#[test]
+fn dnssec_passphrase_change_reencrypts_keys() {
+    let env = Env::new(true);
+    let old = [("DNSY_DNSSEC_PASSPHRASE", "old-pass-phrase")];
+    let new = [("DNSY_DNSSEC_PASSPHRASE", "new-pass-phrase")];
+    let export = |vars: &[(&str, &str)]| {
+        run_with(
+            &env,
+            vars,
+            None,
+            &["zone", "export", "example.test", "--signed"],
+        )
+    };
+    assert!(export(&old).status.success());
+
+    let short = run_with(
+        &env,
+        &old,
+        Some("short\n"),
+        &["dnssec", "passphrase", "change", "--new-passphrase-stdin"],
+    );
+    assert!(!short.status.success());
+    let none = run_with(&env, &old, None, &["dnssec", "passphrase", "change"]);
+    assert!(!none.status.success(), "no new passphrase given");
+    let wrong = run_with(
+        &env,
+        &[
+            ("DNSY_DNSSEC_PASSPHRASE", "wrong-pass-phrase"),
+            ("DNSY_DNSSEC_NEW_PASSPHRASE", "new-pass-phrase"),
+        ],
+        None,
+        &["dnssec", "passphrase", "change"],
+    );
+    assert!(!wrong.status.success(), "the current passphrase is needed");
+    assert!(
+        export(&old).status.success(),
+        "a failed change leaves the keys alone"
+    );
+
+    let changed = run_with(
+        &env,
+        &[old[0], ("DNSY_DNSSEC_NEW_PASSPHRASE", "new-pass-phrase")],
+        None,
+        &["dnssec", "passphrase", "change"],
+    );
+    let stdout = String::from_utf8_lossy(&changed.stdout);
+    assert!(
+        changed.status.success() && stdout.contains("1 key(s) re-encrypted"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("pass-phrase"));
+    assert!(
+        !export(&old).status.success(),
+        "old passphrase no longer works"
+    );
+    assert!(export(&new).status.success());
+}
+
 #[test]
 fn zone_export_and_dnssec_keys() {
     let env = Env::new(true);

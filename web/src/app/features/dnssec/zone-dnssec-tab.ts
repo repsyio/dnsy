@@ -30,7 +30,8 @@ type Action =
   | { kind: 'enable' }
   | { kind: 'disable' }
   | { kind: 'rollover'; key: KeyView }
-  | { kind: 'confirm-ds'; key: KeyView };
+  | { kind: 'confirm-ds'; key: KeyView }
+  | { kind: 'abort' };
 
 const REGISTRAR_ENABLE =
   'DNSY will create the keys and sign the zone now. Signing alone does not make the zone secure: ' +
@@ -40,6 +41,10 @@ const REGISTRAR_DISABLE =
   'Remove the DS record at your registrar first and wait for its TTL to pass. If the DS stays ' +
   'while the zone is unsigned, validating resolvers return SERVFAIL for every name in this zone. ' +
   'Disabling stops signing and removes the signatures from served answers.';
+const ABORT_ROLLOVER =
+  'The incoming keys are withdrawn and destroyed, and the current keys stay in use. If you already ' +
+  'published a new DS at your registrar, remove it there again; leaving it makes validating ' +
+  'resolvers fail. A rollover that has already switched to the new key cannot be aborted.';
 const REGISTRAR_ROLLOVER =
   'A new key is generated and published next to the old one. For a KSK or CSK you must then ' +
   'publish the new key DS at your registrar and confirm it here; the old key is retired only ' +
@@ -215,6 +220,10 @@ const REGISTRAR_ROLLOVER =
                   <dt class="text-xs uppercase tracking-wider text-muted">Next re-sign</dt>
                   <dd>{{ fmt(v.next_resign) }}</dd>
                 </div>
+                <div>
+                  <dt class="text-xs uppercase tracking-wider text-muted">Propagation delay</dt>
+                  <dd>{{ v.propagation_delay }} s</dd>
+                </div>
               </dl>
               <div class="flex flex-wrap gap-3">
                 <button class="btn" type="button" [disabled]="busy()" (click)="download()">
@@ -231,15 +240,30 @@ const REGISTRAR_ROLLOVER =
               </div>
             </div>
 
-            @if (v.rollover.state !== 'idle') {
-              <p class="mb-4 border border-cyan/30 p-3 text-sm" role="status">
-                Rollover of the {{ v.rollover.role ?? 'key' }}:
-                @if (v.rollover.state === 'awaiting_ds_confirmation') {
-                  waiting for you to publish the new DS at the registrar and confirm it below.
-                } @else {
-                  in progress, it finishes by itself.
-                }
-              </p>
+            @if (v.rollover.rollovers.length > 0) {
+              <div class="mb-4 border border-cyan/30 p-3 text-sm" role="status">
+                <ul class="mb-3 grid gap-1">
+                  @for (r of v.rollover.rollovers; track r.new_key_id) {
+                    <li>
+                      Rollover of the <span class="uppercase">{{ r.role }}</span
+                      >:
+                      @if (r.state === 'awaiting_ds_confirmation') {
+                        waiting for you to publish the new DS at the registrar and confirm it below.
+                      } @else {
+                        in progress, it finishes by itself.
+                      }
+                    </li>
+                  }
+                </ul>
+                <button
+                  class="btn btn-danger"
+                  type="button"
+                  [disabled]="busy()"
+                  (click)="action.set({ kind: 'abort' })"
+                >
+                  Abort rollover
+                </button>
+              </div>
             }
 
             <h2 class="mb-2 text-lg text-cyan">Keys</h2>
@@ -286,7 +310,7 @@ const REGISTRAR_ROLLOVER =
                             DS confirmed at registrar
                           </button>
                         }
-                        @if (k.state === 'active' && v.rollover.state === 'idle') {
+                        @if (k.state === 'active' && !rollingRole(v, k.role)) {
                           <button
                             class="cursor-pointer text-orange underline"
                             type="button"
@@ -428,6 +452,10 @@ export class ZoneDnssecTab {
     return formatEpoch(secs);
   }
 
+  protected rollingRole(v: DnssecView, role: string): boolean {
+    return v.rollover.rollovers.some((r) => r.role === role);
+  }
+
   protected needsDsConfirm(k: KeyView): boolean {
     return (
       (k.role === 'ksk' || k.role === 'csk') &&
@@ -479,6 +507,8 @@ export class ZoneDnssecTab {
         return `Start rollover of key ${a.key.key_tag}`;
       case 'confirm-ds':
         return 'Confirm DS at registrar';
+      case 'abort':
+        return 'Abort rollover';
     }
   }
 
@@ -490,6 +520,8 @@ export class ZoneDnssecTab {
         return REGISTRAR_DISABLE;
       case 'rollover':
         return REGISTRAR_ROLLOVER;
+      case 'abort':
+        return ABORT_ROLLOVER;
       case 'confirm-ds':
         return `Confirm only after the DS record for key ${a.key.key_tag} is live at the registrar. DNSY then moves on to retire the old key.`;
     }
@@ -505,6 +537,8 @@ export class ZoneDnssecTab {
         return 'Start rollover';
       case 'confirm-ds':
         return 'DS is published';
+      case 'abort':
+        return 'Abort rollover';
     }
   }
 
@@ -556,18 +590,22 @@ export class ZoneDnssecTab {
         call = this.svc.confirmDs(zone, a.key.id);
         done = 'DS confirmed.';
         break;
+      case 'abort':
+        call = this.svc.abortRollover(zone);
+        done = 'Rollover aborted.';
+        break;
     }
     call.subscribe({
       next: (res) => {
         this.busy.set(false);
         this.closeAction();
         this.notice.set(done);
-        if (a.kind === 'enable' || a.kind === 'disable') {
+        if (a.kind === 'enable' || a.kind === 'disable' || a.kind === 'abort') {
           const v = res as DnssecView;
           this.view.set(v);
           if (v.enabled) this.loadDs();
           else this.ds.set(null);
-          this.changed.emit();
+          if (a.kind !== 'abort') this.changed.emit();
         } else {
           this.load(true);
         }

@@ -11,13 +11,24 @@ use dnsy_config::Config;
 use dnsy_core::{Role, Scope};
 use dnsy_dnssec::{Algorithm, DigestType, KeyRole, KeyState, SystemClock, ds_for};
 use dnsy_proto::Name;
-use dnsy_zone::{KeyStore, ZoneSigning, ZoneStore, export_bind, passphrase_from_environment};
+use dnsy_zone::{
+    KeyStore, Passphrase, ZoneSigning, ZoneStore, export_bind, passphrase_from_environment,
+};
 
-use crate::cli::{DnssecCommand, KeysCommand, TokenCommand, UserCommand, ZoneCommand};
+use crate::cli::{
+    DnssecCommand, KeysCommand, PassphraseCommand, RolloverCommand, TokenCommand, UserCommand,
+    ZoneCommand,
+};
 use crate::{Error, Result, db_path, open_store};
 
 /// Environment variable holding the password for `user create` / `reset-password`.
 const PASSWORD_ENV: &str = "DNSY_PASSWORD";
+/// Environment variable holding the passphrase of a key backup bundle.
+const BACKUP_PASSPHRASE_ENV: &str = "DNSY_DNSSEC_BACKUP_PASSPHRASE";
+/// Environment variable holding the new key passphrase for `dnssec passphrase change`.
+const NEW_PASSPHRASE_ENV: &str = "DNSY_DNSSEC_NEW_PASSPHRASE";
+/// Shortest passphrase accepted for a bundle or the key store.
+const MIN_PASSPHRASE_LEN: usize = 8;
 
 pub(crate) fn openapi(out: &mut impl Write) -> Result<()> {
     writeln!(out, "{}", dnsy_api::openapi().to_pretty_json()?)?;
@@ -150,9 +161,20 @@ pub(crate) async fn user(config: &Config, cmd: UserCommand, out: &mut impl Write
                 writeln!(out, "password (shown once): {pw}")?;
             }
         }
+        UserCommand::Disable { username } => {
+            let id = find_user(&users, &username).await?.id;
+            users.set_disabled(id, true).await?;
+            writeln!(out, "{username} disabled")?;
+        }
+        UserCommand::Enable { username } => {
+            let id = find_user(&users, &username).await?.id;
+            users.set_disabled(id, false).await?;
+            writeln!(out, "{username} enabled")?;
+        }
         UserCommand::List => {
             for u in users.list().await? {
-                writeln!(out, "{:<6} {:<24} {:?}", u.id.0, u.username, u.role)?;
+                let state = if u.is_active() { "" } else { " (disabled)" };
+                writeln!(out, "{:<6} {:<24} {:?}{state}", u.id.0, u.username, u.role)?;
             }
         }
     }
@@ -264,14 +286,143 @@ fn algorithm(n: u8) -> Result<Algorithm> {
     }
 }
 
+/// A passphrase from the first line of stdin or from `env`; never printed.
+fn passphrase_input(
+    from_stdin: bool,
+    env: &str,
+    input: &mut impl std::io::BufRead,
+) -> Result<Passphrase> {
+    let text = if from_stdin {
+        let mut line = String::new();
+        input.read_line(&mut line)?;
+        line.trim_end_matches(['\r', '\n']).to_owned()
+    } else {
+        std::env::var(env).unwrap_or_default()
+    };
+    if text.chars().count() < MIN_PASSPHRASE_LEN {
+        return Err(Error::msg(format!(
+            "the passphrase needs at least {MIN_PASSPHRASE_LEN} characters (stdin with the flag, else ${env})"
+        )));
+    }
+    Ok(Passphrase::new(text))
+}
+
 pub(crate) async fn dnssec(
     config: &Config,
     cmd: DnssecCommand,
     out: &mut impl Write,
 ) -> Result<()> {
-    let DnssecCommand::Keys(cmd) = cmd;
     let keys = key_store(config)?;
     match cmd {
+        DnssecCommand::Keys(cmd) => dnssec_keys(&keys, cmd, out).await,
+        DnssecCommand::Rollover(RolloverCommand::Abort { zone, role }) => {
+            let role = role.as_deref().map(key_role).transpose()?;
+            let aborted = keys.abort_rollover(&zone_name(&zone)?, role).await?;
+            for k in &aborted {
+                writeln!(
+                    out,
+                    "aborted {} rollover: key {} (tag {}) withdrawn{}",
+                    k.role,
+                    k.id,
+                    k.key_tag,
+                    if k.ds_confirmed_at.is_some() {
+                        "; its DS was confirmed, remove it at the registrar"
+                    } else {
+                        ""
+                    }
+                )?;
+            }
+            Ok(())
+        }
+        DnssecCommand::DsConfirmed { zone, key } => {
+            let zone = zone_name(&zone)?;
+            let id = match key {
+                Some(id) => id,
+                None => waiting_for_ds(&keys, &zone).await?,
+            };
+            keys.confirm_ds(id).await?;
+            writeln!(out, "DS of key {id} confirmed")?;
+            Ok(())
+        }
+        DnssecCommand::Passphrase(PassphraseCommand::Change {
+            new_passphrase_stdin,
+        }) => {
+            let new = passphrase_input(
+                new_passphrase_stdin,
+                NEW_PASSPHRASE_ENV,
+                &mut std::io::stdin().lock(),
+            )?;
+            let n = keys.change_passphrase(new).await?;
+            writeln!(
+                out,
+                "{n} key(s) re-encrypted; configure the new passphrase before the next start"
+            )?;
+            Ok(())
+        }
+    }
+}
+
+/// The one published KSK or CSK of `zone` whose DS the operator has not confirmed.
+async fn waiting_for_ds(keys: &KeyStore, zone: &Name) -> Result<i64> {
+    let waiting: Vec<_> = keys
+        .keys(zone)
+        .await?
+        .into_iter()
+        .filter(|k| {
+            k.role.is_sep() && k.state == KeyState::Published && k.ds_confirmed_at.is_none()
+        })
+        .collect();
+    match waiting.as_slice() {
+        [k] => Ok(k.id),
+        [] => Err(Error::msg(format!(
+            "zone `{zone}` has no published KSK or CSK waiting for a DS"
+        ))),
+        _ => Err(Error::msg(
+            "several keys wait for a DS; pick one with --key",
+        )),
+    }
+}
+
+/// `dnssec keys export` and `import`: the passphrase never reaches the output.
+async fn key_backup(keys: &KeyStore, cmd: KeysCommand, out: &mut impl Write) -> Result<()> {
+    match cmd {
+        KeysCommand::Export {
+            file,
+            zone,
+            passphrase_stdin,
+        } => {
+            let pass = passphrase_input(
+                passphrase_stdin,
+                BACKUP_PASSPHRASE_ENV,
+                &mut std::io::stdin().lock(),
+            )?;
+            let zone = zone.as_deref().map(zone_name).transpose()?;
+            keys.export_bundle_to_file(zone.as_ref(), &pass, &file)
+                .await?;
+            writeln!(out, "keys exported to {}", file.display())?;
+        }
+        KeysCommand::Import {
+            file,
+            passphrase_stdin,
+        } => {
+            let pass = passphrase_input(
+                passphrase_stdin,
+                BACKUP_PASSPHRASE_ENV,
+                &mut std::io::stdin().lock(),
+            )?;
+            let added = keys.import_bundle_from_file(&file, &pass).await?;
+            writeln!(out, "{added} key(s) imported")?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn dnssec_keys(keys: &KeyStore, cmd: KeysCommand, out: &mut impl Write) -> Result<()> {
+    match cmd {
+        cmd @ (KeysCommand::Export { .. } | KeysCommand::Import { .. }) => {
+            return key_backup(keys, cmd, out).await;
+        }
         KeysCommand::List { zone } => {
             let zone = zone_name(&zone)?;
             for k in keys.keys(&zone).await? {

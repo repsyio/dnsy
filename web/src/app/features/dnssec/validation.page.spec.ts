@@ -4,6 +4,7 @@ import { ValidationPage } from './validation.page';
 const SETTINGS = {
   validation: 'strict',
   negative_trust_anchors: ['broken.example.'],
+  negative_trust_anchor_entries: [{ name: 'broken.example.', expires_at: null }],
   trust_anchors: [
     { owner: '.', key_tag: 20326, algorithm: 8, kind: 'ds', digest_type: 2, digest: 'E06D' },
     { owner: 'a.', key_tag: 1, algorithm: 13, kind: 'dnskey' },
@@ -101,9 +102,19 @@ describe('ValidationPage', () => {
     ctx.el.querySelector('form')!.dispatchEvent(new Event('submit'));
     const add = ctx.http.expectOne('/api/v1/settings/dnssec');
     expect(add.request.body).toEqual({
-      negative_trust_anchors: ['broken.example.', 'other.test.'],
+      negative_trust_anchors: [
+        { name: 'broken.example.', expires_at: null },
+        { name: 'other.test.', expires_at: null },
+      ],
     });
-    add.flush({ ...SETTINGS, negative_trust_anchors: ['broken.example.', 'other.test.'] });
+    add.flush({
+      ...SETTINGS,
+      negative_trust_anchors: ['broken.example.', 'other.test.'],
+      negative_trust_anchor_entries: [
+        { name: 'broken.example.', expires_at: null },
+        { name: 'other.test.', expires_at: null },
+      ],
+    });
     await ctx.fixture.whenStable();
     ctx.http.expectOne('/api/v1/dnssec/status').flush(STATUS);
     await ctx.fixture.whenStable();
@@ -115,12 +126,51 @@ describe('ValidationPage', () => {
     await ctx.fixture.whenStable();
     clickByText(ctx.el.querySelector('app-confirm-dialog')!, 'Remove');
     const rm = ctx.http.expectOne('/api/v1/settings/dnssec');
-    expect(rm.request.body).toEqual({ negative_trust_anchors: ['broken.example.'] });
-    rm.flush({ ...SETTINGS, negative_trust_anchors: [] });
+    expect(rm.request.body).toEqual({
+      negative_trust_anchors: [{ name: 'broken.example.', expires_at: null }],
+    });
+    rm.flush({ ...SETTINGS, negative_trust_anchors: [], negative_trust_anchor_entries: [] });
     await ctx.fixture.whenStable();
     ctx.http.expectOne('/api/v1/dnssec/status').flush(STATUS);
     await ctx.fixture.whenStable();
     expect(ctx.el.textContent).toContain('No negative trust anchors');
+  });
+
+  it('adds an anchor with an expiry and shows when each anchor expires', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    const withExpiry = {
+      ...SETTINGS,
+      negative_trust_anchors: ['broken.example.', 'lab.test.'],
+      negative_trust_anchor_entries: [
+        { name: 'broken.example.', expires_at: null },
+        { name: 'lab.test.', expires_at: 1_700_003_600 },
+      ],
+    };
+    const ctx = await ready(withExpiry);
+    expect(ctx.el.textContent).toContain('no expiry');
+    expect(ctx.el.textContent).toContain('expires');
+
+    type(ctx.el, '#nta-name', 'x.test');
+    type(ctx.el, '#nta-hours', '2.5');
+    ctx.el.querySelector('form')!.dispatchEvent(new Event('submit'));
+    await ctx.fixture.whenStable();
+    expect(ctx.el.textContent).toContain('whole number of hours');
+    ctx.http.expectNone('/api/v1/settings/dnssec');
+
+    type(ctx.el, '#nta-hours', '2');
+    ctx.el.querySelector('form')!.dispatchEvent(new Event('submit'));
+    const req = ctx.http.expectOne('/api/v1/settings/dnssec');
+    expect(req.request.body).toEqual({
+      negative_trust_anchors: [
+        { name: 'broken.example.', expires_at: null },
+        { name: 'lab.test.', expires_at: 1_700_003_600 },
+        { name: 'x.test.', expires_at: 1_700_007_200 },
+      ],
+    });
+    req.flush(withExpiry);
+    await ctx.fixture.whenStable();
+    ctx.http.expectOne('/api/v1/dnssec/status').flush(STATUS);
+    vi.restoreAllMocks();
   });
 
   it('shows the empty trust anchor state', async () => {

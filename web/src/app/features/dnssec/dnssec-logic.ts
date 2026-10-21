@@ -97,3 +97,23 @@ export function keyTimers(k: {
   ];
   return out.filter((t): t is { label: string; at: number } => typeof t.at === 'number');
 }
+
+/** Longest negative trust anchor lifetime offered in the UI, in hours (one year). */
+export const NTA_MAX_HOURS = 24 * 365;
+
+/** Message for an invalid expiry (hours from now; empty means no expiry), or null when fine. */
+export function ntaExpiryError(hours: string): string | null {
+  const t = hours.trim();
+  if (t === '') return null;
+  const n = Number(t);
+  if (!Number.isInteger(n) || n < 1 || n > NTA_MAX_HOURS) {
+    return `The expiry is a whole number of hours between 1 and ${NTA_MAX_HOURS}, or empty for none.`;
+  }
+  return null;
+}
+
+/** Unix seconds `hours` from `nowSecs`, or null for an empty field. */
+export function ntaExpiresAt(hours: string, nowSecs: number): number | null {
+  const t = hours.trim();
+  return t === '' ? null : nowSecs + Number(t) * 3600;
+}

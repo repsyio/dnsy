@@ -66,6 +66,9 @@ import { UserInfo, UsersService } from './users.service';
                       </td>
                       <td class="py-2 pr-4">
                         <span class="badge badge-ok">{{ u.role }}</span>
+                        @if (u.disabled) {
+                          <span class="badge badge-warn ml-2">disabled</span>
+                        }
                       </td>
                       <td class="py-2 pr-4 whitespace-nowrap">{{ fmt(u.created_at) }}</td>
                       <td class="py-2">
@@ -86,6 +89,27 @@ import { UserInfo, UsersService } from './users.service';
                           >
                             Password
                           </button>
+                          @if (u.disabled) {
+                            <button
+                              class="btn"
+                              type="button"
+                              [disabled]="busy()"
+                              [attr.aria-label]="'Enable ' + u.username"
+                              (click)="setDisabled(u, false)"
+                            >
+                              Enable
+                            </button>
+                          } @else {
+                            <button
+                              class="btn"
+                              type="button"
+                              [disabled]="isSelf(u)"
+                              [attr.aria-label]="'Disable ' + u.username"
+                              (click)="disabling.set(u)"
+                            >
+                              Disable
+                            </button>
+                          }
                           <button
                             class="btn btn-danger"
                             type="button"
@@ -118,6 +142,17 @@ import { UserInfo, UsersService } from './users.service';
         (cancelled)="closeDialog()"
       />
     }
+    @if (disabling(); as u) {
+      <app-confirm-dialog
+        [heading]="'Disable ' + u.username"
+        message="The user cannot log in, and their sessions and tokens stop working immediately. You can enable the account again later. The last active admin cannot be disabled."
+        confirmLabel="Disable"
+        [busy]="busy()"
+        [error]="actionError()"
+        (confirmed)="setDisabled(u, true)"
+        (cancelled)="disabling.set(null)"
+      />
+    }
     @if (deleting(); as u) {
       <app-confirm-dialog
         [heading]="'Delete ' + u.username"
@@ -142,6 +177,7 @@ export class UsersPage {
   protected readonly notice = signal<string | null>(null);
   protected readonly dialog = signal<{ mode: UserDialogMode; user?: UserInfo } | null>(null);
   protected readonly deleting = signal<UserInfo | null>(null);
+  protected readonly disabling = signal<UserInfo | null>(null);
   protected readonly fmt = formatEpoch;
 
   constructor() {
@@ -199,6 +235,25 @@ export class UsersPage {
       error: (e: unknown) => {
         this.busy.set(false);
         this.actionError.set(messageOf(e, 'Could not save the user.'));
+      },
+    });
+  }
+
+  protected setDisabled(u: UserInfo, disabled: boolean): void {
+    this.busy.set(true);
+    this.actionError.set(null);
+    this.notice.set(null);
+    this.svc.update(u.id, { disabled }).subscribe({
+      next: () => {
+        this.busy.set(false);
+        this.disabling.set(null);
+        this.notice.set(disabled ? `Disabled ${u.username}.` : `Enabled ${u.username}.`);
+        this.load();
+      },
+      error: (e: unknown) => {
+        this.busy.set(false);
+        this.actionError.set(messageOf(e, 'Could not change the user.'));
+        if (!disabled) this.notice.set(null);
       },
     });
   }

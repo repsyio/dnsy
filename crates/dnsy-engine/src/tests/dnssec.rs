@@ -418,6 +418,42 @@ async fn nta_returns_insecure() {
 }
 
 #[tokio::test]
+async fn expired_nta_stops_applying() {
+    let r = rig(Validation::Strict);
+    // Expired a minute ago: the subtree is validated (and fails) as without an NTA.
+    let now = u32::try_from(unix_now()).unwrap();
+    r.h.engine
+        .set_negative_trust_anchor_entries(vec![(name("broken.example."), Some(now - 60))]);
+    let resp = r.ask(q("broken.example.", true, false, false)).await;
+    assert_eq!(resp.header.rcode, Rcode::ServFail);
+
+    // Expires in an hour: still in force.
+    r.h.engine
+        .set_negative_trust_anchor_entries(vec![(name("broken.example."), Some(now + 3600))]);
+    let resp = r.ask(q("broken.example.", true, true, false)).await;
+    assert_eq!(resp.header.rcode, Rcode::NoError);
+    assert_eq!(r.statuses(), [DnssecStatus::Bogus, DnssecStatus::Insecure]);
+}
+
+#[tokio::test]
+async fn answer_cached_under_an_nta_does_not_outlive_it() {
+    let r = rig(Validation::Strict);
+    let now = u32::try_from(unix_now()).unwrap();
+    r.h.engine
+        .set_negative_trust_anchor_entries(vec![(name("broken.example."), Some(now + 20))]);
+    let resp = r.ask(q("broken.example.", true, true, false)).await;
+    assert_eq!(resp.header.rcode, Rcode::NoError);
+    let (cached, status) = r.cached("broken.example.", true, false).expect("cached");
+    assert_eq!(status, DnssecStatus::Insecure);
+    assert!(
+        cached.answers.iter().all(|a| a.ttl <= 20),
+        "cached TTLs are capped at the NTA's remaining time: {:?}",
+        cached.answers.iter().map(|a| a.ttl).collect::<Vec<_>>()
+    );
+    assert!(cached.answers.len() == 1, "one cached A record");
+}
+
+#[tokio::test]
 async fn clock_before_build_time_degrades_to_indeterminate() {
     let r = rig_with(|w| DnssecPolicy {
         not_before_unix: unix_now() + 365 * 86_400,

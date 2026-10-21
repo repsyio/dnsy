@@ -4,7 +4,7 @@ import {
   MascotErrorComponent,
   MascotLoadingComponent,
 } from '../../shared/mascot';
-import { messageOf } from '../admin-shared/util';
+import { formatEpoch, messageOf } from '../admin-shared/util';
 import { ConfirmDialog } from '../zones/confirm-dialog';
 import {
   MODE_TEXT,
@@ -13,6 +13,8 @@ import {
   isWeakening,
   normalizeNta,
   ntaError,
+  ntaExpiresAt,
+  ntaExpiryError,
 } from './dnssec-logic';
 import { DnssecService } from './dnssec.service';
 import type { DnssecStatus, ValidationMode, ValidationSettings } from './dnssec.service';
@@ -98,8 +100,9 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
         <h2 id="nta-h" class="mb-2 text-lg text-cyan">Negative trust anchors</h2>
         <p class="mb-4 max-w-2xl text-sm text-muted">
           Validation is skipped at and below these names (RFC 7646). Use one to keep a zone
-          reachable while its operator fixes a broken DNSSEC setup. The list has no expiry: remove
-          the name when the zone is fixed. It is also cleared by a restart.
+          reachable while its operator fixes a broken DNSSEC setup. Give the anchor an expiry so it
+          stops applying by itself; without one it stays until you remove it. The list is cleared by
+          a restart.
         </p>
         <form class="mb-4 flex flex-wrap items-end gap-3" novalidate (submit)="addNta($event)">
           <div>
@@ -114,24 +117,46 @@ const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
               (input)="ntaName.set(val($event))"
             />
           </div>
+          <div>
+            <label class="field-label" for="nta-hours">Expires in hours (optional)</label>
+            <input
+              id="nta-hours"
+              class="field-input"
+              inputmode="numeric"
+              placeholder="24"
+              autocomplete="off"
+              [value]="ntaHours()"
+              [attr.aria-invalid]="ntaFormError() ? 'true' : null"
+              (input)="ntaHours.set(val($event))"
+            />
+          </div>
           <button class="btn" type="submit" [disabled]="busy()">Add</button>
         </form>
         @if (ntaFormError()) {
           <p class="field-error mb-3" role="alert">{{ ntaFormError() }}</p>
         }
-        @if (s.negative_trust_anchors.length === 0) {
+        @if (s.negative_trust_anchor_entries.length === 0) {
           <dnsy-mascot-empty message="No negative trust anchors." />
         } @else {
           <ul class="grid gap-2">
-            @for (n of s.negative_trust_anchors; track n) {
+            @for (n of s.negative_trust_anchor_entries; track n.name) {
               <li class="flex items-center justify-between gap-3 border-t border-cyan/20 py-2">
-                <span class="break-all">{{ n }}</span>
+                <span class="break-all">
+                  {{ n.name }}
+                  <span class="block text-xs text-muted">
+                    @if (n.expires_at) {
+                      expires {{ fmt(n.expires_at) }}
+                    } @else {
+                      no expiry
+                    }
+                  </span>
+                </span>
                 <button
                   class="cursor-pointer text-orange underline"
                   type="button"
                   [disabled]="busy()"
-                  [attr.aria-label]="'Remove negative trust anchor ' + n"
-                  (click)="removing.set(n)"
+                  [attr.aria-label]="'Remove negative trust anchor ' + n.name"
+                  (click)="removing.set(n.name)"
                 >
                   Remove
                 </button>
@@ -239,6 +264,8 @@ export class ValidationPage {
   protected readonly weakening = signal<ValidationMode | null>(null);
   protected readonly removing = signal<string | null>(null);
   protected readonly ntaName = signal('');
+  protected readonly ntaHours = signal('');
+  protected readonly fmt = formatEpoch;
   protected readonly ntaFormError = signal<string | null>(null);
 
   constructor() {
@@ -286,18 +313,29 @@ export class ValidationPage {
   protected addNta(event: Event): void {
     event.preventDefault();
     const list = this.settings()?.negative_trust_anchors ?? [];
-    const err = ntaError(this.ntaName(), list);
+    const err = ntaError(this.ntaName(), list) ?? ntaExpiryError(this.ntaHours());
     this.ntaFormError.set(err);
     if (err) return;
     const name = normalizeNta(this.ntaName());
-    this.patch({ negative_trust_anchors: [...list, name] }, `Added ${name}.`, () =>
-      this.ntaName.set(''),
-    );
+    const expires_at = ntaExpiresAt(this.ntaHours(), Math.floor(Date.now() / 1000));
+    const next = [...this.entries(), { name, expires_at }];
+    this.patch({ negative_trust_anchors: next }, `Added ${name}.`, () => {
+      this.ntaName.set('');
+      this.ntaHours.set('');
+    });
   }
 
   protected removeNta(name: string): void {
-    const list = this.settings()?.negative_trust_anchors ?? [];
-    this.patch({ negative_trust_anchors: list.filter((n) => n !== name) }, `Removed ${name}.`);
+    const next = this.entries().filter((n) => n.name !== name);
+    this.patch({ negative_trust_anchors: next }, `Removed ${name}.`);
+  }
+
+  /** The anchors in force, as the request body takes them (expiries are kept). */
+  private entries(): { name: string; expires_at: number | null }[] {
+    return (this.settings()?.negative_trust_anchor_entries ?? []).map((e) => ({
+      name: e.name,
+      expires_at: e.expires_at ?? null,
+    }));
   }
 
   private patch(

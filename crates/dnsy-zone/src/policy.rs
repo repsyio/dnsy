@@ -1,9 +1,12 @@
 //! The optional `dnssec` block of a zone file.
 
-use dnsy_dnssec::SigningPolicy;
+use dnsy_dnssec::{RolloverTimings, SigningPolicy};
 use serde::{Deserialize, Serialize};
 
 use crate::model::ZoneError;
+
+/// Longest propagation delay accepted (seven days).
+const MAX_PROPAGATION_DELAY: u32 = 7 * 86_400;
 
 /// Highest NSEC3 iteration count accepted even with the override (RFC 9276 advises 0).
 const MAX_NSEC3_ITERATIONS: u16 = 500;
@@ -61,6 +64,10 @@ pub struct DnssecPolicy {
     pub refresh_days: u32,
     #[serde(default = "default_dnskey_ttl")]
     pub dnskey_ttl: u32,
+    /// Seconds added to the DNSKEY TTL before a published key may sign: the time the new
+    /// DNSKEY needs to reach every secondary and resolver.
+    #[serde(default = "default_propagation_delay")]
+    pub propagation_delay: u32,
 }
 
 fn default_algorithm() -> u8 {
@@ -79,6 +86,9 @@ fn default_refresh() -> u32 {
     5
 }
 fn default_dnskey_ttl() -> u32 {
+    3600
+}
+fn default_propagation_delay() -> u32 {
     3600
 }
 
@@ -102,6 +112,11 @@ impl DnssecPolicy {
         }
         if self.dnskey_ttl == 0 {
             return Err(invalid("dnssec.dnskey_ttl must be > 0".into()));
+        }
+        if self.propagation_delay > MAX_PROPAGATION_DELAY {
+            return Err(invalid(format!(
+                "dnssec.propagation_delay above {MAX_PROPAGATION_DELAY} seconds"
+            )));
         }
         let n = &self.nsec3;
         if n.salt.len() > 510
@@ -134,6 +149,16 @@ impl DnssecPolicy {
 }
 
 impl DnssecPolicy {
+    /// The timing parameters of this zone's key rollovers.
+    #[must_use]
+    pub fn rollover_timings(&self) -> RolloverTimings {
+        RolloverTimings {
+            dnskey_ttl: self.dnskey_ttl,
+            propagation: self.propagation_delay,
+            max_signature_validity: self.signature_validity_days.saturating_mul(86_400),
+        }
+    }
+
     /// The policy as [`dnsy_dnssec::ZoneSigner`] takes it.
     ///
     /// # Errors
@@ -188,6 +213,7 @@ mod tests {
             r#"{"refresh_days":14}"#,
             r#"{"refresh_days":0}"#,
             r#"{"dnskey_ttl":0}"#,
+            r#"{"propagation_delay":604801}"#,
             r#"{"nsec3":{"salt":"zz"}}"#,
             r#"{"nsec3":{"salt":"abc"}}"#,
             r#"{"nsec3":{"iterations":5}}"#,
@@ -229,6 +255,27 @@ mod tests {
             p.nsec3.salt = bad.into();
             assert!(p.signing_policy().is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn propagation_delay_defaults_and_feeds_the_rollover_timings() {
+        let default = policy("{}");
+        assert_eq!(default.propagation_delay, 3600);
+        assert_eq!(default.rollover_timings().propagation, 3600);
+        let custom = policy(
+            r#"{"propagation_delay":120,"dnskey_ttl":60,"signature_validity_days":2,"refresh_days":1}"#,
+        );
+        assert!(custom.validate().is_ok());
+        assert_eq!(
+            custom.rollover_timings(),
+            RolloverTimings {
+                dnskey_ttl: 60,
+                propagation: 120,
+                max_signature_validity: 2 * 86_400,
+            }
+        );
+        assert!(policy(r#"{"propagation_delay":0}"#).validate().is_ok());
+        assert!(policy(r#"{"propagation_delay":604800}"#).validate().is_ok());
     }
 
     #[test]

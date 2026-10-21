@@ -5,8 +5,8 @@ import { click, clickByText, mount, problem, type } from '../admin-shared/testin
 import { UsersPage } from './users.page';
 
 const USERS = [
-  { id: 1, username: 'root', role: 'admin', created_at: 0 },
-  { id: 2, username: 'ann', role: 'viewer', created_at: 86400 },
+  { id: 1, username: 'root', role: 'admin', created_at: 0, disabled: false, disabled_at: null },
+  { id: 2, username: 'ann', role: 'viewer', created_at: 86400, disabled: false, disabled_at: null },
 ];
 
 const dlg = (el: HTMLElement) => el.querySelector<HTMLElement>('[role="dialog"]')!;
@@ -136,5 +136,52 @@ describe('UsersPage', () => {
     http.expectOne('/api/v1/users').flush([USERS[0]]);
     await fixture.whenStable();
     expect(el.textContent).toContain('Deleted ann.');
+  });
+
+  it('disables a user only after confirmation, never the current user', async () => {
+    const { el, http, fixture } = await ready();
+    expect(el.querySelector<HTMLButtonElement>('[aria-label="Disable root"]')!.disabled).toBe(true);
+    click(el, '[aria-label="Disable ann"]');
+    await fixture.whenStable();
+    expect(el.textContent).toContain('stop working immediately');
+    clickByText(dlg(el), 'Cancel');
+    await fixture.whenStable();
+    http.expectNone('/api/v1/users/2');
+
+    click(el, '[aria-label="Disable ann"]');
+    await fixture.whenStable();
+    clickByText(dlg(el), 'Disable');
+    const req = http.expectOne('/api/v1/users/2');
+    expect(req.request.method).toBe('PATCH');
+    expect(req.request.body).toEqual({ disabled: true });
+    const p = problem(409, 'the last admin cannot be deleted or demoted');
+    req.flush(p.body, p.init);
+    await fixture.whenStable();
+    expect(el.textContent).toContain('last admin');
+
+    clickByText(dlg(el), 'Disable');
+    http.expectOne('/api/v1/users/2').flush({ ...USERS[1], disabled: true, disabled_at: 5 });
+    await fixture.whenStable();
+    http
+      .expectOne('/api/v1/users')
+      .flush([USERS[0], { ...USERS[1], disabled: true, disabled_at: 5 }]);
+    await fixture.whenStable();
+    expect(el.textContent).toContain('Disabled ann.');
+    expect(el.textContent).toContain('disabled');
+    expect(el.querySelector('[aria-label="Disable ann"]')).toBeNull();
+  });
+
+  it('enables a disabled user at once', async () => {
+    const off = { ...USERS[1], disabled: true, disabled_at: 5 };
+    const { el, http, fixture } = await ready([USERS[0], off]);
+    click(el, '[aria-label="Enable ann"]');
+    const req = http.expectOne('/api/v1/users/2');
+    expect(req.request.body).toEqual({ disabled: false });
+    req.flush(USERS[1]);
+    await fixture.whenStable();
+    http.expectOne('/api/v1/users').flush(USERS);
+    await fixture.whenStable();
+    expect(el.textContent).toContain('Enabled ann.');
+    expect(el.querySelector('[aria-label="Disable ann"]')).not.toBeNull();
   });
 });

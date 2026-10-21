@@ -128,7 +128,8 @@ time, and a timer task (`KeyStore::spawn_timer`) applies them. The clock is inje
 is how the tests advance days without sleeping.
 
 * **ZSK, pre-publish (RFC 6781).** `start_rollover` creates and publishes the new ZSK. After
-  the DNSKEY TTL plus the propagation delay it becomes `active` and the old ZSK is `retired`.
+  the DNSKEY TTL plus the propagation delay (the zone policy's `propagation_delay`, default
+  3600 s) it becomes `active` and the old ZSK is `retired`.
   The old key leaves the DNSKEY RRset once its last signature has expired: the maximum
   signature validity plus the DNSKEY TTL and propagation delay after retirement.
 * **KSK and CSK, double-DS.** The new key is published and its DS goes to the parent. It stays
@@ -235,7 +236,9 @@ control it.
 ### Trust anchors
 
 `TrustAnchors` holds DS anchors (`add_ds`), DNSKEY anchors (`add_dnskey`) and negative trust
-anchors (`add_negative`, RFC 7646). The configuration's `dnssec.trust_anchors` are the root
+anchors (`add_negative`, or `add_negative_until` with an expiry; RFC 7646). An expired anchor
+stops applying (`is_negative` takes the validation time), and an answer accepted under an
+expiring anchor carries a TTL cap of the time it has left, so caches drop it by then. The configuration's `dnssec.trust_anchors` are the root
 KSK DS records (key tags 20326 and 38696) and `dnssec.negative_trust_anchors` are domain
 names. A name at or below a negative trust anchor validates as `Insecure` without any fetch.
 The validator always starts from the closest (deepest) anchor above a name.
@@ -490,7 +493,7 @@ All changing calls need the `admin` scope.
 `dnssec` block of the zone file (defaults: algorithm 13, one CSK, NSEC3 with zero iterations, 14 day
 signatures refreshed 5 days before expiry), creates the keys and signs the zone, so the next
 DO query already gets signed answers. Only algorithms 13 and 15 are accepted. Other policy fields
-(`key_layout`, `denial`, `nsec3`, `signature_validity_days`, `refresh_days`, `dnskey_ttl`) can be
+(`key_layout`, `denial`, `nsec3`, `signature_validity_days`, `refresh_days`, `dnskey_ttl`, `propagation_delay`) can be
 sent in the same or a later call; a field left out keeps its value. The algorithm of existing keys
 changes only through a rollover with a new `algorithm`.
 
@@ -503,15 +506,25 @@ same DNSKEY the zone serves.
 successor and publishes it (202). A ZSK rollover finishes by itself once the DNSKEY TTL and
 propagation time have passed. A KSK or CSK rollover waits: publish the new key's DS at the parent
 (`GET .../dnssec/ds` lists it already), then call `POST .../dnssec/keys/{new id}/ds-confirmed`.
-`GET .../dnssec` reports the state as `idle`, `in_progress` or `awaiting_ds_confirmation`. One
-rollover per role runs at a time; a second request is 409.
+`GET .../dnssec` reports the state as `idle`, `in_progress` or `awaiting_ds_confirmation`, with
+every rollover under way in `rollover.rollovers`. One rollover per role runs at a time; a second
+request is 409. `POST .../dnssec/rollover/abort` (optionally `{role}`) withdraws the incoming key
+and keeps the active one (`KeyStore::abort_rollover`); 409 once the new key has become active.
+`dnsy dnssec rollover abort` and `dnsy dnssec ds-confirmed` do the same from the CLI.
+
+**Key backup and passphrase.** `POST /api/v1/dnssec/keys/export` returns the keys as a bundle
+encrypted under a given passphrase, and `POST /api/v1/dnssec/passphrase` re-encrypts all keys
+under a new key passphrase atomically (`KeyStore::change_passphrase`, which blocks key creation
+and decryption while it runs). The CLI has `dnsy dnssec keys export|import` and
+`dnsy dnssec passphrase change`. See the [operator guide](dnssec-operator-guide.md).
 
 **Signed export.** `GET .../export?signed=true` downloads the zone as a BIND file with the DNSKEY,
 RRSIG, NSEC or NSEC3 and NSEC3PARAM records of the current signed snapshot.
 
 **Validation at run time.** `GET/PATCH /api/v1/settings/dnssec` shows and changes the validation
 mode and the negative trust anchors (RFC 7646) without a restart. Names are lowercased and
-de-duplicated; the root is refused because it would disable validation (use mode `off`). Any change
+de-duplicated; an entry may carry an `expires_at` after which the anchor stops applying; the root
+is refused because it would disable validation (use mode `off`). Any change
 flushes the cache, since cached entries carry statuses computed under the old settings. Trust
 anchors are read-only: they come from the configuration, and the API lists them with their key
 tags. Changes are not saved to the configuration file. `GET /api/v1/dnssec/status` adds the
