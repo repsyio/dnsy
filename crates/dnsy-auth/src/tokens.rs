@@ -158,7 +158,9 @@ impl TokenService {
     ) -> Result<(String, TokenMeta), AuthError> {
         let mut raw = [0u8; 8];
         rand::fill(&mut raw[..]);
-        raw[0] &= 0x7f;
+        // 53 bits: the web UI reads ids as JSON numbers (f64) and must get them back exactly.
+        raw[0] = 0;
+        raw[1] &= 0x1f;
         let id = i64::from_be_bytes(raw);
         let mut secret = [0u8; 32];
         rand::fill(&mut secret[..]);
@@ -352,6 +354,24 @@ mod tests {
         }
         assert_eq!(b32_decode("short"), None);
         assert_eq!(b32_decode("AAAAAAAAAAAA!"), None);
+    }
+
+    /// The web UI parses ids as JSON numbers (f64): ids above 2^53 lose precision there and
+    /// `DELETE /tokens/{id}` then answers 404 for a token the list just showed.
+    #[tokio::test]
+    async fn token_ids_survive_a_javascript_number() {
+        let (svc, user, _d) = setup(Role::Operator).await;
+        for i in 0..20 {
+            let (_, meta) = svc
+                .create(user, &format!("t{i}"), &[Scope::ApiRead], None)
+                .await
+                .unwrap();
+            assert!(
+                meta.id.0 > 0 && meta.id.0 < (1 << 53),
+                "id {} too large",
+                meta.id.0
+            );
+        }
     }
 
     #[tokio::test]
