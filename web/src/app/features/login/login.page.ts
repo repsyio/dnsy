@@ -205,7 +205,9 @@ export class LoginPage {
         await this.auth.login(this.username, this.password);
       }
       const redirect = this.route.snapshot.queryParamMap.get('redirect');
-      await this.router.navigateByUrl(redirect?.startsWith('/') ? redirect : '/dashboard');
+      await this.router.navigateByUrl(
+        redirect?.startsWith('/') && !redirect.startsWith('//') ? redirect : '/dashboard',
+      );
     } catch (e) {
       this.fail(e);
     } finally {
