@@ -12,12 +12,23 @@ The cache is memory only and needs no backup.
 
 ## Back up
 
-Use SQLite's online backup so the copy is consistent while the server runs:
+Use `dnsy db backup`, which runs SQLite's online backup API: the copy is consistent, contains
+everything in the `-wal` file, needs no `sqlite3` binary and is safe while the server runs (the
+server's writer is never held for more than a few milliseconds at a time). The file is created
+with mode 0600 and the command refuses to overwrite an existing file.
 
 ```sh
-sqlite3 /var/lib/dnsy/dnsy.db ".backup '/backup/dnsy-$(date +%F).db'"
+dnsy db backup /backup/dnsy-$(date +%F).db
+dnsy db check --full   # optional: verify the live database (quick_check without --full)
 rsync -a /var/lib/dnsy/zones/ /backup/zones/
 ```
+
+Do not copy `dnsy.db` alone while the server runs: rows still in `dnsy.db-wal` are silently
+missing from such a copy. `sqlite3 dnsy.db ".backup '<file>'"` is equivalent when the binary is
+installed.
+
+Verify a backup with `dnsy db check` against a configuration whose `data_dir` holds it, or with
+`sqlite3 <file> "PRAGMA quick_check"`.
 
 Copying `dnsy.db` together with its `-wal` file while the server is stopped works too. Zone files
 can also be exported as BIND text (`dnsy zone export example.com`, `--signed` for the signed

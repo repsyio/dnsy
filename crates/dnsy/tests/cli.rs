@@ -292,6 +292,46 @@ fn migrate_status_does_not_create_the_database() {
 }
 
 #[test]
+fn db_check_vacuum_and_backup_offline() {
+    let env = Env::new(false);
+    env.ok(&["migrate"]);
+    assert_eq!(env.ok(&["db", "check"]).trim(), "ok");
+    assert_eq!(env.ok(&["db", "check", "--full"]).trim(), "ok");
+    assert!(env.ok(&["db", "vacuum"]).starts_with("vacuumed: "));
+    let copy = env.dir.path().join("copy.db");
+    env.ok(&["db", "backup", copy.to_str().unwrap()]);
+    let again = env.run(&["db", "backup", copy.to_str().unwrap()]);
+    assert!(
+        !again.status.success(),
+        "an existing file is never overwritten"
+    );
+    assert!(copy.exists());
+}
+
+#[test]
+fn db_check_fails_on_a_corrupted_file() {
+    let env = Env::new(false);
+    env.ok(&["migrate"]);
+    std::fs::write(env.dir.path().join("data/dnsy.db"), vec![0x42; 30_000]).unwrap();
+    let out = env.run(&["db", "check"]);
+    assert!(!out.status.success());
+}
+
+#[test]
+fn db_backup_works_and_vacuum_refuses_while_the_server_runs() {
+    let env = Env::new(false);
+    let mut server = env.serve();
+    let copy = env.dir.path().join("live.db");
+    env.ok(&["db", "backup", copy.to_str().unwrap()]);
+    let vacuum = env.run(&["db", "vacuum"]);
+    assert!(!vacuum.status.success());
+    assert!(String::from_utf8_lossy(&vacuum.stderr).contains("stop it"));
+    server.child.kill().unwrap();
+    server.child.wait().unwrap();
+    assert_eq!(env.ok(&["db", "check"]).trim(), "ok");
+}
+
+#[test]
 fn users_and_tokens() {
     let env = Env::new(false);
     let mut create = env

@@ -10,6 +10,9 @@ Start with `dnsy config check`, `curl -s http://127.0.0.1:5380/readyz` and the s
 | `permission denied` binding port 53 or 853 | privileged ports need `CAP_NET_BIND_SERVICE` or root; grant the capability, or listen on a high port and forward |
 | `address already in use` | another resolver (`systemd-resolved`, `dnsmasq`) holds the port; stop it or change `[dns]` |
 | a config error naming a key | unknown keys and invalid combinations are errors; run `dnsy config check`, see [Configuration reference](configuration.md#validation-rules) |
+| `database disk image is malformed`, or sudden query-log or login errors after a crash or disk fault | run `dnsy db check --full`; if it reports problems, stop the server and restore the last `dnsy db backup` (see [Backup and restore](backup-restore.md)) |
+| `dnsy db vacuum` says the database is open in another process | the server holds it; stop `dnsy serve` first (backup and check do not need that) |
+| `dnsy migrate --status` shows older state than the server reports | it reads without the `-wal` file (so it works on a read-only directory); recent migrations appear after the next checkpoint or a server stop |
 | database refused as newer than the binary | run the binary version that wrote it, or restore a backup; see [Upgrade](upgrade.md) |
 
 ## Clients get errors
