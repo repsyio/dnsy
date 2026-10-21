@@ -1,6 +1,6 @@
 //! The zones directory: loading, atomic writes, hot reload.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,9 @@ const DEBOUNCE: Duration = Duration::from_millis(250);
 pub struct ZoneSet {
     zones: BTreeMap<Name, Arc<Zone>>,
     signed: BTreeMap<Name, Arc<SignedZone>>,
+    /// Zones with `dnssec.enabled` that could not be signed and have no signed snapshot to
+    /// fall back on: queries for them are answered SERVFAIL rather than served unsigned.
+    unavailable: BTreeSet<Name>,
     /// Per-zone lookup index, keyed like `zones`.
     pub(crate) indexes: BTreeMap<Name, ZoneIndex>,
     /// Query counter driving record set rotation.
@@ -37,13 +40,14 @@ pub struct ZoneSet {
 impl ZoneSet {
     #[cfg(test)]
     pub(crate) fn new(zones: BTreeMap<Name, Arc<Zone>>) -> Self {
-        Self::with_signed(zones, BTreeMap::new())
+        Self::with_signed(zones, BTreeMap::new(), BTreeSet::new())
     }
 
     /// A snapshot serving each zone of `signed` (keyed by origin) from its signed snapshot.
     pub(crate) fn with_signed(
         zones: BTreeMap<Name, Arc<Zone>>,
         signed: BTreeMap<Name, Arc<SignedZone>>,
+        unavailable: BTreeSet<Name>,
     ) -> Self {
         let indexes = zones
             .iter()
@@ -55,6 +59,7 @@ impl ZoneSet {
         Self {
             zones,
             signed,
+            unavailable,
             indexes,
             rotation: AtomicUsize::new(0),
         }
@@ -64,6 +69,12 @@ impl ZoneSet {
     #[must_use]
     pub fn signed(&self, origin: &Name) -> Option<&Arc<SignedZone>> {
         self.signed.get(origin)
+    }
+
+    /// True when the zone is withheld because its signing failed (see [`ZoneSet::lookup`]).
+    #[must_use]
+    pub fn is_unavailable(&self, origin: &Name) -> bool {
+        self.unavailable.contains(origin)
     }
 
     /// The zone with exactly this origin.
@@ -115,6 +126,8 @@ struct State {
     errors: BTreeMap<String, String>,
     /// Latest signed snapshot per origin.
     signed: BTreeMap<Name, SignedEntry>,
+    /// Why signing a zone failed, per origin, until it succeeds again.
+    failures: BTreeMap<Name, String>,
 }
 
 /// Zones directory with an atomically swapped snapshot.
@@ -214,10 +227,14 @@ impl ZoneStore {
         let mut zones = BTreeMap::new();
         let mut signed = BTreeMap::new();
         let mut entries = BTreeMap::new();
+        let mut unavailable = BTreeSet::new();
         let mut stale = false;
         for zone in st.good.values() {
             let origin = zone.origin.clone();
             let wants = signing && zone.dnssec.as_ref().is_some_and(|p| p.enabled);
+            if !wants {
+                st.failures.remove(&origin);
+            }
             if let Some(entry) = st.signed.remove(&origin).filter(|_| wants) {
                 stale |= *entry.zone != **zone;
                 zones.insert(origin.clone(), Arc::clone(&entry.zone));
@@ -225,12 +242,15 @@ impl ZoneStore {
                 entries.insert(origin, entry);
             } else {
                 stale |= wants;
+                if wants && st.failures.contains_key(&origin) {
+                    unavailable.insert(origin.clone());
+                }
                 zones.insert(origin, Arc::clone(zone));
             }
         }
         st.signed = entries;
         self.set
-            .store(Arc::new(ZoneSet::with_signed(zones, signed)));
+            .store(Arc::new(ZoneSet::with_signed(zones, signed, unavailable)));
         if stale {
             self.resign.notify_one();
         }
@@ -256,9 +276,32 @@ impl ZoneStore {
             .collect()
     }
 
+    /// Records that signing `origin` failed (`Some(reason)`) or recovered (`None`), and swaps
+    /// in a new snapshot. A zone with `dnssec.enabled` that fails before it was ever signed
+    /// answers SERVFAIL; one with a signed snapshot keeps serving it. Returns true when the
+    /// recorded failure changed, so the caller can log it once.
+    pub(crate) fn set_signing_failure(&self, origin: &Name, failure: Option<String>) -> bool {
+        let mut st = self.lock();
+        let changed = match failure {
+            Some(reason) => st.failures.insert(origin.clone(), reason.clone()) != Some(reason),
+            None => st.failures.remove(origin).is_some(),
+        };
+        if changed {
+            self.publish(&mut st);
+        }
+        changed
+    }
+
+    /// Zones that failed signing, with the reason; empty when every signed zone is healthy.
+    #[must_use]
+    pub fn signing_failures(&self) -> BTreeMap<Name, String> {
+        self.lock().failures.clone()
+    }
+
     /// Installs a signed snapshot of `zone` and swaps in a new snapshot.
     pub(crate) fn install_signed(&self, zone: Arc<Zone>, signed: Arc<SignedZone>) {
         let mut st = self.lock();
+        st.failures.remove(&zone.origin);
         st.signed
             .insert(zone.origin.clone(), SignedEntry { zone, signed });
         self.publish(&mut st);

@@ -640,6 +640,34 @@ fn rollover_dnskey_set_double_signed() {
 }
 
 #[test]
+fn retired_ksk_still_signs_dnskey_rrset() {
+    let keys = ActiveKeys {
+        keys: vec![
+            key(KeyRole::Ksk, KeyState::Retired),
+            key(KeyRole::Ksk, KeyState::Active),
+            key(KeyRole::Zsk, KeyState::Active),
+        ],
+    };
+    let z = ZoneSigner::sign(&zone(), &keys, &policy(Denial::Nsec), NOW).unwrap();
+    verify_zone(&z, NOW);
+    let mut tags: Vec<u16> = z
+        .rrset(&n("example."), RecordType::Dnskey)
+        .unwrap()
+        .rrsigs
+        .iter()
+        .map(|s| rrsig(s).key_tag)
+        .collect();
+    tags.sort_unstable();
+    let mut want = vec![keys.keys[0].dnskey.key_tag(), keys.keys[1].dnskey.key_tag()];
+    want.sort_unstable();
+    assert_eq!(tags, want, "retired and active KSK both sign DNSKEY");
+    // The retired key does not sign zone data.
+    let www = z.rrset(&n("www.example."), RecordType::A).unwrap();
+    assert_eq!(www.rrsigs.len(), 1);
+    assert_eq!(rrsig(&www.rrsigs[0]).key_tag, keys.keys[2].dnskey.key_tag());
+}
+
+#[test]
 fn snapshot_accessors_and_ttl_normalisation() {
     let mut data = zone();
     data.records.push(rec(
@@ -668,7 +696,8 @@ fn key_duties() {
     assert!(ZoneKey::signs(Ksk, Active) && ZoneKey::signs(Ksk, Published));
     assert!(ZoneKey::signs(Csk, Published));
     assert!(!ZoneKey::signs(Zsk, Published) && !ZoneKey::signs(Zsk, Retired));
-    assert!(!ZoneKey::signs(Ksk, Retired) && !ZoneKey::signs(Csk, Generated));
+    assert!(ZoneKey::signs(Ksk, Retired) && ZoneKey::signs(Csk, Retired));
+    assert!(!ZoneKey::signs(Csk, Generated));
     assert!(!ZoneKey::signs(Csk, Removed));
 }
 

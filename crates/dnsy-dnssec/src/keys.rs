@@ -8,6 +8,7 @@
 //! * KSK and CSK **double-DS**: the new key is published and its DS is handed to the parent;
 //!   it stays published until the operator confirms the DS, then it becomes active and the
 //!   old key is retired.
+//! * A generated key is inert: only an explicit rollover step publishes it.
 //! * A retired key stays in the DNSKEY `RRset` until every signature it made has expired and
 //!   caches have dropped the old DNSKEY, then it is removed.
 
@@ -199,7 +200,8 @@ pub struct Transition {
 
 /// Decides which keys of one zone change state at `now`.
 ///
-/// A key moves at most one step per call, and a KSK or CSK that replaces an active key
+/// A key moves at most one step per call, a `generated` key never moves (publishing it is an
+/// explicit step), and a KSK or CSK that replaces an active key
 /// waits for the operator's DS confirmation however long that takes.
 pub fn plan(keys: &[KeyRecord], timings: &RolloverTimings, now: i64) -> Vec<Transition> {
     let mut out = Vec::new();
@@ -209,7 +211,6 @@ pub fn plan(keys: &[KeyRecord], timings: &RolloverTimings, now: i64) -> Vec<Tran
         let mut activated = false;
         for k in &group {
             let to = match k.state {
-                KeyState::Generated => Some(KeyState::Published),
                 KeyState::Published => {
                     let waited = k
                         .published_at
@@ -221,7 +222,7 @@ pub fn plan(keys: &[KeyRecord], timings: &RolloverTimings, now: i64) -> Vec<Tran
                     .retired_at
                     .is_some_and(|t| now >= t.saturating_add(timings.retire_wait()))
                     .then_some(KeyState::Removed),
-                KeyState::Active | KeyState::Removed => None,
+                KeyState::Generated | KeyState::Active | KeyState::Removed => None,
             };
             if let Some(to) = to {
                 activated |= to == KeyState::Active;
@@ -316,7 +317,8 @@ mod tests {
         let new = key(2, KeyRole::Zsk, KeyState::Generated);
         assert_eq!(
             plan(&[old.clone(), new], &T, 1000),
-            [to(2, KeyState::Published)]
+            NONE,
+            "a generated key stays inert until it is published explicitly"
         );
 
         let new = key(2, KeyRole::Zsk, KeyState::Published);
