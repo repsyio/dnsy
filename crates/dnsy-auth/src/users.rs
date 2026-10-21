@@ -240,7 +240,7 @@ impl UserService {
                 let Some(user) = find(tx, id)? else {
                     return Ok(Err(UserError::NotFound));
                 };
-                if user.is_active() == !disabled {
+                if user.is_active() != disabled {
                     return Ok(Ok(user));
                 }
                 if disabled && user.role == Role::Admin && admin_count_excluding(tx, id)? == 0 {

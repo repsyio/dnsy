@@ -1418,19 +1418,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_bootstrap_creates_one_key_set() {
+    async fn concurrent_split_layout_bootstrap_creates_one_key_pair() {
         let f = fixture(None);
-        let p = policy(r#"{"key_layout":"ksk_zsk"}"#);
-        let z = zone();
-        let (a, b, c) = tokio::join!(
-            f.ks.bootstrap(&z, &p),
-            f.ks.bootstrap(&z, &p),
-            f.ks.bootstrap(&z, &p)
+        let pol = policy(r#"{"key_layout":"ksk_zsk"}"#);
+        let zn = zone();
+        let (first, second, third) = tokio::join!(
+            f.ks.bootstrap(&zn, &pol),
+            f.ks.bootstrap(&zn, &pol),
+            f.ks.bootstrap(&zn, &pol)
         );
-        for r in [a, b, c] {
-            assert_eq!(r.unwrap().len(), 2);
+        for result in [first, second, third] {
+            assert_eq!(result.unwrap().len(), 2);
         }
-        assert_eq!(f.ks.keys(&z).await.unwrap().len(), 2);
+        assert_eq!(f.ks.keys(&zn).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -1568,7 +1568,7 @@ mod tests {
             [KeyState::Active, KeyState::Removed]
         );
         f.clock.advance(1_000_000);
-        assert!(f.ks.tick(&z, T).await.unwrap().is_empty());
+        assert_eq!(f.ks.tick(&z, T).await.unwrap().len(), 0);
         assert_eq!(f.ks.dnskeys(&z).await.unwrap().len(), 2);
         // A new rollover may start afterwards.
         f.ks.start_rollover(&z, KeyRole::Zsk, alg).await.unwrap();

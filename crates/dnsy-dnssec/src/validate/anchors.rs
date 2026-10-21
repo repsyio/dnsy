@@ -92,7 +92,7 @@ impl TrustAnchors {
             match expires {
                 None => return Some(None),
                 Some(e) if now < *e => {
-                    longest = Some(longest.map_or(*e - now, |l| l.max(*e - now)))
+                    longest = Some(longest.map_or(*e - now, |l| l.max(*e - now)));
                 }
                 Some(_) => {}
             }

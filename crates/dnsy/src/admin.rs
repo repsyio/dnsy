@@ -338,31 +338,7 @@ pub(crate) async fn dnssec(
             let zone = zone_name(&zone)?;
             let id = match key {
                 Some(id) => id,
-                None => {
-                    let waiting: Vec<_> = keys
-                        .keys(&zone)
-                        .await?
-                        .into_iter()
-                        .filter(|k| {
-                            k.role.is_sep()
-                                && k.state == KeyState::Published
-                                && k.ds_confirmed_at.is_none()
-                        })
-                        .collect();
-                    match waiting.as_slice() {
-                        [k] => k.id,
-                        [] => {
-                            return Err(Error::msg(format!(
-                                "zone `{zone}` has no published KSK or CSK waiting for a DS"
-                            )));
-                        }
-                        _ => {
-                            return Err(Error::msg(
-                                "several keys wait for a DS; pick one with --key",
-                            ));
-                        }
-                    }
-                }
+                None => waiting_for_ds(&keys, &zone).await?,
             };
             keys.confirm_ds(id).await?;
             writeln!(out, "DS of key {id} confirmed")?;
@@ -386,7 +362,29 @@ pub(crate) async fn dnssec(
     }
 }
 
-async fn dnssec_keys(keys: &KeyStore, cmd: KeysCommand, out: &mut impl Write) -> Result<()> {
+/// The one published KSK or CSK of `zone` whose DS the operator has not confirmed.
+async fn waiting_for_ds(keys: &KeyStore, zone: &Name) -> Result<i64> {
+    let waiting: Vec<_> = keys
+        .keys(zone)
+        .await?
+        .into_iter()
+        .filter(|k| {
+            k.role.is_sep() && k.state == KeyState::Published && k.ds_confirmed_at.is_none()
+        })
+        .collect();
+    match waiting.as_slice() {
+        [k] => Ok(k.id),
+        [] => Err(Error::msg(format!(
+            "zone `{zone}` has no published KSK or CSK waiting for a DS"
+        ))),
+        _ => Err(Error::msg(
+            "several keys wait for a DS; pick one with --key",
+        )),
+    }
+}
+
+/// `dnssec keys export` and `import`: the passphrase never reaches the output.
+async fn key_backup(keys: &KeyStore, cmd: KeysCommand, out: &mut impl Write) -> Result<()> {
     match cmd {
         KeysCommand::Export {
             file,
@@ -414,6 +412,16 @@ async fn dnssec_keys(keys: &KeyStore, cmd: KeysCommand, out: &mut impl Write) ->
             )?;
             let added = keys.import_bundle_from_file(&file, &pass).await?;
             writeln!(out, "{added} key(s) imported")?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn dnssec_keys(keys: &KeyStore, cmd: KeysCommand, out: &mut impl Write) -> Result<()> {
+    match cmd {
+        cmd @ (KeysCommand::Export { .. } | KeysCommand::Import { .. }) => {
+            return key_backup(keys, cmd, out).await;
         }
         KeysCommand::List { zone } => {
             let zone = zone_name(&zone)?;

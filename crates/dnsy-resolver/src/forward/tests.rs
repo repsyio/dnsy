@@ -200,7 +200,11 @@ fn policy_from_config_reads_anchors_file_and_ntas() {
         p.validator.anchors().closest(&n("a.example.")),
         Some(&Name::root())
     );
-    assert!(p.validator.anchors().is_negative(&n("www.broken.example."), 0));
+    assert!(
+        p.validator
+            .anchors()
+            .is_negative(&n("www.broken.example."), 0)
+    );
     assert!(p.validator.anchors().is_negative(&n("lab.test."), 0));
     assert!(!p.validator.anchors().is_negative(&n("example."), 0));
 

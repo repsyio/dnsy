@@ -450,7 +450,7 @@ async fn answer_cached_under_an_nta_does_not_outlive_it() {
         "cached TTLs are capped at the NTA's remaining time: {:?}",
         cached.answers.iter().map(|a| a.ttl).collect::<Vec<_>>()
     );
-    assert!(!cached.answers.is_empty());
+    assert!(cached.answers.len() == 1, "one cached A record");
 }
 
 #[tokio::test]
