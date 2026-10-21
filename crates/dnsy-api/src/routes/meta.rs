@@ -1,7 +1,5 @@
 //! Health, readiness and version.
 
-use std::sync::atomic::Ordering;
-
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -68,6 +66,7 @@ async fn healthz() -> Json<Status> {
     ))]
 async fn readyz(State(state): State<ApiState>) -> Response {
     if state
+        .observe
         .store
         .read(|c| Ok(c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?))
         .await
@@ -78,7 +77,7 @@ async fn readyz(State(state): State<ApiState>) -> Response {
     // A zone whose signing failed (its keys cannot be opened, for instance after a passphrase
     // change that was not carried over to the environment) is not served unsigned: the pod is
     // not ready until an operator fixes it.
-    if let Some(zones) = &state.zones {
+    if let Some(zones) = &state.zones.store {
         let failed = zones.signing_failures().len();
         if failed > 0 {
             return problem_response(
@@ -92,7 +91,11 @@ async fn readyz(State(state): State<ApiState>) -> Response {
         }
     }
     let mut warnings = Vec::new();
-    if state.dnssec_clock_untrusted.load(Ordering::Relaxed) {
+    if state
+        .policy
+        .as_ref()
+        .is_some_and(|p| p.dnssec_clock_untrusted())
+    {
         warnings.push("dnssec_clock_untrusted");
     }
     if dnsy_observe::querylog_counters().disk_full {

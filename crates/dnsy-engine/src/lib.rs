@@ -8,12 +8,14 @@
 mod builder;
 mod engine;
 pub mod handler;
+mod policy;
 mod response;
 mod services;
 
 pub use builder::{EngineBuilder, EngineError, cache_options, dnssec_options};
 pub use engine::{Engine, MAX_MISS_WAITERS};
 pub use handler::{Admission, Handler, RefusedHandler, RequestContext};
+pub use policy::{LivePolicy, TrustAnchorInfo, hex_upper};
 pub use response::{RESPONSE_IP_LIST, ResponseIpPolicy};
 pub use services::{Background, GroupsHandle, SIGN_INTERVAL, Services};
 

@@ -974,3 +974,59 @@ async fn open_resolver_allows_public_client() {
         dnsy_filter::AclAction::Allow
     );
 }
+
+mod live_policy {
+    use super::*;
+    use crate::LivePolicy;
+
+    fn default_spec() -> GroupSpec {
+        GroupSpec {
+            name: "default".to_owned(),
+            strategy: Strategy::Failover,
+            default: true,
+            domains: vec![],
+            members: vec![GroupMember {
+                upstream: "udp://192.0.2.1:53".parse().unwrap(),
+                weight: 1,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn live_policy_replaces_groups_and_rejects_invalid_specs() {
+        let h = harness(Fake::a_record(Ipv4Addr::new(192, 0, 2, 7)));
+        let policy: &dyn LivePolicy = &h.engine;
+        let mut invalid = default_spec();
+        invalid.default = false;
+        assert!(policy.replace_groups(vec![invalid]).is_err());
+        policy.replace_groups(vec![default_spec()]).unwrap();
+        policy.replace_groups(vec![]).unwrap();
+    }
+
+    #[tokio::test]
+    async fn live_policy_acl_rules_apply_to_the_running_engine() {
+        let h = harness(Fake::a_record(Ipv4Addr::new(192, 0, 2, 7)));
+        let policy: &dyn LivePolicy = &h.engine;
+        policy.apply_acl_rules(vec![(
+            AclMatcher::Cidr("0.0.0.0/0".parse().unwrap()),
+            AclAction::Refuse,
+        )]);
+        let reply = h
+            .engine
+            .handle(ctx(), query("nas.home.test.", RecordType::A))
+            .await;
+        assert_eq!(reply.header.rcode, Rcode::Refused);
+    }
+
+    #[tokio::test]
+    async fn live_policy_reports_dnssec_state() {
+        let h = harness(Fake::a_record(Ipv4Addr::new(192, 0, 2, 7)));
+        let policy: &dyn LivePolicy = &h.engine;
+        assert!(!policy.dnssec_clock_untrusted());
+        policy.set_dnssec_mode(dnsy_core::Validation::Strict);
+        assert_eq!(policy.dnssec_mode(), dnsy_core::Validation::Strict);
+        policy.set_negative_trust_anchors(vec![(name("bad.example."), None)]);
+        assert_eq!(policy.negative_trust_anchors().len(), 1);
+        let _ = policy.trust_anchors();
+    }
+}

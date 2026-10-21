@@ -172,8 +172,13 @@ async fn get_acl(
     _scope: RequireScope<Read>,
     State(state): State<ApiState>,
 ) -> Result<Json<AclOverview>, ApiError> {
-    let rules = state.rules.list().await.map_err(filter_err)?;
-    let qps = state.rules.rate_limit_qps().await.map_err(filter_err)?;
+    let rules = state.stores.rules.list().await.map_err(filter_err)?;
+    let qps = state
+        .stores
+        .rules
+        .rate_limit_qps()
+        .await
+        .map_err(filter_err)?;
     Ok(Json(AclOverview {
         default_action: Action::Allow,
         rules: rules.into_iter().map(Into::into).collect(),
@@ -207,17 +212,19 @@ async fn create_rule(
         return Err(ApiError::Unprocessable("comment is too long".to_owned()));
     }
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
-    if state.rules.list().await.map_err(filter_err)?.len() >= MAX_RULES {
+    super::live::require_policy(&state)?;
+    if state.stores.rules.list().await.map_err(filter_err)?.len() >= MAX_RULES {
         return Err(ApiError::Unprocessable("too many rules".to_owned()));
     }
     let id = state
+        .stores
         .rules
         .add(matcher, req.action.into(), &req.comment)
         .await
         .map_err(filter_err)?;
     apply_acl(&state).await?;
     let rule = state
+        .stores
         .rules
         .list()
         .await
@@ -240,8 +247,8 @@ async fn delete_rule(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
-    state.rules.delete(id).await.map_err(filter_err)?;
+    super::live::require_policy(&state)?;
+    state.stores.rules.delete(id).await.map_err(filter_err)?;
     apply_acl(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -263,14 +270,15 @@ async fn set_rate_limit(
         )));
     }
     let _guard = state.apply_lock.lock().await;
-    super::live::require_engine(&state)?;
+    super::live::require_policy(&state)?;
     state
+        .stores
         .rules
         .set_rate_limit_qps(req.qps)
         .await
         .map_err(filter_err)?;
-    if let Some(engine) = &state.engine {
-        engine.set_rate_limit(req.qps);
+    if let Some(policy) = &state.policy {
+        policy.set_rate_limit(req.qps);
     }
     state.settings.set_per_client_qps(req.qps);
     Ok(Json(req))

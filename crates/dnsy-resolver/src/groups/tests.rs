@@ -468,3 +468,16 @@ async fn config_seeds_on_first_start_only() {
     assert_eq!(gs.list().await.unwrap(), list);
     GroupSet::new(list, Arc::new(SystemClock::new()), Arc::new(ThreadRng)).unwrap();
 }
+
+#[test]
+fn from_specs_builds_a_set_and_rejects_an_invalid_one() {
+    let mut s = spec("main", Strategy::Failover, &["192.0.2.1"]);
+    s.default = true;
+    let set = GroupSet::from_specs(vec![s.clone()]).unwrap();
+    assert_eq!(
+        set.group_for(&Name::from_ascii("a.example.").unwrap()),
+        "main"
+    );
+    s.default = false;
+    assert!(GroupSet::from_specs(vec![s]).is_err());
+}

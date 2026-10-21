@@ -84,11 +84,11 @@ async fn list_tokens(
 ) -> Result<Json<Vec<TokenInfo>>, ApiError> {
     let mut out = Vec::new();
     if scope.0.role == Role::Admin {
-        for user in state.users.list().await? {
-            out.extend(state.tokens.list(user.id).await?);
+        for user in state.auth.users.list().await? {
+            out.extend(state.auth.tokens.list(user.id).await?);
         }
     } else {
-        out = state.tokens.list(scope.0.user).await?;
+        out = state.auth.tokens.list(scope.0.user).await?;
     }
     Ok(Json(out.into_iter().map(TokenInfo::from).collect()))
 }
@@ -127,12 +127,13 @@ async fn create_token(
             "at least one scope is required".to_owned(),
         ));
     }
-    if state.tokens.list(scope.0.user).await?.len() >= MAX_TOKENS_PER_USER {
+    if state.auth.tokens.list(scope.0.user).await?.len() >= MAX_TOKENS_PER_USER {
         return Err(ApiError::Unprocessable(format!(
             "at most {MAX_TOKENS_PER_USER} tokens per user; revoke one first"
         )));
     }
     let (token, meta) = state
+        .auth
         .tokens
         .create(scope.0.user, &body.name, &body.scopes, body.expires_at)
         .await?;
@@ -166,7 +167,7 @@ async fn revoke_token(
     if !owns(&state, &scope.0, id).await? {
         return Err(ApiError::NotFound("token not found".to_owned()));
     }
-    state.tokens.revoke(id).await?;
+    state.auth.tokens.revoke(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -175,5 +176,11 @@ async fn owns(state: &ApiState, me: &AuthUser, id: TokenId) -> Result<bool, ApiE
     if me.role == Role::Admin {
         return Ok(true);
     }
-    Ok(state.tokens.list(me.user).await?.iter().any(|t| t.id == id))
+    Ok(state
+        .auth
+        .tokens
+        .list(me.user)
+        .await?
+        .iter()
+        .any(|t| t.id == id))
 }

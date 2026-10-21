@@ -217,8 +217,14 @@ async fn route_role_matrix_matches_the_committed_table() {
             vec![Scope::ApiRead, Scope::ApiWrite, Scope::Admin],
         ),
     ] {
-        let user = state.users.create(name, "pw-pw-pw-pw", role).await.unwrap();
+        let user = state
+            .auth
+            .users
+            .create(name, "pw-pw-pw-pw", role)
+            .await
+            .unwrap();
         let (token, _) = state
+            .auth
             .tokens
             .create(user.id, "m", &scopes, None)
             .await

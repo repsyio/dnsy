@@ -81,7 +81,7 @@ async fn fx() -> Fx {
     let counter = Arc::clone(&reloads);
     let state = ApiState::new(store)
         .with_services(&services)
-        .with_engine(Arc::clone(&engine))
+        .with_policy(Arc::clone(&engine) as Arc<dyn dnsy_engine::LivePolicy>)
         .with_config(&config)
         .with_cert_reload(Arc::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -97,9 +97,15 @@ async fn fx() -> Fx {
         ("op", Role::Operator, vec![Scope::ApiRead, Scope::ApiWrite]),
         ("viewer", Role::Viewer, vec![Scope::ApiRead]),
     ] {
-        let u = state.users.create(user, "pw-pw-pw", role).await.unwrap();
+        let u = state
+            .auth
+            .users
+            .create(user, "pw-pw-pw", role)
+            .await
+            .unwrap();
         tokens.push(
             state
+                .auth
                 .tokens
                 .create(u.id, "t", &scopes, None)
                 .await
@@ -327,7 +333,10 @@ async fn rate_limit_is_persisted_and_applied() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(f.state.rules.rate_limit_qps().await.unwrap(), Some(5));
+    assert_eq!(
+        f.state.stores.rules.rate_limit_qps().await.unwrap(),
+        Some(5)
+    );
     let (_, acl) = call(&f, &f.viewer, Method::GET, "/acl", None).await;
     assert_eq!(acl["rate_limit_qps"], 5);
     let (_, settings) = call(&f, &f.admin, Method::GET, "/settings", None).await;
@@ -391,7 +400,7 @@ async fn upstream_health_reported() {
     assert_eq!(g["health"][0]["available"], true);
 
     // Three failed exchanges eject the first member in the live set.
-    let live = f.state.live_groups.as_ref().unwrap().load_full().unwrap();
+    let live = f.state.live_groups.load_full().unwrap();
     for _ in 0..3 {
         let _ = live.resolve(&Down, &query("x.test.")).await;
     }
@@ -502,8 +511,6 @@ async fn upstream_group_crud_and_validation() {
     assert_eq!(
         f.state
             .live_groups
-            .as_ref()
-            .unwrap()
             .load_full()
             .unwrap()
             .group_for(&name("a.corp.example.")),
@@ -599,7 +606,7 @@ async fn upstream_group_crud_and_validation() {
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, _) = call(&f, &a, Method::DELETE, "/upstream-groups/second", None).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    assert!(f.state.live_groups.as_ref().unwrap().load_full().is_none());
+    assert!(f.state.live_groups.load_full().is_none());
     let (s, _) = call(&f, &a, Method::GET, "/upstream-groups/second", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
@@ -933,6 +940,7 @@ async fn blocklist_url_ssrf_and_validation() {
     // Refresh of a private source without opt-in never connects: the fetch is refused.
     let id = f
         .state
+        .stores
         .sources
         .add(dnsy_filter::NewSource {
             name: "sneaky".into(),
@@ -1028,7 +1036,7 @@ async fn client_cert_fingerprint_crud() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["enabled"], false);
     assert_eq!(f.reloads.load(Ordering::SeqCst), 2);
-    assert_eq!(f.state.client_certs.active().await.unwrap().len(), 0);
+    assert_eq!(f.state.auth.client_certs.active().await.unwrap().len(), 0);
     let (s, _) = call(
         &f,
         a,
@@ -1132,7 +1140,10 @@ async fn settings_patch_validates() {
     assert_eq!(v["filter"]["block_mode"], "refused");
     assert_eq!(v["querylog"]["retention_days"], 7);
     assert_eq!(v["limits"]["per_client_qps"], 60);
-    assert_eq!(f.state.rules.rate_limit_qps().await.unwrap(), Some(60));
+    assert_eq!(
+        f.state.stores.rules.rate_limit_qps().await.unwrap(),
+        Some(60)
+    );
     assert_eq!(
         *f.state.settings.retention_updates().borrow(),
         std::time::Duration::from_hours(7 * 24)
@@ -1255,11 +1266,13 @@ async fn mutations_fail_closed_without_engine_or_cert_reload() {
     let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
     let state = ApiState::new(store);
     let user = state
+        .auth
         .users
         .create("admin", "pw-pw-pw", Role::Admin)
         .await
         .unwrap();
     let token = state
+        .auth
         .tokens
         .create(
             user.id,
@@ -1365,8 +1378,8 @@ async fn mutations_fail_closed_without_engine_or_cert_reload() {
             "{method} {uri}: {text}"
         );
     }
-    assert_eq!(state.rules.list().await.unwrap().len(), 0);
-    assert_eq!(state.client_certs.list().await.unwrap().len(), 0);
-    assert_eq!(state.groups.list().await.unwrap().len(), 0);
-    assert_eq!(state.rules.rate_limit_qps().await.unwrap(), None);
+    assert_eq!(state.stores.rules.list().await.unwrap().len(), 0);
+    assert_eq!(state.auth.client_certs.list().await.unwrap().len(), 0);
+    assert_eq!(state.stores.groups.list().await.unwrap().len(), 0);
+    assert_eq!(state.stores.rules.rate_limit_qps().await.unwrap(), None);
 }

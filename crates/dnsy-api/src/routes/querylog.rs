@@ -258,7 +258,7 @@ impl LogFilter {
             Some(c) => {
                 let ip: IpAddr = c.parse().map_err(|_| bad("client address", c))?;
                 // Rows are stored redacted, so the filter has to match the stored form.
-                Some(if state.redact_client_ip {
+                Some(if state.observe.redact_client_ip {
                     redact_client_ip(ip)
                 } else {
                     ip
@@ -346,7 +346,7 @@ pub(crate) fn scrub(s: &str) -> String {
 
 fn view_client(state: &ApiState, stored: &str) -> String {
     match stored.parse::<IpAddr>() {
-        Ok(ip) if state.redact_client_ip => redact_client_ip(ip).to_string(),
+        Ok(ip) if state.observe.redact_client_ip => redact_client_ip(ip).to_string(),
         Ok(_) => stored.to_owned(),
         // Not an address: show nothing rather than guess.
         Err(_) => String::new(),
@@ -392,7 +392,7 @@ async fn search_log(
         )));
     }
     query.after = params.cursor.as_deref().map(decode_cursor).transpose()?;
-    let page = search(&state.store, query)
+    let page = search(&state.observe.store, query)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(LogPageBody {
@@ -422,7 +422,7 @@ impl Tail {
             (f, None) => f,
             (f, Some(ts)) => Some(f.map_or(ts - TAIL_SKEW_MS, |f| f.max(ts - TAIL_SKEW_MS))),
         };
-        let page = match search(&self.state.store, q).await {
+        let page = match search(&self.state.observe.store, q).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, "live tail poll failed");
@@ -476,16 +476,16 @@ async fn stream_log(
     Params(filter): Params<LogFilter>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let query = filter.to_query(&state)?;
-    let permit =
-        state
-            .live_tail
-            .acquire(scope.0.user, scope.0.role)
-            .ok_or(ApiError::Throttled {
-                retry_after_secs: 5,
-            })?;
+    let permit = state
+        .observe
+        .live_tail
+        .acquire(scope.0.user, scope.0.role)
+        .ok_or(ApiError::Throttled {
+            retry_after_secs: 5,
+        })?;
     // Start after the newest existing row.
     let newest = search(
-        &state.store,
+        &state.observe.store,
         QueryLogQuery {
             limit: 1,
             ..QueryLogQuery::default()
@@ -507,7 +507,7 @@ async fn stream_log(
     };
     let stream = futures_util::stream::unfold(tail, |mut tail| async move {
         while tail.pending.is_empty() {
-            tokio::time::sleep(tail.state.live_tail_poll).await;
+            tokio::time::sleep(tail.state.observe.live_tail_poll).await;
             tail.poll().await;
         }
         let ev = tail.pending.pop_front()?;

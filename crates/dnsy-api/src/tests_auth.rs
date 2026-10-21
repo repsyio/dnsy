@@ -126,7 +126,7 @@ async fn login(f: &Fixture, username: &str, password: &str) -> Response<Body> {
 }
 
 async fn session_for(f: &Fixture, username: &str, role: Role) -> Cred {
-    f.state.users.create(username, PW, role).await.unwrap();
+    f.state.auth.users.create(username, PW, role).await.unwrap();
     let res = login(f, username, PW).await;
     assert_eq!(res.status(), StatusCode::OK);
     let c = set_cookies(&res);
@@ -150,6 +150,7 @@ async fn status(
 async fn login_sets_session_and_csrf_cookies() {
     let f = fixture();
     f.state
+        .auth
         .users
         .create("alice", PW, Role::Viewer)
         .await
@@ -179,6 +180,7 @@ async fn login_sets_session_and_csrf_cookies() {
 async fn login_wrong_password_401() {
     let f = fixture();
     f.state
+        .auth
         .users
         .create("alice", PW, Role::Viewer)
         .await
@@ -197,6 +199,7 @@ async fn login_wrong_password_401() {
 async fn login_throttled_429() {
     let f = fixture();
     f.state
+        .auth
         .users
         .create("alice", PW, Role::Viewer)
         .await
@@ -216,6 +219,7 @@ async fn login_throttled_429() {
 async fn login_without_a_peer_address_fails_closed() {
     let f = fixture();
     f.state
+        .auth
         .users
         .create("alice", PW, Role::Viewer)
         .await
@@ -373,7 +377,7 @@ async fn user_crud_roundtrip() {
 async fn cannot_delete_last_admin_409() {
     let f = fixture();
     let admin = session_for(&f, "root", Role::Admin).await;
-    let id = f.state.users.list().await.unwrap()[0].id.0;
+    let id = f.state.auth.users.list().await.unwrap()[0].id.0;
     let uri = format!("/api/v1/users/{id}");
     assert_eq!(
         status(&f, Method::DELETE, &uri, &admin, None).await,
@@ -450,9 +454,10 @@ async fn token_name_over_128_rejected() {
 async fn token_count_per_user_is_capped() {
     let f = fixture();
     let s = session_for(&f, "root", Role::Admin).await;
-    let id = f.state.users.list().await.unwrap()[0].id;
+    let id = f.state.auth.users.list().await.unwrap()[0].id;
     for _ in 0..99 {
         f.state
+            .auth
             .tokens
             .create(id, "bulk", &[Scope::ApiRead], None)
             .await
@@ -574,10 +579,22 @@ async fn token_list_scoping_and_revoke() {
 #[tokio::test]
 async fn demoted_user_old_admin_token_is_rejected() {
     let f = fixture();
-    f.state.users.create("root", PW, Role::Admin).await.unwrap();
-    let ann = f.state.users.create("ann", PW, Role::Admin).await.unwrap();
+    f.state
+        .auth
+        .users
+        .create("root", PW, Role::Admin)
+        .await
+        .unwrap();
+    let ann = f
+        .state
+        .auth
+        .users
+        .create("ann", PW, Role::Admin)
+        .await
+        .unwrap();
     let (secret, _) = f
         .state
+        .auth
         .tokens
         .create(ann.id, "old", &[Scope::Admin, Scope::ApiRead], None)
         .await
@@ -589,6 +606,7 @@ async fn demoted_user_old_admin_token_is_rejected() {
     );
 
     f.state
+        .auth
         .users
         .update_role(ann.id, Role::Viewer)
         .await
@@ -681,9 +699,16 @@ async fn password_change_ends_old_sessions_and_keeps_current_client_logged_in() 
 #[tokio::test]
 async fn password_change_requires_session() {
     let f = fixture();
-    let u = f.state.users.create("ann", PW, Role::Viewer).await.unwrap();
+    let u = f
+        .state
+        .auth
+        .users
+        .create("ann", PW, Role::Viewer)
+        .await
+        .unwrap();
     let (secret, _) = f
         .state
+        .auth
         .tokens
         .create(u.id, "t", &[Scope::ApiRead], None)
         .await
@@ -707,6 +732,7 @@ async fn role_change_and_admin_password_reset_end_sessions() {
     let bob = session_for(&f, "bob", Role::Operator).await;
     let bob_id = f
         .state
+        .auth
         .users
         .list()
         .await
@@ -756,6 +782,7 @@ async fn deleted_users_token_and_session_stop_working() {
     let bob = session_for(&f, "bob", Role::Operator).await;
     let bob_user = f
         .state
+        .auth
         .users
         .list()
         .await
@@ -765,6 +792,7 @@ async fn deleted_users_token_and_session_stop_working() {
         .unwrap();
     let (secret, _) = f
         .state
+        .auth
         .tokens
         .create(bob_user.id, "t", &[Scope::ApiRead], None)
         .await
@@ -797,6 +825,7 @@ async fn disabled_users_lose_sessions_tokens_and_login_until_enabled() {
     let bob = session_for(&f, "bob", Role::Operator).await;
     let bob_user = f
         .state
+        .auth
         .users
         .list()
         .await
@@ -806,6 +835,7 @@ async fn disabled_users_lose_sessions_tokens_and_login_until_enabled() {
         .unwrap();
     let (secret, _) = f
         .state
+        .auth
         .tokens
         .create(bob_user.id, "t", &[Scope::ApiRead], None)
         .await
@@ -888,7 +918,7 @@ async fn last_active_admin_cannot_be_disabled_over_the_api() {
     let f = fixture();
     let root = session_for(&f, "root", Role::Admin).await;
     let other = session_for(&f, "other", Role::Admin).await;
-    let users = f.state.users.list().await.unwrap();
+    let users = f.state.auth.users.list().await.unwrap();
     let id = |name: &str| users.iter().find(|u| u.username == name).unwrap().id.0;
     let (root_uri, other_uri) = (
         format!("/api/v1/users/{}", id("root")),
@@ -941,7 +971,12 @@ async fn secure_cookie_flag_follows_tls_config() {
     let dir = tempfile::tempdir().unwrap();
     let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
     let state = ApiState::new(store);
-    state.users.create("alice", PW, Role::Viewer).await.unwrap();
+    state
+        .auth
+        .users
+        .create("alice", PW, Role::Viewer)
+        .await
+        .unwrap();
     let app = router(
         state,
         ApiConfig {
@@ -964,7 +999,12 @@ async fn secure_cookies_true_overrides_missing_tls() {
     let dir = tempfile::tempdir().unwrap();
     let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
     let state = ApiState::new(store);
-    state.users.create("alice", PW, Role::Viewer).await.unwrap();
+    state
+        .auth
+        .users
+        .create("alice", PW, Role::Viewer)
+        .await
+        .unwrap();
     let config = ApiConfig {
         tls: false,
         secure_cookies: Some(true),
@@ -999,7 +1039,12 @@ async fn secure_cookies_false_overrides_tls() {
     let dir = tempfile::tempdir().unwrap();
     let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
     let state = ApiState::new(store);
-    state.users.create("alice", PW, Role::Viewer).await.unwrap();
+    state
+        .auth
+        .users
+        .create("alice", PW, Role::Viewer)
+        .await
+        .unwrap();
     let config = ApiConfig {
         tls: true,
         secure_cookies: Some(false),

@@ -19,6 +19,7 @@ name = "gen-openapi"
 path = "src/bin/gen-openapi.rs"
 
 [dependencies]
+arc-swap = { workspace = true }
 axum = { workspace = true }
 dnsy-auth = { version = "0.1.0", path = "../dnsy-auth" }
 dnsy-config = { version = "0.1.0", path = "../dnsy-config" }
