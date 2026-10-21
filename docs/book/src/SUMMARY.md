@@ -8,6 +8,7 @@
 - [Zones](zones.md)
 - [Resolver, upstreams and cache](resolver.md)
 - [DNSSEC](dnssec.md)
+- [DNSSEC operator guide](dnssec-operator-guide.md)
 - [Filtering](filtering.md)
 - [DoT and mTLS](dot.md)
 - [DoH and tokens](doh.md)
