@@ -33,7 +33,10 @@ The database file is created with mode 0600 (its `-wal` and `-shm` files follow)
 restoring from a backup made by another user: `chmod 700 <data_dir>; chmod 600 <data_dir>/dnsy.db*`.
 
 The query log can dominate the database size. Lower `[querylog] retention_days` to shrink the
-backup; the rollups behind the dashboard are small. The write-ahead log is truncated to 64 MiB
+backup; the rollups behind the dashboard are small: hourly and minute rows are kept for the last two
+to three days only, older days are folded into `stats_day` (about 20 rows per day) and
+`stats_top_day` (at most 15 000 rows per day). The fold is one-way, so a backup is the only way to
+get the minute and hour detail of an old day back. The write-ahead log is truncated to 64 MiB
 after a checkpoint (`journal_size_limit`), so a large purge does not leave a large `-wal` file.
 The two query-log indexes add about 30 percent to the file size (see [Query log and
 stats](query-log.md)).

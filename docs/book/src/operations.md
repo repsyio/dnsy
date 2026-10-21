@@ -30,7 +30,7 @@ works and every DNSSEC zone can be signed, and 503 otherwise; point load balance
 (every minute it checks for changed zones, expiring signatures and key state changes), the key
 rollover timer (advances key states per the zone policy), client-certificate allowlist refresh
 and query-log retention (`[querylog] retention_days`; batched, also removes expired sessions and
-minute rollups older than 400 days, and runs `PRAGMA optimize` daily).
+folds days older than 48 hours into daily rollups, removes daily counter rollups older than 400 days, and runs `PRAGMA optimize` daily).
 
 ## Query log, stats and cache
 

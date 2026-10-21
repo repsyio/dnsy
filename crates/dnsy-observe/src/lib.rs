@@ -14,7 +14,7 @@ mod writer;
 
 pub use event::{AnswerSource, QueryEvent, QueryEventSink, SourceKind, redact_client_ip};
 pub use query::{Cursor, LogEntry, LogPage, QueryLogQuery, search};
-pub use retention::{purge_before, spawn_retention, spawn_retention_watch};
+pub use retention::{fold_rollups, purge_before, spawn_retention, spawn_retention_watch};
 pub use stats::{StatsService, Summary, TimePoint, TimeRange, TopEntry};
 pub use writer::{QueryLogCounters, QueryLogWriter, WriterConfig, querylog_counters};
 

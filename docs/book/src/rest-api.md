@@ -149,7 +149,8 @@ Unknown filter values answer 400.
 `/stats/*` take `from` and `to` (unix milliseconds; default the last 24 hours, at most 366 days,
 `from` before `to`, else 400). `timeseries` takes `bucket` in seconds (a multiple of 60, default
 3600, at most 5000 buckets). The top lists take `limit` (1 to 100, default 10). Rollups are minute
-or hour granular, so buckets touching the range count whole.
+or hour granular for the last two to three days and day granular before that, so buckets touching
+the range count whole; `timeseries` buckets under one day have no data for older days.
 
 The live tail sends `query` events (one log record as JSON) and `lagged` when rows were skipped
 because the reader was too slow. The server polls the log at its own pace, so a slow reader never
