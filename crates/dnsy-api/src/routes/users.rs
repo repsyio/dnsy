@@ -55,6 +55,9 @@ impl From<User> for UserInfo {
     }
 }
 
+/// Longest accepted username, in characters.
+const MAX_USERNAME: usize = 64;
+
 /// New user.
 #[derive(Deserialize, ToSchema)]
 pub struct CreateUser {
@@ -108,6 +111,7 @@ async fn list_users(
         (status = 201, description = "Created", body = UserInfo),
         (status = 400, body = Problem, content_type = "application/problem+json"),
         (status = 403, body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Username over 64 characters", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "Username taken", body = Problem, content_type = "application/problem+json"),
     ))]
 async fn create_user(
@@ -115,6 +119,11 @@ async fn create_user(
     State(state): State<ApiState>,
     Json(body): Json<CreateUser>,
 ) -> Result<(StatusCode, Json<UserInfo>), ApiError> {
+    if body.username.chars().count() > MAX_USERNAME {
+        return Err(ApiError::Unprocessable(format!(
+            "the username is at most {MAX_USERNAME} characters"
+        )));
+    }
     check_password(&body.password)?;
     let user = state
         .users

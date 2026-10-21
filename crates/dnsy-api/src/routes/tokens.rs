@@ -99,6 +99,7 @@ async fn list_tokens(
     responses(
         (status = 201, description = "Created; the secret is in this response only", body = CreatedToken),
         (status = 400, body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Name over 128 characters, or 100 tokens already", body = Problem, content_type = "application/problem+json"),
         (status = 403, description = "Not a session, or a scope the role does not allow", body = Problem, content_type = "application/problem+json"),
     ))]
 async fn create_token(
@@ -116,10 +117,20 @@ async fn create_token(
             "the token name must not be empty".to_owned(),
         ));
     }
+    if body.name.chars().count() > MAX_TOKEN_NAME {
+        return Err(ApiError::Unprocessable(format!(
+            "the token name is at most {MAX_TOKEN_NAME} characters"
+        )));
+    }
     if body.scopes.is_empty() {
         return Err(ApiError::BadRequest(
             "at least one scope is required".to_owned(),
         ));
+    }
+    if state.tokens.list(scope.0.user).await?.len() >= MAX_TOKENS_PER_USER {
+        return Err(ApiError::Unprocessable(format!(
+            "at most {MAX_TOKENS_PER_USER} tokens per user; revoke one first"
+        )));
     }
     let (token, meta) = state
         .tokens
@@ -133,6 +144,11 @@ async fn create_token(
         }),
     ))
 }
+
+/// Longest accepted token name, in characters.
+const MAX_TOKEN_NAME: usize = 128;
+/// Most tokens one user may hold.
+const MAX_TOKENS_PER_USER: usize = 100;
 
 /// Revoke a token (own tokens; admins any).
 #[utoipa::path(delete, path = "/tokens/{id}", tag = "tokens", security(("bearer" = []), ("session" = [])),

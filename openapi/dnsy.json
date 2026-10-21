@@ -2383,6 +2383,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Name over 128 characters, or 100 tokens already",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2968,6 +2978,16 @@
           },
           "409": {
             "description": "Username taken",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Username over 64 characters",
             "content": {
               "application/problem+json": {
                 "schema": {

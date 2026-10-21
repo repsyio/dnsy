@@ -392,6 +392,67 @@ async fn token_secret_returned_once() {
 }
 
 #[tokio::test]
+async fn token_name_over_128_rejected() {
+    let f = fixture();
+    let s = session_for(&f, "root", Role::Admin).await;
+    let long = json!({"name": "n".repeat(129), "scopes": ["api:read"]});
+    let res = call(
+        &f,
+        req(Method::POST, "/api/v1/tokens", Some(&s), Some(long)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        res.headers()[axum::http::header::CONTENT_TYPE],
+        "application/problem+json"
+    );
+    let edge = json!({"name": "n".repeat(128), "scopes": ["api:read"]});
+    let res = call(
+        &f,
+        req(Method::POST, "/api/v1/tokens", Some(&s), Some(edge)),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn token_count_per_user_is_capped() {
+    let f = fixture();
+    let s = session_for(&f, "root", Role::Admin).await;
+    let id = f.state.users.list().await.unwrap()[0].id;
+    for _ in 0..99 {
+        f.state
+            .tokens
+            .create(id, "bulk", &[Scope::ApiRead], None)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        create_token(&f, &s, &["api:read"]).await.status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        create_token(&f, &s, &["api:read"]).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+}
+
+#[tokio::test]
+async fn username_over_64_rejected() {
+    let f = fixture();
+    let s = session_for(&f, "root", Role::Admin).await;
+    let body = |n: usize| json!({"username": "u".repeat(n), "password": PW, "role": "viewer"});
+    assert_eq!(
+        status(&f, Method::POST, "/api/v1/users", &s, Some(body(65))).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        status(&f, Method::POST, "/api/v1/users", &s, Some(body(64))).await,
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
 async fn token_creation_rules() {
     let f = fixture();
     let viewer = session_for(&f, "vera", Role::Viewer).await;
