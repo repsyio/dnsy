@@ -852,6 +852,7 @@ async fn roles_gate_every_mutating_route_group() {
         (Method::POST, "/acl", json!({}), "operator"),
         (Method::DELETE, "/acl/99999", json!(null), "operator"),
         (Method::PUT, "/acl/rate-limit", json!({}), "operator"),
+        (Method::PUT, "/response-ip", json!({}), "operator"),
         (Method::POST, "/rules", json!({}), "operator"),
         (Method::DELETE, "/rules/99999", json!(null), "operator"),
         (Method::POST, "/blocklists", json!({}), "operator"),

@@ -105,6 +105,10 @@ pub static MIGRATIONS: &[Migration] = &[
         name: "querylog_compact",
         sql: include_str!("../migrations/0015_querylog_compact.sql"),
     },
+    Migration {
+        name: "response_ip",
+        sql: include_str!("../migrations/0015_response_ip.sql"),
+    },
 ];
 
 /// Applied state of one known migration.

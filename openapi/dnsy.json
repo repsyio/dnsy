@@ -1563,6 +1563,106 @@
         ]
       }
     },
+    "/api/v1/response-ip": {
+      "get": {
+        "tags": [
+          "acl"
+        ],
+        "operationId": "get_response_ip",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseIpList"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "acl"
+        ],
+        "operationId": "put_response_ip",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResponseIpList"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The list now in effect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseIpList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid or too many entries; nothing changed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/rules": {
       "get": {
         "tags": [
@@ -6502,6 +6602,23 @@
             "description": "`updated` or `not_modified`."
           }
         }
+      },
+      "ResponseIpList": {
+        "type": "object",
+        "description": "The response-IP networks.",
+        "required": [
+          "cidrs"
+        ],
+        "properties": {
+          "cidrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Addresses or networks, e.g. `10.0.0.0/8` or `192.0.2.1`. An upstream answer with an A or\nAAAA record inside any of them is blocked (EDE 15). An empty list disables the policy."
+          }
+        },
+        "additionalProperties": false
       },
       "RolloverInput": {
         "type": "object",

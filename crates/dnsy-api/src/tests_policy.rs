@@ -1383,3 +1383,46 @@ async fn mutations_fail_closed_without_engine_or_cert_reload() {
     assert_eq!(state.stores.groups.list().await.unwrap().len(), 0);
     assert_eq!(state.stores.rules.rate_limit_qps().await.unwrap(), None);
 }
+
+#[tokio::test]
+async fn response_ip_list_is_validated_persisted_and_role_gated() {
+    let f = fx().await;
+    let (s, v) = call(&f, &f.viewer, Method::GET, "/response-ip", None).await;
+    assert_eq!((s, &v["cidrs"]), (StatusCode::OK, &json!([])));
+    let body = json!({"cidrs": ["10.0.0.5/8", "10.0.0.0/8", "192.0.2.1"]});
+    let (s, _) = call(
+        &f,
+        &f.viewer,
+        Method::PUT,
+        "/response-ip",
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(
+        f.state.stores.rules.response_ip_cidrs().await.unwrap(),
+        None
+    );
+    let (s, _) = call(
+        &f,
+        &f.operator,
+        Method::PUT,
+        "/response-ip",
+        Some(json!({"cidrs": ["10.0.0.0/99"]})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        f.state.stores.rules.response_ip_cidrs().await.unwrap(),
+        None
+    );
+    let (s, v) = call(&f, &f.operator, Method::PUT, "/response-ip", Some(body)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["cidrs"], json!(["10.0.0.0/8", "192.0.2.1/32"]));
+    assert_eq!(
+        f.state.stores.rules.response_ip_cidrs().await.unwrap(),
+        Some(vec!["10.0.0.0/8".to_owned(), "192.0.2.1/32".to_owned()])
+    );
+    let (_, v) = call(&f, &f.viewer, Method::GET, "/response-ip", None).await;
+    assert_eq!(v["cidrs"], json!(["10.0.0.0/8", "192.0.2.1/32"]));
+}

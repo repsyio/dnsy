@@ -172,6 +172,7 @@ and lists do.
 | --- | --- |
 | `GET /acl`, `POST /acl`, `DELETE /acl/{id}` | CIDR (or client-certificate fingerprint) rules with action `allow`, `refuse` or `drop`; longest prefix wins. A single address blocks one IP |
 | `PUT /acl/rate-limit` | Per-client queries per second (`0` = unlimited, at most 1,000,000), persisted |
+| `GET /response-ip`, `PUT /response-ip` | Response-IP networks `{"cidrs": [...]}`; `PUT` replaces the list live and persists it (invalid network `422`) |
 | `GET/POST /blocklists`, `PATCH/DELETE /blocklists/{id}` | List sources and their last fetch status (`last_fetched`, `last_status`, `entries`); `PATCH` enables or disables |
 | `POST /blocklists/{id}/refresh` | Fetch now: `{"outcome": "updated" \| "not_modified"}`; a failed fetch is `422` and the previous list stays active |
 | `GET/POST /rules`, `DELETE /rules/{id}` | Custom `block` or `allow` rules for a domain and its subdomains (allow wins) |

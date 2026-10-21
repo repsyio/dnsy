@@ -176,6 +176,49 @@ impl RuleStore {
             .await?;
         Ok(())
     }
+
+    /// Persisted response-IP networks (canonical text, one network per entry); `None` if never
+    /// set through the API, in which case `[filter] response_ip_blocklist` applies.
+    ///
+    /// # Errors
+    /// Store failure.
+    pub async fn response_ip_cidrs(&self) -> Result<Option<Vec<String>>, FilterError> {
+        let v: Option<String> = self
+            .store
+            .read(|c| {
+                match c.query_row(
+                    "SELECT cidrs FROM response_ip_policy WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                ) {
+                    Ok(v) => Ok(Some(v)),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(e) => Err(e.into()),
+                }
+            })
+            .await?;
+        Ok(v.map(|v| v.lines().map(str::to_owned).collect()))
+    }
+
+    /// Replace the persisted response-IP networks (an empty list disables the policy).
+    ///
+    /// # Errors
+    /// Store failure.
+    pub async fn set_response_ip_cidrs(&self, cidrs: &[String]) -> Result<(), FilterError> {
+        let now = unix_now();
+        let joined = cidrs.join("\n");
+        self.store
+            .write(move |tx| {
+                tx.execute(
+                    "INSERT INTO response_ip_policy (id, cidrs, updated_at) VALUES (1, ?1, ?2)
+                     ON CONFLICT(id) DO UPDATE SET cidrs = ?1, updated_at = ?2",
+                    params![joined, now],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +291,21 @@ mod tests {
         rs.set_rate_limit_qps(50).await.unwrap();
         rs.set_rate_limit_qps(70).await.unwrap();
         assert_eq!(rs.rate_limit_qps().await.unwrap(), Some(70));
+    }
+
+    #[tokio::test]
+    async fn response_ip_setting_persists() {
+        let (rs, _d) = setup();
+        assert_eq!(rs.response_ip_cidrs().await.unwrap(), None);
+        rs.set_response_ip_cidrs(&["10.0.0.0/8".to_owned(), "fc00::/7".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(
+            rs.response_ip_cidrs().await.unwrap(),
+            Some(vec!["10.0.0.0/8".to_owned(), "fc00::/7".to_owned()])
+        );
+        rs.set_response_ip_cidrs(&[]).await.unwrap();
+        assert_eq!(rs.response_ip_cidrs().await.unwrap(), Some(vec![]));
     }
 
     #[tokio::test]

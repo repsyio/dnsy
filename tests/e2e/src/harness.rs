@@ -56,6 +56,8 @@ pub struct Opts {
     /// Domains written to a blocklist file that seeds the filter.
     pub blocked: Vec<String>,
     pub block_mode: &'static str,
+    /// `[filter] response_ip_blocklist` entries.
+    pub response_ip: Vec<String>,
     pub cache_min_ttl: u32,
     pub cache_max_ttl: u32,
     /// `(max_stale, answer_ttl, client_timeout_ms)`; `None` disables serve-stale.
@@ -96,6 +98,7 @@ impl Default for Opts {
             udp_in_flight_per_client: 64,
             blocked: Vec::new(),
             block_mode: "null_ip",
+            response_ip: Vec::new(),
             cache_min_ttl: 0,
             cache_max_ttl: 86_400,
             serve_stale: None,
@@ -203,6 +206,7 @@ fn config(dir: &Path, o: &Opts, upstream: Option<SocketAddr>) -> String {
          [cache]\nmin_ttl = {minttl}\nmax_ttl = {maxttl}\n\
          [cache.prefetch]\n{prefetch}\
          [filter]\nblock_mode = \"{bm}\"\nblocklists = [{lists}]\n\
+         response_ip_blocklist = [{rip}]\n\
          [limits]\nopen_resolver = true\nper_client_qps = {qps}\ntcp_idle_ms = {idle}\n\
          max_conns_per_client = {mcpc}\n\
          udp_in_flight_per_client = {uifpc}\n\
@@ -215,6 +219,7 @@ fn config(dir: &Path, o: &Opts, upstream: Option<SocketAddr>) -> String {
         minttl = o.cache_min_ttl,
         maxttl = o.cache_max_ttl,
         bm = o.block_mode,
+        rip = o.response_ip.iter().map(q).collect::<Vec<_>>().join(", "),
         lists = if o.blocked.is_empty() {
             String::new()
         } else {

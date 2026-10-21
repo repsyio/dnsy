@@ -177,6 +177,9 @@ impl EngineBuilder<UpstreamClient> {
         if let Some(qps) = rules.rate_limit_qps().await? {
             builder.rate_qps = qps;
         }
+        if let Some(stored) = rules.response_ip_cidrs().await? {
+            builder.response_ip = ResponseIpPolicy::from_strings(&stored);
+        }
         Ok(builder)
     }
 }
@@ -184,7 +187,7 @@ impl EngineBuilder<UpstreamClient> {
 impl<E: Exchange> EngineBuilder<E> {
     /// Config-derived defaults: allow-all ACL (`from_config` applies the private-only base unless
     /// `[limits] open_resolver`), `[limits] per_client_qps`, empty blocklists in
-    /// `[filter] block_mode`, cache from `[cache]`, deadline `timeout_ms * attempts`; no zones,
+    /// `[filter] block_mode` and `response_ip_blocklist`, cache from `[cache]`, deadline `timeout_ms * attempts`; no zones,
     /// upstream groups, event sink or DNSSEC validation.
     #[must_use]
     pub fn new(config: &Config, exchange: E) -> Self {
@@ -198,7 +201,7 @@ impl<E: Exchange> EngineBuilder<E> {
                 FilterSetBuilder::new(mode, FilterLimits::default()).build(),
             )),
             block_mode: mode,
-            response_ip: ResponseIpPolicy::default(),
+            response_ip: ResponseIpPolicy::from_strings(&config.filter.response_ip_blocklist),
             zones: None,
             cache: Arc::new(Cache::new(cache_options(&config.cache))),
             groups: Arc::new(ArcSwapOption::empty()),
