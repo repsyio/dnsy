@@ -101,13 +101,22 @@ async fn malformed_requests_are_client_errors_in_problem_shape() {
 
 #[tokio::test]
 async fn oversized_bodies_are_413() {
+    const LIMIT: usize = 1 << 20;
     let h = start().await;
     let api = h.rest();
-    let huge = json!({"default_ttl": 300, "soa": {}, "records": [], "pad": "x".repeat(2 << 20)});
+    // Exactly one byte over the 1 MiB zone-body limit. The server answers 413 as soon as it has
+    // read past the limit and then closes the connection; a larger body would still be in flight
+    // then, the client's write would fail with a broken pipe or reset and the 413 would be lost
+    // (which of the two wins depends on scheduling). With nothing left to send, the response is
+    // always read.
+    let mut body = json!({"default_ttl": 300, "soa": {}, "records": [], "pad": ""});
+    let empty = body.to_string().len();
+    body["pad"] = "x".repeat(LIMIT + 1 - empty).into();
+    assert_eq!(body.to_string().len(), LIMIT + 1);
     let r = api
         .req(Method::POST, "/zones")
         .bearer(&h.api_token)
-        .json(&huge)
+        .json(&body)
         .send()
         .await;
     r.problem(413);
