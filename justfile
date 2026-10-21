@@ -82,7 +82,7 @@ openapi:
 openapi-check:
     cargo run -q -p dnsy-api --bin gen-openapi | diff -u openapi/dnsy.json - || { echo "openapi/dnsy.json is stale: run 'just openapi'"; exit 1; }
 
-# Build the site into target/site/: landing (index.html), book (docs/), rustdoc (api/), shared branding/.
+# Build the site into target/site/: landing (index.html, CNAME), book (docs/), Redoc (rest-api/), rustdoc (api/), shared branding/.
 docs:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -91,8 +91,16 @@ docs:
     mkdir -p "$target/site"
     cargo doc --workspace --no-deps
     cp -r "$target/doc" "$target/site/api"
+    # A workspace rustdoc build has no root index; send /api/ to the shared vocabulary crate.
+    printf '%s\n' '<!doctype html><meta charset="utf-8"><title>DNSY API docs</title><meta http-equiv="refresh" content="0; url=dnsy_core/index.html"><a href="dnsy_core/index.html">DNSY API docs</a>' > "$target/site/api/index.html"
     cp -r branding "$target/site/branding"
-    cp docs/landing/index.html "$target/site/index.html"
+    cp docs/landing/index.html docs/landing/CNAME "$target/site/"
+    if command -v npx >/dev/null 2>&1; then
+      mkdir -p "$target/site/rest-api"
+      npx --yes @redocly/cli@2.67.1 build-docs openapi/dnsy.json -o "$target/site/rest-api/index.html"
+    else
+      echo "npx not installed; skipping the Redoc page"
+    fi
     if command -v mdbook >/dev/null 2>&1; then
       mdbook test docs/book
       mdbook build docs/book -d "$target/site/docs"

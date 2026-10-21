@@ -7,7 +7,8 @@ The management API is a JSON REST API under `/api/v1`, described by an OpenAPI 3
 | `openapi/dnsy.json` in the repository | the checked-in document; `just openapi-check` (part of `just check`) fails when it drifts from the handler annotations |
 | `GET /api/openapi.json` on a running server | the same document, served by the binary |
 | `dnsy openapi` | prints the document to stdout |
-| [`/api/`](../api/) on the docs site | rustdoc for every crate (the planned Redoc rendering of the OpenAPI document joins it with the Pages pipeline) |
+| [`/rest-api/`](../rest-api/) on the docs site | the OpenAPI document rendered with Redoc |
+| [`/api/`](../api/) on the docs site | rustdoc for every crate |
 
 ```sh
 dnsy openapi | jq '.paths | keys | length'    # how many paths the server exposes
