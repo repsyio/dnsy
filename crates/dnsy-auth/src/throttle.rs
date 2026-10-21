@@ -1,4 +1,4 @@
-//! In-memory failed-authentication throttle shared by the DoH token check.
+//! In-memory failed-authentication throttle shared by the `DoH` token check.
 //!
 //! Entries are keyed by [`ClientKey`] (IPv4 `/32`, IPv6 `/64`) and an optional secondary key,
 //! counted in a fixed window and held in a bounded, sharded table. A client that reached the

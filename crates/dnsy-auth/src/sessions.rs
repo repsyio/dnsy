@@ -555,15 +555,12 @@ mod tests {
         for n in 0..40_i64 {
             // Always wait out the previous delay, so every attempt is recorded.
             let from = ip(&format!("10.1.{}.{}", n / 200, n % 200 + 1));
-            loop {
-                match s.login_at(&users, "alice", "bad", from, None, now).await {
-                    Err(AuthError::Throttled { retry_after_secs }) => {
-                        last = i64::try_from(retry_after_secs).unwrap();
-                        assert!(last <= USERNAME_BACKOFF_CAP_SECS);
-                        now += last;
-                    }
-                    _ => break,
-                }
+            while let Err(AuthError::Throttled { retry_after_secs }) =
+                s.login_at(&users, "alice", "bad", from, None, now).await
+            {
+                last = i64::try_from(retry_after_secs).unwrap();
+                assert!(last <= USERNAME_BACKOFF_CAP_SECS);
+                now += last;
             }
         }
         assert_eq!(last, USERNAME_BACKOFF_CAP_SECS, "delay reached the cap");

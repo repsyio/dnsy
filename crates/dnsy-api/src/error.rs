@@ -178,7 +178,7 @@ impl From<AuthError> for ApiError {
 impl From<UserError> for ApiError {
     fn from(e: UserError) -> Self {
         match e {
-            UserError::Empty => ApiError::BadRequest(e.to_string()),
+            UserError::Empty | UserError::PasswordTooLong => ApiError::BadRequest(e.to_string()),
             UserError::DuplicateUsername | UserError::LastAdmin => {
                 ApiError::Conflict(e.to_string())
             }
@@ -186,7 +186,6 @@ impl From<UserError> for ApiError {
             UserError::InvalidCredentials | UserError::InvalidBootstrapCode => {
                 ApiError::Unauthorized
             }
-            UserError::PasswordTooLong => ApiError::BadRequest(e.to_string()),
             UserError::Busy => ApiError::Unavailable,
             UserError::Hash | UserError::Store(_) => ApiError::Internal(e.to_string()),
         }
