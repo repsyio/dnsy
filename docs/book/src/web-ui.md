@@ -8,6 +8,30 @@ This page covers the shell, the dashboard, the query log, the zones pages, the a
 (filtering, ACL, upstreams, client certificates, cache, settings) and the users, tokens and
 profile pages.
 
+## Screenshots
+
+Taken at 1280 px from a seeded demo with Playwright (`scripts/demo/run.sh`, `scripts/demo/capture.mjs`).
+
+![The login page: a 3D light-grid scene with the Nox hologram](images/login.png)
+
+![The dashboard with tiles and the queries chart](images/dashboard.png)
+
+![The zones list](images/zones.png)
+
+![The zone editor with the record table](images/zone-editor.png)
+
+![The DNSSEC tab of a signed zone: keys, timers and DS records](images/dnssec.png)
+
+![The query log with filters and the live tail toggle](images/query-log.png)
+
+![The filtering page](images/filtering.png)
+
+Nox in an empty list and while loading:
+
+![Empty state with the Nox mascot](images/mascot-empty.png)
+
+![Loading state with the Nox mascot](images/mascot-loading.png)
+
 ## Stack
 
 - Angular (standalone components, signals, zoneless change detection, esbuild `application` builder),
@@ -337,3 +361,10 @@ The **DNSSEC** entry in the navigation (`/dnssec`) shows and changes validation 
 
 Loading, error (with retry) and empty states use the mascot components; every control has a label,
 errors use `role="alert"` and the pages work at 360 px.
+
+## Known limits
+
+- The query log drawer has no answer records or Extended DNS Error codes (the log does not store
+  them) and there are no one-click block or allow buttons on log rows; use the Filtering page.
+- Settings changed on the Settings and DNSSEC pages apply at once but are runtime-only (the
+  per-client rate limit is saved); the configuration file wins after a restart.
