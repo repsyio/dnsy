@@ -5,3 +5,6 @@ node_modules
 pnpm-lock.yaml
 src/app/api/schema.d.ts
 public
+test-results
+playwright-report
+.e2e-run

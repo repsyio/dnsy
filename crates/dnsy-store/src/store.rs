@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rusqlite::{Connection, OpenFlags, Transaction};
+use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 
 use crate::migrate::{self, MIGRATIONS, Migration, MigrationStatus};
 
@@ -116,7 +116,9 @@ impl Store {
         let inner = Arc::clone(&self.inner);
         join(tokio::task::spawn_blocking(move || {
             let mut conn = lock(&inner.writer);
-            let mut tx = conn.transaction()?;
+            // Immediate: take the write lock first, so a writer in another process (the CLI
+            // beside a running server) waits instead of failing on a stale read snapshot.
+            let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let out = f(&mut tx)?;
             tx.commit()?;
             Ok(out)
@@ -192,6 +194,34 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("t.db");
         (d, p)
+    }
+
+    /// Another process (the CLI next to a running server) may commit between this transaction's
+    /// first read and its first write. A deferred transaction then fails at once with "database
+    /// is locked" (stale snapshot); an immediate one takes the write lock up front and the other
+    /// writer waits for it.
+    #[tokio::test]
+    async fn a_second_writer_waits_instead_of_failing_on_a_stale_snapshot() {
+        let (_d, p) = db();
+        let a = Store::open_with(&p, &[M1]).unwrap();
+        let b = Store::open_with(&p, &[M1]).unwrap();
+        let slow = b.write(|tx| {
+            tx.query_row("SELECT COUNT(*) FROM a", [], |r| r.get::<_, i64>(0))?;
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            tx.execute("INSERT INTO a DEFAULT VALUES", [])?;
+            Ok(())
+        });
+        let quick = async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            a.write(|tx| {
+                tx.execute("INSERT INTO a DEFAULT VALUES", [])?;
+                Ok(())
+            })
+            .await
+        };
+        let (slow, quick) = tokio::join!(slow, quick);
+        slow.expect("the long transaction keeps its snapshot valid");
+        quick.expect("the other writer waits for the lock");
     }
 
     fn tables(s: &Store) -> Vec<String> {

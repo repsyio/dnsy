@@ -57,7 +57,7 @@ type Pending =
               <input
                 id="grp-first"
                 class="field-input"
-                placeholder="1.1.1.1:53 or tls://dns.example"
+                placeholder="udp://1.1.1.1 or tls://dns.example"
                 autocomplete="off"
                 [value]="newMember()"
                 (input)="newMember.set(val($event))"
@@ -200,6 +200,7 @@ type Pending =
                   [id]="'am-' + g.name"
                   class="field-input"
                   autocomplete="off"
+                  placeholder="udp://1.1.1.1 or tls://dns.example"
                   [value]="memberDraft(g.name)"
                   (input)="setDraft(g.name, val($event))"
                 />

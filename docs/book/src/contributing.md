@@ -101,3 +101,45 @@ makes the fake upstream answer from it; `Tree::answer` returns a response you ca
 with `upstream.on`. `validate_answer` runs the `dnsy-dnssec` validator on a server's own answer.
 The clock guard test patches the build timestamp in a copy of the binary (`Opts::binary`), since a
 child process cannot be given another clock.
+
+## Browser end-to-end tests
+
+The Playwright suite in `web/e2e` drives the real UI in Chromium against a real `dnsy` (built with
+`--features embed-ui`, started with a temporary configuration, free ports and a fake UDP upstream
+written in the test support code). It covers sign-in and first-admin setup, the throttle, CSRF and
+session expiry, the no-WebGL and reduced-motion login, navigation, 404 and the auth guard, the
+dashboard after real DNS queries, zones and records (validation, ETag conflict, BIND export),
+the query log (filters, live tail), filtering and ACL rules changing DNS answers, upstream groups,
+client certificates, settings, cache flush, users and roles, tokens (secret shown once), password
+change, the DNSSEC tab, mascot states (simulated with route interception), responsive checks at
+360 and 1280 px, keyboard use and an axe scan (no serious or critical violations). Any console
+CSP violation fails the test.
+
+```sh
+just e2e-ui                       # build UI and binary, install Chromium if missing, run everything
+cd web && DNSY_BIN=... pnpm e2e   # run again without rebuilding
+cd web && pnpm exec playwright test zones --headed   # a subset, with a visible browser
+cd web && pnpm exec playwright show-report           # HTML report of the last run
+```
+
+Chromium is installed once into the Playwright cache (`pnpm exec playwright install chromium`);
+the recipe does it for you. Only Chromium runs: WebKit needs system libraries not present on
+every machine and Firefox lacks the clipboard permissions and console messages two tests use.
+`DNSY_BIN` points at another binary (it must include the embedded UI); without it the suite uses
+`$CARGO_TARGET_DIR/debug/dnsy`. A debug build reads `web/dist` from disk, so rebuild the web app
+(`pnpm build`) after changing it.
+
+How it is organised:
+
+- A global setup starts one shared server with the users `admin`, `operator` and `viewer` (password
+  `e2e-password-1234`) and stores their signed-in sessions, so most tests start signed in. Pick a
+  role with `test.use({ storageState: roleState('viewer') })`.
+- Tests that change global state (settings, ACL, filtering, cache, counts) start their own server
+  with the `freshServer` fixture and sign in with `sessionFor`; zones use unique names, so tests
+  run in parallel. Never log an API client in with the page's cookie: logging in with a session
+  cookie ends that session (`Api.login` uses an empty jar for that reason).
+- `support/dns.ts` sends hand-built UDP queries; `support/upstream.ts` answers every `A` query
+  with `192.0.2.7` (names starting `nx.` get NXDOMAIN) and counts the queries it saw.
+- No fixed sleeps: locators auto-wait and `expect.poll` / `toPass` wait for server-side effects.
+- Traces and screenshots are kept only for failing tests (`web/test-results`, not committed).
+
