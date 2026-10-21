@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { clickByText, mount, problem, type } from '../admin-shared/testing';
+import { clickByText, mount, problem, type } from '../../../testing/testing';
 import { ZoneDnssecTab } from './zone-dnssec-tab';
 
 const URL = '/api/v1/zones/example.com./dnssec';

@@ -4,8 +4,8 @@ import {
   MascotErrorComponent,
   MascotLoadingComponent,
 } from '../../shared/mascot';
-import { messageOf } from '../admin-shared/util';
-import { ConfirmDialog } from '../zones/confirm-dialog';
+import { messageOf } from '../../shared/util/util';
+import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { UpstreamsService } from './upstreams.service';
 import type { Group, Health, Strategy } from './upstreams.service';
 

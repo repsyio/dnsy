@@ -72,15 +72,14 @@ test('a blocklist file source blocks the names it lists; it can be disabled, ena
   const s = await freshServer();
   const file = join(s.dir, 'list.txt');
   writeFileSync(file, 'listed.example.test\n');
-  const api = await sessionFor(page, s.baseURL);
-  await api.ok('post', '/blocklists', {
-    name: 'file-list',
-    location: file,
-    format: 'domains',
-    allow_private: true,
-  });
+  await sessionFor(page, s.baseURL);
   await page.goto(`${s.baseURL}/filtering`);
   const lists = page.getByRole('region', { name: 'Blocklist sources' });
+  await lists.getByLabel('Name').fill('file-list');
+  await lists.getByLabel('URL or file path').fill(file);
+  await lists.getByLabel('Format').selectOption('domains');
+  await lists.getByLabel('Allow private targets and local files').check();
+  await lists.getByRole('button', { name: 'Add source' }).click();
   const row = lists.getByRole('row', { name: /file-list/ });
   await expect(row).toBeVisible();
   await lists.getByRole('button', { name: 'Refresh file-list' }).click();

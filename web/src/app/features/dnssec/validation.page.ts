@@ -4,8 +4,8 @@ import {
   MascotErrorComponent,
   MascotLoadingComponent,
 } from '../../shared/mascot';
-import { formatEpoch, messageOf } from '../admin-shared/util';
-import { ConfirmDialog } from '../zones/confirm-dialog';
+import { formatEpoch, messageOf } from '../../shared/util/util';
+import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import {
   MODE_TEXT,
   WEAKEN_TEXT,
@@ -15,9 +15,9 @@ import {
   ntaError,
   ntaExpiresAt,
   ntaExpiryError,
-} from './dnssec-logic';
-import { DnssecService } from './dnssec.service';
-import type { DnssecStatus, ValidationMode, ValidationSettings } from './dnssec.service';
+} from '../../core/dnssec-logic';
+import { DnssecService } from '../../core/dnssec.service';
+import type { DnssecStatus, ValidationMode, ValidationSettings } from '../../core/dnssec.service';
 
 const MODES: ValidationMode[] = ['strict', 'permissive', 'off'];
 

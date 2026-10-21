@@ -106,6 +106,10 @@ export class DashboardPage {
     this.refresh();
   }
 
+  protected dropped(n: number): string {
+    return formatCount(n);
+  }
+
   protected time(ms: number): string {
     return new Date(ms).toLocaleString();
   }

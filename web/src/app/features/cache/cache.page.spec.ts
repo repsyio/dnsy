@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { mount, problem, type, clickByText } from '../admin-shared/testing';
+import { mount, problem, type, clickByText } from '../../../testing/testing';
 import { CachePage, REFRESH_MS } from './cache.page';
 
 const STATS = {

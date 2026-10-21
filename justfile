@@ -46,7 +46,7 @@ e2e:
 
 # Web UI: install, lint, unit tests with coverage, build, types drift (no-op without node/pnpm or web/).
 web:
-    @if [ -f web/package.json ] && command -v node >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then cd web && pnpm install --frozen-lockfile && pnpm lint && pnpm ng test --coverage --no-watch && pnpm build && cd .. && just web-types-check; else echo "node/pnpm or web/ missing; skipping web"; fi
+    @if [ -f web/package.json ] && command -v node >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then cd web && pnpm install --frozen-lockfile && pnpm dedupe --check && pnpm lint && pnpm ng test --coverage --no-watch && pnpm build && cd .. && just web-types-check; else echo "node/pnpm or web/ missing; skipping web"; fi
 
 # Browser end-to-end suite (Playwright, Chromium) against the real binary with the embedded UI.
 # Builds web/dist and `dnsy --features embed-ui`, installs Chromium when missing, type-checks and runs web/e2e.

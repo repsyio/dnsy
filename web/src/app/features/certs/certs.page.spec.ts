@@ -1,4 +1,4 @@
-import { mount, problem, type, clickByText } from '../admin-shared/testing';
+import { mount, problem, type, clickByText } from '../../../testing/testing';
 import { CertsPage } from './certs.page';
 
 const HEX = 'ab'.repeat(32);

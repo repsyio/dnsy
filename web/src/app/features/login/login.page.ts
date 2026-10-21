@@ -11,11 +11,12 @@ import {
   ElementRef,
   DOCUMENT,
 } from '@angular/core';
-import { FormsModule } from '@angular/forms';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { ApiError } from '../../core/api-error';
 import { AuthService } from '../../core/auth.service';
 import { MascotLoadingComponent } from '../../shared/mascot';
+import { MIN_PASSWORD } from '../../shared/util/password-strength';
 import { injectReducedMotion } from '../../shared/mascot/reduced-motion';
 import type { LoginScene } from './login-scene';
 import { LOGIN_SCENE_LOADER } from './scene-loader';
@@ -28,7 +29,7 @@ const LABEL = 'mb-1 block text-xs uppercase text-muted';
 /** Sign-in and first-admin setup over a three.js light-grid scene (static SVG grid as fallback). */
 @Component({
   selector: 'app-login-page',
-  imports: [FormsModule, MascotLoadingComponent],
+  imports: [ReactiveFormsModule, MascotLoadingComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <canvas
@@ -60,8 +61,8 @@ const LABEL = 'mb-1 block text-xs uppercase text-muted';
     <main class="grid min-h-screen place-items-center p-4">
       <form
         class="panel w-full max-w-sm"
+        [formGroup]="form"
         (ngSubmit)="submit()"
-        #f="ngForm"
         [attr.aria-busy]="busy()"
       >
         <img src="mark.svg" alt="" class="mx-auto h-16 w-16" />
@@ -79,8 +80,7 @@ const LABEL = 'mb-1 block text-xs uppercase text-muted';
             autocomplete="one-time-code"
             autocapitalize="off"
             spellcheck="false"
-            required
-            [(ngModel)]="code"
+            formControlName="code"
           />
         }
         <label [class]="label" for="username">Username</label>
@@ -90,8 +90,7 @@ const LABEL = 'mb-1 block text-xs uppercase text-muted';
           [class]="input"
           autocomplete="username"
           autocapitalize="off"
-          required
-          [(ngModel)]="username"
+          formControlName="username"
         />
         <label [class]="label" for="password">Password</label>
         <input
@@ -100,12 +99,21 @@ const LABEL = 'mb-1 block text-xs uppercase text-muted';
           type="password"
           [class]="input"
           [attr.autocomplete]="setup() ? 'new-password' : 'current-password'"
-          [attr.minlength]="setup() ? 8 : null"
-          required
-          [(ngModel)]="password"
+          formControlName="password"
         />
         @if (setup()) {
-          <p class="-mt-2 mb-4 text-xs text-muted">At least 8 characters.</p>
+          <p
+            class="-mt-2 mb-4 text-xs"
+            [class.text-orange]="
+              form.controls.password.errors?.['minlength'] && form.controls.password.dirty
+            "
+            [class.text-muted]="
+              !(form.controls.password.errors?.['minlength'] && form.controls.password.dirty)
+            "
+            id="password-hint"
+          >
+            At least {{ minPassword }} characters.
+          </p>
         }
         @if (error()) {
           <p class="mb-4 text-sm text-orange" role="alert">{{ error() }}</p>
@@ -121,7 +129,11 @@ const LABEL = 'mb-1 block text-xs uppercase text-muted';
             [message]="setup() ? 'Creating account...' : 'Signing in...'"
           />
         }
-        <button class="btn w-full" type="submit" [disabled]="busy() || cooldown() > 0 || f.invalid">
+        <button
+          class="btn w-full"
+          type="submit"
+          [disabled]="busy() || cooldown() > 0 || form.invalid"
+        >
           {{ setup() ? 'Create admin' : 'Sign in' }}
         </button>
         <button
@@ -157,9 +169,12 @@ export class LoginPage {
   protected readonly error = signal<string | null>(null);
   protected readonly cooldown = signal(0);
   protected readonly setup = signal(false);
-  protected code = '';
-  protected username = '';
-  protected password = '';
+  protected readonly minPassword = MIN_PASSWORD;
+  protected readonly form = new FormGroup({
+    code: new FormControl('', { nonNullable: true }),
+    username: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+    password: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
+  });
 
   constructor() {
     const destroyRef = inject(DestroyRef);
@@ -193,16 +208,30 @@ export class LoginPage {
   protected toggleSetup(): void {
     this.setup.update((v) => !v);
     this.error.set(null);
+    this.applySetupValidators();
+  }
+
+  private applySetupValidators(): void {
+    const { code, password } = this.form.controls;
+    const setup = this.setup();
+    code.setValidators(setup ? [Validators.required] : []);
+    password.setValidators(
+      setup ? [Validators.required, Validators.minLength(MIN_PASSWORD)] : [Validators.required],
+    );
+    code.updateValueAndValidity();
+    password.updateValueAndValidity();
   }
 
   protected async submit(): Promise<void> {
+    if (this.form.invalid) return;
+    const { code, username, password } = this.form.getRawValue();
     this.busy.set(true);
     this.error.set(null);
     try {
       if (this.setup()) {
-        await this.auth.bootstrap(this.code, this.username, this.password);
+        await this.auth.bootstrap(code, username, password);
       } else {
-        await this.auth.login(this.username, this.password);
+        await this.auth.login(username, password);
       }
       const redirect = this.route.snapshot.queryParamMap.get('redirect');
       await this.router.navigateByUrl(
@@ -220,7 +249,12 @@ export class LoginPage {
       this.startCooldown(retrySeconds(e.problem?.retry_after_secs));
     } else if (e instanceof ApiError && e.status === 409 && this.setup()) {
       this.setup.set(false);
+      this.applySetupValidators();
       this.error.set('An admin already exists. Sign in instead.');
+    } else if (e instanceof ApiError && e.status === 401) {
+      this.error.set('Invalid username or password');
+    } else if (e instanceof ApiError && e.status === 503) {
+      this.error.set('The server is busy. Try again in a moment.');
     } else {
       this.error.set(e instanceof ApiError ? e.message : 'Sign-in failed');
     }

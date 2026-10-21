@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, inject, signal } from '@angular/core';
 import { MascotErrorComponent, MascotLoadingComponent } from '../../shared/mascot';
-import { messageOf } from '../admin-shared/util';
-import { ConfirmDialog } from '../zones/confirm-dialog';
+import { messageOf } from '../../shared/util/util';
+import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { CacheService } from './cache.service';
 import type { CacheStats } from './cache.service';
 

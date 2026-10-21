@@ -107,13 +107,3 @@ export class ZonesService {
     });
   }
 }
-
-/** Save `text` as a file through a temporary object URL. */
-export function downloadText(filename: string, text: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/dns' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}

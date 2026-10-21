@@ -2,7 +2,7 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import { AuthService } from '../../core/auth.service';
-import { clickByText, mount, problem, type } from '../admin-shared/testing';
+import { clickByText, mount, problem, type } from '../../../testing/testing';
 import { ProfilePage } from './profile.page';
 
 const ME = { id: 1, username: 'root', role: 'admin', created_at: 0, auth: 'session' };
@@ -35,6 +35,17 @@ describe('ProfilePage', () => {
     const { fixture, el } = setup({ user: signal(null) });
     await fixture.whenStable();
     expect(el.querySelector('dnsy-mascot-loading')).not.toBeNull();
+  });
+
+  it('new_password_control_is_invalid_before_submit', async () => {
+    const { fixture, el } = setup();
+    await fixture.whenStable();
+    type(el, '#pp-new', 'short');
+    await fixture.whenStable();
+    expect(el.querySelector('#pp-new + p')?.textContent).toContain('at least 8');
+    type(el, '#pp-new', 'Longenough-1!');
+    await fixture.whenStable();
+    expect(el.querySelector('#pp-new + p[role=alert]')).toBeNull();
   });
 
   it('gives live strength hints', async () => {

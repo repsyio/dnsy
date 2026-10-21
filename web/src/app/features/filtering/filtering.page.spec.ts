@@ -1,4 +1,7 @@
-import { mount, problem, type, clickByText } from '../admin-shared/testing';
+import { signal } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { AuthService } from '../../core/auth.service';
+import { mount, problem, type, clickByText } from '../../../testing/testing';
 import { FilteringPage } from './filtering.page';
 
 const LIST = {
@@ -15,7 +18,12 @@ const LIST = {
 };
 const RULE = { id: 7, kind: 'block', domain: 'bad.example' };
 
-async function ready(lists: unknown[] = [LIST], rules: unknown[] = [RULE]) {
+async function ready(lists: unknown[] = [LIST], rules: unknown[] = [RULE], role = 'viewer') {
+  TestBed.configureTestingModule({
+    providers: [
+      { provide: AuthService, useValue: { user: signal({ id: 1, username: 'u', role }) } },
+    ],
+  });
   const ctx = mount(FilteringPage);
   await ctx.fixture.whenStable();
   ctx.http.expectOne('/api/v1/blocklists').flush(lists);
@@ -66,7 +74,12 @@ describe('FilteringPage', () => {
     type(el, '#bl-loc', 'https://x/hosts');
     clickByText(el, 'Add source');
     const req = http.expectOne('/api/v1/blocklists');
-    expect(req.request.body).toEqual({ name: 'ads', location: 'https://x/hosts', format: 'auto' });
+    expect(req.request.body).toEqual({
+      name: 'ads',
+      location: 'https://x/hosts',
+      format: 'auto',
+      allow_private: false,
+    });
     const p = problem(422, 'unsupported location');
     req.flush(p.body, p.init);
     await fixture.whenStable();
@@ -75,6 +88,30 @@ describe('FilteringPage', () => {
     http.expectOne('/api/v1/blocklists').flush(LIST, { status: 201, statusText: 'Created' });
     await fixture.whenStable();
     expect(el.querySelectorAll('tbody tr').length).toBe(1);
+  });
+
+  it('hides the private-target toggle from non-admins', async () => {
+    const { el } = await ready([], [], 'operator');
+    expect(el.querySelector('#bl-private')).toBeNull();
+  });
+
+  it('sends allow_private when an admin ticks the toggle', async () => {
+    const { fixture, http, el } = await ready([], [], 'admin');
+    type(el, '#bl-name', 'local');
+    type(el, '#bl-loc', '/etc/dnsy/list.txt');
+    const box = el.querySelector<HTMLInputElement>('#bl-private')!;
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+    await fixture.whenStable();
+    clickByText(el, 'Add source');
+    const req = http.expectOne('/api/v1/blocklists');
+    expect(req.request.body).toEqual({
+      name: 'local',
+      location: '/etc/dnsy/list.txt',
+      format: 'auto',
+      allow_private: true,
+    });
+    req.flush({ ...LIST, allow_private: true }, { status: 201, statusText: 'Created' });
   });
 
   it('toggles and refreshes a source', async () => {

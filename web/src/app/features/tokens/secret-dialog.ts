@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, input, output, signal } from '@angular/core';
-import { Dialog } from '../zones/dialog';
-import { copyText, dohUrl } from './copy';
+import { Dialog } from '../../shared/ui/dialog';
+import { copyText, dohUrl } from '../../shared/util/copy';
 
 /** Shows a new token secret exactly once. The page drops the secret when this closes. */
 @Component({

@@ -67,7 +67,7 @@ describe('LoginPage', () => {
     await vi.waitFor(() => expect(nav).toHaveBeenCalledWith('/dashboard'));
   });
 
-  it('shows the problem detail on failure', async () => {
+  it('shows a non-enumerating message for a 401', async () => {
     const { fixture, el } = await submit('root', 'bad');
     await vi.waitFor(() =>
       ctrl.expectOne('/api/v1/auth/login').flush(
@@ -82,8 +82,54 @@ describe('LoginPage', () => {
     );
     await vi.waitFor(async () => {
       await fixture.whenStable();
-      expect(el.querySelector('[role=alert]')?.textContent).toContain('invalid credentials');
+      expect(el.querySelector('[role=alert]')?.textContent).toContain(
+        'Invalid username or password',
+      );
     });
+  });
+
+  it('shows a distinct message for a 503', async () => {
+    const { fixture, el } = await submit('root', 'pw');
+    await vi.waitFor(() =>
+      ctrl.expectOne('/api/v1/auth/login').flush(
+        {
+          type: 'https://dnsy.dev/problems/unavailable',
+          title: 'Service Unavailable',
+          status: 503,
+          detail: 'too many password checks in flight',
+        },
+        { status: 503, statusText: 'Service Unavailable' },
+      ),
+    );
+    await vi.waitFor(async () => {
+      await fixture.whenStable();
+      expect(el.querySelector('[role=alert]')?.textContent).toContain('server is busy');
+    });
+  });
+
+  it('setup_form_is_invalid_with_a_short_password', async () => {
+    const fixture = TestBed.createComponent(LoginPage);
+    await fixture.whenStable();
+    const el = fixture.nativeElement as HTMLElement;
+    el.querySelectorAll<HTMLButtonElement>('button').forEach((b) => {
+      if (b.textContent?.includes('First run')) b.click();
+    });
+    await fixture.whenStable();
+    const set = async (id: string, v: string) => {
+      const input = el.querySelector<HTMLInputElement>('#' + id)!;
+      input.value = v;
+      input.dispatchEvent(new Event('input'));
+      await fixture.whenStable();
+    };
+    await set('code', 'abc');
+    await set('username', 'root');
+    await set('password', 'short');
+    const submitBtn = el.querySelector<HTMLButtonElement>('button[type=submit]')!;
+    expect(submitBtn.disabled).toBe(true);
+    el.querySelector('form')!.dispatchEvent(new Event('submit'));
+    ctrl.expectNone('/api/v1/auth/bootstrap');
+    await set('password', 'long-enough');
+    expect(submitBtn.disabled).toBe(false);
   });
 
   it('fallback_when_webgl_missing', async () => {

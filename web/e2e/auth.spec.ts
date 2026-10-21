@@ -23,7 +23,7 @@ test.describe('login', () => {
     await page.getByLabel('Username').fill('admin');
     await page.getByLabel('Password').fill('not-the-password');
     await page.getByRole('button', { name: 'Sign in' }).click();
-    await expect(page.getByRole('alert')).toHaveText('authentication required');
+    await expect(page.getByRole('alert')).toHaveText('Invalid username or password');
     await expect(page).toHaveURL(/\/login$/);
   });
 
@@ -91,8 +91,7 @@ test.describe('first-admin bootstrap', () => {
     await page.getByLabel('Setup code').fill('definitely-wrong');
     await page.getByLabel('Username').fill('root');
     await page.getByLabel('Password').fill('short');
-    await page.getByRole('button', { name: 'Create admin' }).click();
-    await expect(page.getByRole('alert')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Create admin' })).toBeDisabled();
     await page.getByLabel('Password').fill(PASSWORD);
     await page.getByRole('button', { name: 'Create admin' }).click();
     await expect(page.getByRole('alert')).toBeVisible();

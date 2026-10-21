@@ -1,4 +1,4 @@
-import { mount, problem, type, clickByText } from '../admin-shared/testing';
+import { mount, problem, type, clickByText } from '../../../testing/testing';
 import { AclPage } from './acl.page';
 
 const OVERVIEW = {

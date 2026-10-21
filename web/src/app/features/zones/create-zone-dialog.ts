@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
-import { Dialog } from './dialog';
+import { Dialog } from '../../shared/ui/dialog';
 import { validateName } from './record-validation';
 import type { CreateZone } from './zones.service';
 

@@ -10,9 +10,9 @@ import {
 } from '@angular/core';
 import type { Observable } from 'rxjs';
 import { MascotErrorComponent, MascotLoadingComponent } from '../../shared/mascot';
-import { formatEpoch, messageOf } from '../admin-shared/util';
-import { ConfirmDialog } from '../zones/confirm-dialog';
-import { ZonesService, downloadText } from '../zones/zones.service';
+import { downloadText, formatEpoch, messageOf } from '../../shared/util/util';
+import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
+import { ZonesService } from './zones.service';
 import {
   ALGORITHMS,
   algorithmName,
@@ -21,9 +21,9 @@ import {
   nsec3Error,
   orderDs,
   preferredDs,
-} from './dnssec-logic';
-import { DnssecService } from './dnssec.service';
-import type { DnssecPolicyInput, DnssecView, DsExport, KeyView } from './dnssec.service';
+} from '../../core/dnssec-logic';
+import { DnssecService } from '../../core/dnssec.service';
+import type { DnssecPolicyInput, DnssecView, DsExport, KeyView } from '../../core/dnssec.service';
 
 type Status = 'loading' | 'ready' | 'error';
 type Action =

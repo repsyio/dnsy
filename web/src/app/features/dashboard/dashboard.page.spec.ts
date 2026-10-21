@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { DashboardPage, REFRESH_MS } from './dashboard.page';
 
-const summary = (total: number) => ({
+const summary = (total: number, dropped = 0) => ({
   total,
   blocked: 10,
   blocked_ratio: 0.1,
@@ -16,6 +16,8 @@ const summary = (total: number) => ({
   cache_misses: 50,
   stale_answers: 2,
   dnssec: { secure: 8, bogus: 2 },
+  querylog_dropped: dropped,
+  querylog_flush_errors: 0,
   from: 0,
   to: 1,
 });
@@ -33,10 +35,16 @@ describe('DashboardPage', () => {
   afterEach(() => vi.useRealTimers());
 
   function answer(
-    opts: { total?: number; cacheFails?: boolean; clockTrusted?: boolean; groups?: unknown } = {},
+    opts: {
+      total?: number;
+      dropped?: number;
+      cacheFails?: boolean;
+      clockTrusted?: boolean;
+      groups?: unknown;
+    } = {},
   ) {
     const total = opts.total ?? 100;
-    ctrl.expectOne((r) => r.url === '/api/v1/stats/summary').flush(summary(total));
+    ctrl.expectOne((r) => r.url === '/api/v1/stats/summary').flush(summary(total, opts.dropped));
     ctrl
       .expectOne((r) => r.url === '/api/v1/stats/timeseries')
       .flush([
@@ -115,6 +123,20 @@ describe('DashboardPage', () => {
     await fixture.whenStable();
     expect(tile(el, 'cache-size')).toContain('cache unavailable');
     expect(el.querySelector('[data-testid="clock-banner"]')).not.toBeNull();
+  });
+
+  it('shows a badge when query-log events were dropped', async () => {
+    const { fixture, el } = await mount();
+    answer({ dropped: 1234 });
+    await fixture.whenStable();
+    expect(el.querySelector('[data-testid="dropped-badge"]')?.textContent).toContain('1,234');
+  });
+
+  it('hides the dropped badge when nothing was dropped', async () => {
+    const { fixture, el } = await mount();
+    answer();
+    await fixture.whenStable();
+    expect(el.querySelector('[data-testid="dropped-badge"]')).toBeNull();
   });
 
   it('shows the error mascot and retries', async () => {

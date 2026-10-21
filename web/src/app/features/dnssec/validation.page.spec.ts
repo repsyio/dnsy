@@ -1,4 +1,4 @@
-import { clickByText, mount, problem, type } from '../admin-shared/testing';
+import { clickByText, mount, problem, type } from '../../../testing/testing';
 import { ValidationPage } from './validation.page';
 
 const SETTINGS = {

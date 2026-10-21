@@ -1,7 +1,8 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { ZonesService, downloadText } from './zones.service';
+import { ZonesService } from './zones.service';
+import { downloadText } from '../../shared/util/util';
 
 describe('ZonesService', () => {
   let svc: ZonesService;
