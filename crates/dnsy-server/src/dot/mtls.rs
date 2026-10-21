@@ -309,9 +309,9 @@ const TAG_SEQUENCE: u8 = 0x30;
 const TAG_SET: u8 = 0x31;
 const TAG_OID: u8 = 0x06;
 const TAG_OCTET_STRING: u8 = 0x04;
-/// `[0]` explicit, constructed: the optional TBSCertificate version.
+/// `[0]` explicit, constructed: the optional `TBSCertificate` version.
 const TAG_VERSION: u8 = 0xa0;
-/// `[3]` explicit, constructed: the TBSCertificate extensions.
+/// `[3]` explicit, constructed: the `TBSCertificate` extensions.
 const TAG_EXTENSIONS: u8 = 0xa3;
 const OID_COMMON_NAME: &[u8] = &[0x55, 0x04, 0x03];
 const OID_SUBJECT_ALT_NAME: &[u8] = &[0x55, 0x1d, 0x11];

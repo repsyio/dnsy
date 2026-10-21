@@ -24,3 +24,6 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
+
+[dev-dependencies]
+dnsy-core = { version = "0.1.0", path = "../../crates/dnsy-core" }
