@@ -39,7 +39,9 @@ pub const MAX_PASSWORD_BYTES: usize = 1024;
 
 /// Requests (waiting or hashing) one client key may have in flight, so one address can neither
 /// take every slot nor park an unbounded number of waiting tasks.
-pub(crate) const PER_CLIENT_HASHES: usize = 4;
+pub(crate) const PER_CLIENT_HASHES: usize = 16;
+/// Default for how long a login queues for a slot before it is refused.
+pub(crate) const SLOT_WAIT: Duration = Duration::from_secs(5);
 
 type KeyCounts = Arc<Mutex<HashMap<ClientKey, usize>>>;
 
@@ -49,6 +51,10 @@ pub(crate) struct HashGate {
     pub(crate) sem: Arc<Semaphore>,
     keys: KeyCounts,
     waiters: Arc<AtomicUsize>,
+    /// Requests (waiting or hashing) one client key may have in flight.
+    pub(crate) per_client: usize,
+    /// How long a login queues for a slot.
+    pub(crate) wait: Duration,
 }
 
 /// Requests allowed to wait for a slot at once, across all clients.
@@ -110,7 +116,16 @@ impl HashGate {
             sem: Arc::new(Semaphore::new(n)),
             keys: KeyCounts::default(),
             waiters: Arc::default(),
+            per_client: PER_CLIENT_HASHES,
+            wait: SLOT_WAIT,
         }
+    }
+
+    /// Overrides the per-client in-flight cap and the queueing time.
+    pub(crate) fn with_limits(mut self, per_client: usize, wait: Duration) -> HashGate {
+        self.per_client = per_client.max(1);
+        self.wait = wait;
+        self
     }
 
     /// Counts one in-flight request (waiting or hashing) for `client`; checked before any global
@@ -121,7 +136,7 @@ impl HashGate {
         };
         let mut keys = self.keys.lock().map_err(|_| UserError::Hash)?;
         let n = keys.entry(key).or_insert(0);
-        if *n >= PER_CLIENT_HASHES {
+        if *n >= self.per_client {
             return Err(UserError::Busy);
         }
         *n += 1;
@@ -147,7 +162,7 @@ impl HashGate {
     }
 
     /// Like [`HashGate::try_slot`] but queues on the (fair) semaphore for up to `wait`. At most
-    /// [`PER_CLIENT_HASHES`] requests per client and [`MAX_WAITERS`] in total are ever parked;
+    /// the per-client cap of requests (default [`PER_CLIENT_HASHES`]) and [`MAX_WAITERS`] in total are ever parked;
     /// beyond that the answer is an immediate [`UserError::Busy`].
     ///
     /// # Errors
@@ -253,11 +268,11 @@ mod tests {
         }
         assert_eq!(
             parked.len(),
-            PER_CLIENT_HASHES,
+            gate.per_client,
             "waiters are capped per client"
         );
-        assert_eq!(refused, 200 - PER_CLIENT_HASHES);
-        assert!(gate.waiters.load(Ordering::Acquire) <= PER_CLIENT_HASHES);
+        assert_eq!(refused, 200 - gate.per_client);
+        assert!(gate.waiters.load(Ordering::Acquire) <= gate.per_client);
         // Another client queues and is served once capacity frees up; the flood did not use up
         // the global waiter budget.
         let other = {

@@ -16,12 +16,17 @@ test('the UI is served with a strict CSP and security headers', async ({ request
 test('the CSP guard fails a test whose page violates the policy', async ({ page }) => {
   test.fail();
   await page.goto('/login');
-  await page.evaluate(() => {
-    const s = document.createElement('script');
-    s.textContent = 'window.__injected = 1';
-    document.head.appendChild(s);
-  });
-  // The violation is logged asynchronously; wait for the console message to land.
-  await page.waitForFunction(() => true);
-  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  // Inject the script and wait for the browser's own violation event, not a fixed delay, so a
+  // loaded machine cannot let the test end before the violation is reported.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        document.addEventListener('securitypolicyviolation', () => resolve(), { once: true });
+        const s = document.createElement('script');
+        s.textContent = 'window.__injected = 1';
+        document.head.appendChild(s);
+      }),
+  );
+  // The guard reads the console message that accompanies the event; give it time to land.
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 500)));
 });

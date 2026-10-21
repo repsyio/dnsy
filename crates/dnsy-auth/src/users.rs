@@ -9,12 +9,6 @@ use crate::bootstrap::{self, BootstrapCode};
 use crate::password::{self, HashGate, HashSlot, MAX_PASSWORD_BYTES};
 use dnsy_core::net::ClientKey;
 
-/// How long a login waits for a free hashing slot before it is refused with 503.
-#[cfg(not(test))]
-const SLOT_WAIT: Duration = Duration::from_secs(2);
-#[cfg(test)]
-const SLOT_WAIT: Duration = Duration::from_millis(50);
-
 /// A stored user (never carries the password hash).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
@@ -129,6 +123,14 @@ pub struct UserService {
 }
 
 impl UserService {
+    /// Sets how many login requests per client may be queued or hashing at once and how long a
+    /// login queues for a hashing slot (defaults 16 and 5 s).
+    #[must_use]
+    pub fn with_login_limits(mut self, per_client: usize, wait: Duration) -> UserService {
+        self.gate = self.gate.with_limits(per_client, wait);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn with_hash_permits(mut self, n: usize) -> UserService {
         self.gate = HashGate::with_permits(n);
@@ -317,13 +319,13 @@ impl UserService {
     }
 
     /// Admission for one hash on behalf of `client`, taken before a login attempt is recorded so a
-    /// busy refusal never counts as a failed password. Waits up to [`SLOT_WAIT`] for capacity, so
+    /// busy refusal never counts as a failed password. Waits for capacity (default 5 s), so
     /// a burst of logins from one address queues instead of failing.
     ///
     /// # Errors
     /// [`UserError::Busy`] when no slot became free in time.
     pub(crate) async fn hash_slot(&self, client: ClientKey) -> Result<HashSlot, UserError> {
-        self.gate.slot(client, SLOT_WAIT).await
+        self.gate.slot(client, self.gate.wait).await
     }
 
     #[cfg(test)]

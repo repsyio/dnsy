@@ -32,6 +32,10 @@ listen = ["127.0.0.1:5380"]
 # public_url = "https://dns.example.com"
 # Secure cookie attribute + HSTS: "auto" (follow tls_cert), true (TLS ends at a reverse proxy), false.
 # secure_cookies = "auto"
+# Login requests per client that may queue or hash at once, and how long a login queues for a
+# password-hashing slot before 503 (burst logins from one address succeed within these bounds).
+# login_hash_per_client = 16
+# login_hash_wait_ms = 5000
 
 [zones]
 dir = "/var/lib/dnsy/zones"

@@ -581,6 +581,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn burst_of_logins_from_one_client_queues_and_succeeds() {
+        let (s, users, _user, _d) = setup().await;
+        // One hashing slot: twelve simultaneous logins from one address must queue, not 503.
+        let users = users.with_hash_permits(1);
+        let mut tasks = Vec::new();
+        for _ in 0..12 {
+            let (s, users) = (s.clone(), users.clone());
+            tasks.push(tokio::spawn(async move {
+                s.login_at(&users, "alice", "pw", IP, None, 100).await
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap().expect("queued login succeeds");
+        }
+    }
+
+    #[tokio::test]
     async fn known_login_address_is_not_slowed_by_a_distributed_attack() {
         let (s, users, _user, _d) = setup().await;
         let home = ip("198.51.100.4");
