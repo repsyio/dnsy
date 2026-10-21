@@ -116,6 +116,8 @@ mod tests;
 #[cfg(test)]
 mod tests_auth;
 #[cfg(test)]
+mod tests_matrix;
+#[cfg(test)]
 mod tests_obs;
 #[cfg(test)]
 mod tests_policy;
