@@ -310,6 +310,30 @@ async fn authoritative_answers_not_cached() {
 }
 
 #[tokio::test]
+async fn mixed_case_names_are_blocked_and_share_one_cache_entry() {
+    let mut lists = FilterSetBuilder::new(BlockMode::NxDomain, FilterLimits::default());
+    lists.add_block_rule("ads.example").unwrap();
+    let h = harness_with(
+        Fake::a_record(Ipv4Addr::LOCALHOST),
+        &Config::default(),
+        |b| b.filter(lists.build()),
+    );
+    let r = h
+        .engine
+        .handle(ctx(), &query("WWW.Ads.EXAMPLE.", RecordType::A))
+        .await;
+    assert_eq!(r.header.rcode, Rcode::NxDomain);
+    assert_eq!(h.fake.calls(), 0);
+    // One lowercase pass feeds the cache key too: two spellings, one upstream query.
+    for spelling in ["Cached.Test.", "cACHED.tEST."] {
+        h.engine
+            .handle(ctx(), &query(spelling, RecordType::A))
+            .await;
+    }
+    assert_eq!(h.fake.calls(), 1);
+}
+
+#[tokio::test]
 async fn blocked_returns_nxdomain_with_ede() {
     let mut fb = FilterSetBuilder::new(BlockMode::NxDomain, FilterLimits::default());
     fb.add_block_rule("ads.example").unwrap();
@@ -337,7 +361,7 @@ async fn blocked_returns_nxdomain_with_ede() {
     assert_eq!(
         ev[0].source,
         AnswerSource::Blocked {
-            list: "easylist".to_owned()
+            list: "easylist".into()
         }
     );
 
@@ -543,7 +567,7 @@ async fn response_ip_blocked() {
     assert_eq!(
         ev[0].source,
         AnswerSource::Blocked {
-            list: RESPONSE_IP_LIST.to_owned()
+            list: RESPONSE_IP_LIST.into()
         }
     );
     // Applied on cache hits too, and policy changes apply immediately.

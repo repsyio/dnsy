@@ -7,8 +7,11 @@
 //! or change, when their keys change state and when signatures near expiry, and installs each
 //! new snapshot with an atomic swap so queries never wait for signing.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::iter;
+use std::ops::Bound;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -85,6 +88,11 @@ fn next_closer(name: &Name, encloser: &Name) -> Option<Name> {
     Name::from_labels(name.labels().skip(usize::from(skip))).ok()
 }
 
+/// The lowercase base32hex NSEC3 hash label of `name`.
+fn nsec3_key_of(name: &Name, salt: &[u8], iterations: u16) -> String {
+    base32hex_encode(&nsec3_hash(name, salt, iterations)).to_ascii_lowercase()
+}
+
 /// The authenticated denial chain of a signed zone.
 #[derive(Debug)]
 enum Chain {
@@ -96,13 +104,16 @@ enum Chain {
         iterations: u16,
         salt: Vec<u8>,
         records: BTreeMap<String, Record>,
+        /// The hash label of every name of the zone (owners and empty non-terminals), computed
+        /// once when the index is built; only names that do not exist are hashed per query.
+        owner_keys: BTreeMap<Name, String>,
     },
 }
 
 /// RRSIGs and the denial chain of one signed zone snapshot.
 #[derive(Debug)]
 pub(crate) struct SignedIndex {
-    sigs: BTreeMap<(Name, RecordType), Vec<Record>>,
+    sigs: BTreeMap<(Name, RecordType), Arc<[Record]>>,
     chain: Chain,
 }
 
@@ -115,7 +126,7 @@ impl SignedIndex {
         for ((owner, code), set) in &signed.rrsets {
             let rtype = RecordType::from(*code);
             if !set.rrsigs.is_empty() {
-                sigs.insert((owner.clone(), rtype), set.rrsigs.clone());
+                sigs.insert((owner.clone(), rtype), Arc::from(set.rrsigs.as_slice()));
             }
             for r in &set.records {
                 match &r.data {
@@ -135,12 +146,29 @@ impl SignedIndex {
             }
         }
         let chain = match params {
-            Some((iterations, salt)) => Chain::Nsec3 {
-                origin: signed.origin.clone(),
-                iterations,
-                salt,
-                records: nsec3,
-            },
+            Some((iterations, salt)) => {
+                let mut owner_keys = BTreeMap::new();
+                for (owner, code) in signed.rrsets.keys() {
+                    if RecordType::from(*code) == RecordType::Nsec3 {
+                        continue;
+                    }
+                    let mut cur = Some(owner.clone());
+                    while let Some(n) = cur.filter(|n| n.is_subdomain_of(&signed.origin)) {
+                        cur = n.parent();
+                        if let Entry::Vacant(slot) = owner_keys.entry(n) {
+                            let key = nsec3_key_of(slot.key(), &salt, iterations);
+                            slot.insert(key);
+                        }
+                    }
+                }
+                Chain::Nsec3 {
+                    origin: signed.origin.clone(),
+                    iterations,
+                    salt,
+                    records: nsec3,
+                    owner_keys,
+                }
+            }
             None => Chain::Nsec(nsec),
         };
         Self { sigs, chain }
@@ -296,30 +324,34 @@ impl SignedIndex {
         }
     }
 
-    fn nsec3_key(&self, name: &Name) -> Option<(String, &BTreeMap<String, Record>)> {
+    fn nsec3_key(&self, name: &Name) -> Option<(Cow<'_, str>, &BTreeMap<String, Record>)> {
         let Chain::Nsec3 {
             iterations,
             salt,
             records,
+            owner_keys,
             ..
         } = &self.chain
         else {
             return None;
         };
-        let hash = nsec3_hash(name, salt, *iterations);
-        Some((base32hex_encode(&hash).to_ascii_lowercase(), records))
+        let key = owner_keys.get(name).map_or_else(
+            || Cow::Owned(nsec3_key_of(name, salt, *iterations)),
+            |k| Cow::Borrowed(k.as_str()),
+        );
+        Some((key, records))
     }
 
     fn nsec3_matching(&self, name: &Name) -> Option<&Record> {
         let (key, records) = self.nsec3_key(name)?;
-        records.get(&key)
+        records.get(&*key)
     }
 
     /// The NSEC3 whose span strictly contains the hash of `name` (the last one wraps).
     fn nsec3_covering(&self, name: &Name) -> Option<&Record> {
         let (key, records) = self.nsec3_key(name)?;
         records
-            .range::<String, _>(..key)
+            .range::<str, _>((Bound::Unbounded, Bound::Excluded(&*key)))
             .next_back()
             .or_else(|| records.iter().next_back())
             .map(|(_, r)| r)

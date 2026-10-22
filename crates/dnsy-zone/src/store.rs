@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -32,27 +33,73 @@ pub struct ZoneSet {
     /// fall back on: queries for them are answered SERVFAIL rather than served unsigned.
     unavailable: BTreeSet<Name>,
     /// Per-zone lookup index, keyed like `zones`.
-    pub(crate) indexes: BTreeMap<Name, ZoneIndex>,
-    /// Query counter driving record set rotation.
-    pub(crate) rotation: AtomicUsize,
+    pub(crate) indexes: BTreeMap<Name, Arc<ZoneIndex>>,
+    /// Query counter driving record set rotation, spread over cache lines.
+    pub(crate) rotation: Rotation,
+}
+
+/// Number of counters in a [`Rotation`]; a power of two.
+const ROTATION_SHARDS: usize = 16;
+
+/// One counter per cache line.
+#[derive(Debug, Default)]
+#[repr(align(64))]
+struct PaddedCounter(AtomicUsize);
+
+/// The record set rotation counter, sharded by thread so that queries answered on different
+/// cores do not bounce one cache line between them. Each thread keeps its own sequence, which
+/// still advances by one per query, so one client talking to one worker sees every rotation.
+#[derive(Debug, Default)]
+pub(crate) struct Rotation {
+    shards: [PaddedCounter; ROTATION_SHARDS],
+}
+
+impl Rotation {
+    /// The next rotation value of the calling thread's shard.
+    pub(crate) fn next(&self) -> usize {
+        static NEXT_THREAD: AtomicUsize = AtomicUsize::new(0);
+        thread_local! {
+            static SHARD: usize = NEXT_THREAD.fetch_add(1, Ordering::Relaxed) % ROTATION_SHARDS;
+        }
+        let shard = SHARD.with(|s| *s);
+        self.shards[shard].0.fetch_add(1, Ordering::Relaxed)
+    }
 }
 
 impl ZoneSet {
     #[cfg(test)]
     pub(crate) fn new(zones: BTreeMap<Name, Arc<Zone>>) -> Self {
-        Self::with_signed(zones, BTreeMap::new(), BTreeSet::new())
+        Self::with_signed(zones, BTreeMap::new(), BTreeSet::new(), None)
     }
 
     /// A snapshot serving each zone of `signed` (keyed by origin) from its signed snapshot.
+    /// A zone (and its signed snapshot) that is the very same `Arc` as in `previous` keeps the
+    /// index built for it there.
     pub(crate) fn with_signed(
         zones: BTreeMap<Name, Arc<Zone>>,
         signed: BTreeMap<Name, Arc<SignedZone>>,
         unavailable: BTreeSet<Name>,
+        previous: Option<&Self>,
     ) -> Self {
         let indexes = zones
             .iter()
             .map(|(origin, zone)| {
-                let index = ZoneIndex::build(zone, signed.get(origin).map(AsRef::as_ref));
+                let snapshot = signed.get(origin);
+                let reused = previous.and_then(|p| {
+                    let same_zone = p.zones.get(origin).is_some_and(|z| Arc::ptr_eq(z, zone));
+                    let same_signed = match (p.signed.get(origin), snapshot) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        _ => false,
+                    };
+                    p.indexes
+                        .get(origin)
+                        .filter(|_| same_zone && same_signed)
+                        .cloned()
+                });
+                let index = reused.unwrap_or_else(|| {
+                    Arc::new(ZoneIndex::build(zone, snapshot.map(AsRef::as_ref)))
+                });
                 (origin.clone(), index)
             })
             .collect();
@@ -61,7 +108,7 @@ impl ZoneSet {
             signed,
             unavailable,
             indexes,
-            rotation: AtomicUsize::new(0),
+            rotation: Rotation::default(),
         }
     }
 
@@ -128,6 +175,18 @@ struct State {
     signed: BTreeMap<Name, SignedEntry>,
     /// Why signing a zone failed, per origin, until it succeeds again.
     failures: BTreeMap<Name, String>,
+    /// Fingerprint of the file content last parsed (valid or not), per file name: a reload
+    /// whose file reads the same keeps the previous result instead of parsing again.
+    seen: BTreeMap<String, Fingerprint>,
+}
+
+/// Length and 64-bit hash of a zone file's text.
+type Fingerprint = (usize, u64);
+
+fn fingerprint(text: &str) -> Fingerprint {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    (text.len(), hasher.finish())
 }
 
 /// Zones directory with an atomically swapped snapshot.
@@ -193,36 +252,58 @@ impl ZoneStore {
 
     /// [`ZoneStore::reload`] for a caller that holds the write lock.
     fn reload_locked(&self) -> Result<(), ZoneError> {
-        let mut found = BTreeMap::new();
-        for entry in fs::read_dir(&self.dir)? {
-            let path = entry?.path();
-            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if path.extension().is_some_and(|e| e == "json") && !file_name.starts_with('.') {
-                found.insert(file_name.to_owned(), load_file(&path, file_name));
-            }
-        }
         let mut st = self.lock();
         let mut good = BTreeMap::new();
         let mut errors = BTreeMap::new();
-        for (file, result) in found {
-            match result {
+        let mut seen = BTreeMap::new();
+        for entry in fs::read_dir(&self.dir)? {
+            let path = entry?.path();
+            let Some(file) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if path.extension().is_none_or(|e| e != "json") || file.starts_with('.') {
+                continue;
+            }
+            let file = file.to_owned();
+            let text = fs::read_to_string(&path);
+            let print = text.as_deref().ok().map(fingerprint);
+            if let Some(print) = print
+                && st.seen.get(&file) == Some(&print)
+                && (st.good.contains_key(&file) || st.errors.contains_key(&file))
+            {
+                // Unchanged since the last reload: keep the parsed zone (and its index).
+                if let Some(zone) = st.good.get(&file) {
+                    good.insert(file.clone(), Arc::clone(zone));
+                }
+                if let Some(error) = st.errors.get(&file) {
+                    errors.insert(file.clone(), error.clone());
+                }
+                seen.insert(file, print);
+                continue;
+            }
+            match text
+                .map_err(ZoneError::from)
+                .and_then(|t| parse_file(&t, &file))
+            {
                 Ok((zone, warnings)) => {
                     for w in warnings {
                         tracing::warn!(zone = %zone.origin, "{w}");
                     }
-                    good.insert(file, Arc::new(zone));
+                    good.insert(file.clone(), Arc::new(zone));
                 }
                 Err(e) => {
                     tracing::error!(file = %file, "zone file rejected, keeping previous version: {e}");
                     if let Some(prev) = st.good.get(&file) {
                         good.insert(file.clone(), Arc::clone(prev));
                     }
-                    errors.insert(file, e.to_string());
+                    errors.insert(file.clone(), e.to_string());
                 }
             }
+            if let Some(print) = print {
+                seen.insert(file, print);
+            }
         }
+        st.seen = seen;
         st.good = good;
         st.errors = errors;
         self.publish(&mut st);
@@ -260,8 +341,9 @@ impl ZoneStore {
             }
         }
         st.signed = entries;
-        self.set
-            .store(Arc::new(ZoneSet::with_signed(zones, signed, unavailable)));
+        let previous = self.set.load();
+        let next = ZoneSet::with_signed(zones, signed, unavailable, Some(&previous));
+        self.set.store(Arc::new(next));
         if stale {
             self.resign.notify_one();
         }
@@ -503,9 +585,8 @@ fn notify_err(e: notify::Error) -> ZoneError {
     ZoneError::Io(std::io::Error::other(e))
 }
 
-fn load_file(path: &Path, file_name: &str) -> Result<(Zone, Vec<String>), ZoneError> {
-    let text = fs::read_to_string(path)?;
-    let (zone, warnings) = Zone::from_json(&text)?;
+fn parse_file(text: &str, file_name: &str) -> Result<(Zone, Vec<String>), ZoneError> {
+    let (zone, warnings) = Zone::from_json(text)?;
     let expected = zone.file_name()?;
     if expected != file_name {
         return Err(ZoneError::Invalid(format!(
@@ -881,5 +962,67 @@ mod tests {
             store.remove_zone(&origin(), None),
             Err(ZoneError::NoSuchZone(_))
         ));
+    }
+
+    fn two_zone_store() -> (tempfile::TempDir, Arc<ZoneStore>) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("example.com.json"), EXAMPLE).unwrap();
+        fs::write(
+            dir.path().join("example.org.json"),
+            EXAMPLE.replace("example.com", "example.org"),
+        )
+        .unwrap();
+        let store = ZoneStore::open(dir.path()).unwrap();
+        (dir, store)
+    }
+
+    fn org() -> Name {
+        Name::from_ascii("example.org.").unwrap()
+    }
+
+    #[test]
+    fn reload_reparses_only_the_changed_file() {
+        let (dir, store) = two_zone_store();
+        let before = store.snapshot();
+        assert_eq!(before.len(), 2);
+        fs::write(
+            dir.path().join("example.org.json"),
+            EXAMPLE
+                .replace("example.com", "example.org")
+                .replace("2026102001", "2026102002"),
+        )
+        .unwrap();
+        store.reload().unwrap();
+        let after = store.snapshot();
+        assert_eq!(after.get(&org()).unwrap().soa.serial, 2_026_102_002);
+        assert!(Arc::ptr_eq(
+            before.get(&origin()).unwrap(),
+            after.get(&origin()).unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &before.indexes[&origin()],
+            &after.indexes[&origin()]
+        ));
+        assert!(!Arc::ptr_eq(
+            &before.indexes[&org()],
+            &after.indexes[&org()]
+        ));
+    }
+
+    #[test]
+    fn reload_without_changes_reuses_every_zone_and_keeps_errors() {
+        let (dir, store) = two_zone_store();
+        fs::write(dir.path().join("broken.example.json"), "{ nope").unwrap();
+        store.reload().unwrap();
+        let before = store.snapshot();
+        let errors = store.load_errors();
+        assert_eq!(errors.len(), 1);
+        store.reload().unwrap();
+        let after = store.snapshot();
+        for o in [origin(), org()] {
+            assert!(Arc::ptr_eq(before.get(&o).unwrap(), after.get(&o).unwrap()));
+            assert!(Arc::ptr_eq(&before.indexes[&o], &after.indexes[&o]));
+        }
+        assert_eq!(store.load_errors(), errors);
     }
 }

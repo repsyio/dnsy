@@ -518,3 +518,18 @@ fn rrset_rotation() {
         "{order:?}"
     );
 }
+
+#[test]
+fn rotation_counters_are_per_thread() {
+    let rotation = crate::store::Rotation::default();
+    let main: Vec<usize> = (0..3).map(|_| rotation.next()).collect();
+    assert_eq!(main, [0, 1, 2]);
+    // Another thread has its own shard and its own sequence: no shared cache line, and it
+    // still advances by one per query.
+    let other: Vec<usize> = std::thread::scope(|s| {
+        s.spawn(|| (0..3).map(|_| rotation.next()).collect())
+            .join()
+            .unwrap()
+    });
+    assert_eq!(other, [0, 1, 2]);
+}

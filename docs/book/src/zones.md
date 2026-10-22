@@ -55,6 +55,11 @@ Writes are atomic (temp file, fsync, rename). The server watches the directory a
 version keeps serving and the error is kept as the zone's `load_error`, visible in the logs
 and through the API.
 
+A reload reads every file but parses only the ones whose content changed since the last
+reload: an unchanged zone keeps its parsed `Arc<Zone>` and its lookup index (and an unchanged
+invalid file keeps its recorded error), so editing one of many zone files costs one parse and
+one index build.
+
 ## Answering queries
 
 The server answers authoritatively for every name inside a loaded zone, following RFC 1034
@@ -84,7 +89,11 @@ are not answered from zones.
   does not exist and has no wildcard is NXDOMAIN. Both carry the zone SOA in the authority
   section with TTL = min(SOA TTL, SOA `minimum`) (RFC 2308).
 - **Rotation.** Every query rotates the order of each RRset by one, so clients that pick the
-  first address spread across all of them.
+  first address spread across all of them. The counter is kept per thread (one cache line each),
+  so each worker rotates independently and cores do not contend on it.
+- **Signed answers.** A zone served signed keeps its RRsets as shared slices and, for NSEC3,
+  the hash of every name in the zone, computed once when the index is built; only names that do
+  not exist (the next closer name, the wildcard) are hashed per query.
 
 ## BIND export
 

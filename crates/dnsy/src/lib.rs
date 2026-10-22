@@ -52,6 +52,23 @@ impl<E: std::error::Error> From<E> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The async runtime for `cli`'s command. `serve` sizes it from `[server] worker_threads`; every
+/// other command, and a configuration that cannot be read (the command reports that itself),
+/// gets the default.
+///
+/// # Errors
+/// The runtime could not be created.
+pub fn runtime(cli: &Cli) -> std::io::Result<tokio::runtime::Runtime> {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all();
+    if matches!(cli.command, Command::Serve(_))
+        && let Ok(config) = Config::load(&cli.config)
+    {
+        builder.worker_threads(config.server.worker_threads);
+    }
+    builder.build()
+}
+
 /// Runs one command.
 ///
 /// # Errors
@@ -128,7 +145,34 @@ pub(crate) fn db_path(config: &Config) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser as _;
+
     use super::*;
+
+    fn workers(args: &[&str]) -> usize {
+        let cli = Cli::parse_from(args);
+        runtime(&cli).unwrap().handle().metrics().num_workers()
+    }
+
+    #[test]
+    fn serve_sizes_the_runtime_from_worker_threads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("dnsy.toml");
+        std::fs::write(&path, "[server]\nworker_threads = 3\n").unwrap();
+        let path = path.to_str().unwrap();
+        assert_eq!(workers(&["dnsy", "-c", path, "serve"]), 3);
+        // Other commands do not read the key; a missing file leaves the default.
+        let default = tokio::runtime::Runtime::new()
+            .unwrap()
+            .handle()
+            .metrics()
+            .num_workers();
+        assert_eq!(workers(&["dnsy", "-c", path, "version"]), default);
+        assert_eq!(
+            workers(&["dnsy", "-c", "/nonexistent/dnsy.toml", "serve"]),
+            default
+        );
+    }
 
     #[cfg(unix)]
     #[test]

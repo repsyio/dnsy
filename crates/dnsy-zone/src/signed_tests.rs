@@ -74,6 +74,7 @@ fn signed_set(zone: Zone) -> (ZoneSet, Vec<Dnskey>) {
         BTreeMap::from([(origin.clone(), Arc::new(zone))]),
         BTreeMap::from([(origin, Arc::new(signed))]),
         BTreeSet::new(),
+        None,
     );
     (set, dnskeys)
 }
@@ -551,6 +552,7 @@ fn cds_and_cdnskey_during_rollover() {
         BTreeMap::from([(origin.clone(), Arc::new(zone))]),
         BTreeMap::from([(origin, Arc::new(signed))]),
         BTreeSet::new(),
+        None,
     );
     for qtype in [RecordType::Cds, RecordType::Cdnskey, RecordType::Dnskey] {
         let result = lookup(&set, "example.com.", qtype, true);
@@ -1139,4 +1141,30 @@ fn any_do_on_signed_zone_gets_one_signed_rrset() {
     };
     assert_eq!(answers.len(), 1);
     assert_eq!(answers[0].ttl, 3789);
+}
+
+#[test]
+fn nsec3_owner_hashes_are_cached_at_index_build() {
+    let zone = zone("nsec3", false);
+    let signed = sign(&zone, &csk());
+    let index = SignedIndex::build(&signed);
+    let Chain::Nsec3 { owner_keys, .. } = &index.chain else {
+        panic!("expected an NSEC3 chain");
+    };
+    for owner in ["example.com.", "www.example.com."] {
+        let n = name(owner);
+        assert_eq!(owner_keys.get(&n), Some(&hash_label(&n)), "{owner}");
+    }
+    // Names that do not exist are not in the table; they are hashed per query.
+    assert!(!owner_keys.contains_key(&name("nope.example.com.")));
+    // Cached and computed keys agree, so proofs are unchanged.
+    let key = |n: &str| index.nsec3_key(&name(n)).unwrap().0.into_owned();
+    assert_eq!(
+        key("www.example.com."),
+        hash_label(&name("www.example.com."))
+    );
+    assert_eq!(
+        key("nope.example.com."),
+        hash_label(&name("nope.example.com."))
+    );
 }

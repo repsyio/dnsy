@@ -417,7 +417,9 @@ impl<E: Exchange> Engine<E> {
             return refused();
         }
 
-        if let Verdict::Block { list, mode } = self.filter.current().check(&question.name)
+        // Lowercased once: the filter and the cache key both want the canonical form.
+        let qname = question.name.to_lowercase();
+        if let Verdict::Block { list, mode } = self.filter.current().check_lowercase(&qname)
             && let Some(blocked) = block_response(query, mode, &list)
         {
             return Outcome::new(finish(query, blocked), AnswerSource::Blocked { list });
@@ -441,7 +443,7 @@ impl<E: Exchange> Engine<E> {
         }
 
         let key = CacheKey {
-            name: question.name.to_lowercase(),
+            name: qname,
             qtype: question.qtype,
             qclass: question.qclass,
             do_bit,
@@ -463,7 +465,7 @@ impl<E: Exchange> Engine<E> {
                 ..Outcome::new(
                     finish(query, blocked),
                     AnswerSource::Blocked {
-                        list: RESPONSE_IP_LIST.to_owned(),
+                        list: RESPONSE_IP_LIST.into(),
                     },
                 )
             };

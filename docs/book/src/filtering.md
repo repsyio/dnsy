@@ -65,7 +65,7 @@ When the query carried EDNS, the response includes an Extended DNS Error (RFC 89
 
 ### Limits
 
-Memory and input are bounded while building a filter: at most 5,000,000 entries (block plus allow, duplicates not counted) and 64 MiB per list source by default, and lines over 2048 bytes are skipped without being buffered. Exceeding a limit fails the build with an error, so the previous filter stays in use. There is no regular-expression support.
+Memory and input are bounded while building a filter: at most 5,000,000 entries (block plus allow, duplicates not counted) and 64 MiB per list source by default, and lines over 2048 bytes are skipped without being buffered. Exceeding a limit fails the build with an error, so the previous filter stays in use. A filter holds its names in one arena with a compact index, about 30 bytes per entry, and a rebuild reserves room from the entry count each source reported at its last load, so it does not grow tables by doubling. One million entries add about 43 MiB to the process while they are built. There is no regular-expression support.
 
 ## List sources
 

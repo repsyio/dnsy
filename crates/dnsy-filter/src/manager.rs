@@ -149,7 +149,8 @@ impl ListManager {
         let mut state = self.inner.state.lock().await;
         Self::prune(&mut state, &sources);
         let lists = Self::inputs(&state, &sources, None);
-        let (set, _) = self.build(lists).await?;
+        let hint = entry_hint(&sources);
+        let (set, _) = self.build(lists, hint).await?;
         self.inner.filter.store(Arc::new(set));
         Ok(())
     }
@@ -178,7 +179,10 @@ impl ListManager {
         let mut state = self.inner.state.lock().await;
         let pruned = Self::prune(&mut state, &sources);
         if pruned {
-            match self.build(Self::inputs(&state, &sources, None)).await {
+            match self
+                .build(Self::inputs(&state, &sources, None), entry_hint(&sources))
+                .await
+            {
                 Ok((set, _)) => self.inner.filter.store(Arc::new(set)),
                 Err(e) => {
                     tracing::warn!(error = %e, "rebuilding filter after source removal failed");
@@ -249,11 +253,13 @@ impl ListManager {
     async fn build(
         &self,
         lists: Vec<BuildInput>,
+        hint: usize,
     ) -> Result<(FilterSet, HashMap<i64, ParseStats>), RefreshError> {
         let rules = self.inner.store.custom_rules().await?;
         let (mode, limits) = (**self.inner.mode.load(), self.inner.limits);
         tokio::task::spawn_blocking(move || {
             let mut builder = FilterSetBuilder::new(mode, limits);
+            builder.reserve(hint);
             let mut stats = HashMap::new();
             for (id, name, format, body) in lists {
                 let s = builder.add_list(&name, format, Cursor::new(body.as_slice()))?;
@@ -341,7 +347,7 @@ impl ListManager {
         };
         let body = Arc::new(bytes);
         let lists = Self::inputs(state, sources, Some((src.id, &body)));
-        let (next, parsed) = self.build(lists).await?;
+        let (next, parsed) = self.build(lists, entry_hint(sources)).await?;
         let mine = parsed.get(&src.id).copied().unwrap_or_default();
         if mine.blocks + mine.allows == 0 && mine.invalid > 0 {
             return Err(RefreshError::Malformed);
@@ -352,6 +358,15 @@ impl ListManager {
             entries: (mine.blocks + mine.allows) as u64,
         })
     }
+}
+
+/// Entries the enabled sources reported at their last load: how much the next build holds.
+fn entry_hint(sources: &[ListSource]) -> usize {
+    sources
+        .iter()
+        .filter(|s| s.enabled)
+        .map(|s| usize::try_from(s.entries).unwrap_or(usize::MAX))
+        .fold(0, usize::saturating_add)
 }
 
 /// `interval` plus up to 10% random jitter, so many sources do not refresh in lockstep.
