@@ -5,17 +5,21 @@
 //! pipeline (spec 5.2); [`EngineBuilder::from_config`] assembles it from the configuration and
 //! the store. [`RefusedHandler`] remains as a trivial handler for listener tests.
 
+mod acl;
 mod builder;
 mod engine;
 pub mod handler;
 mod policy;
+mod ratelimit;
 mod response;
 mod services;
 
+pub use acl::Acl;
 pub use builder::{EngineBuilder, EngineError, cache_options, dnssec_options};
 pub use engine::{Engine, MAX_MISS_WAITERS};
 pub use handler::{Admission, Handler, RefusedHandler, RequestContext};
 pub use policy::{LivePolicy, TrustAnchorInfo, hex_upper};
+pub use ratelimit::{RateLimiter, RateVerdict};
 pub use response::{RESPONSE_IP_LIST, ResponseIpPolicy};
 pub use services::{Background, GroupsHandle, SIGN_INTERVAL, Services};
 

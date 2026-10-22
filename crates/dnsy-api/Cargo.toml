@@ -27,8 +27,8 @@ dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
 dnsy-dnssec = { version = "0.1.0", path = "../dnsy-dnssec" }
 dnsy-keys = { version = "0.1.0", path = "../dnsy-keys" }
 dnsy-observe = { version = "0.1.0", path = "../dnsy-observe" }
-dnsy-engine = { version = "0.1.0", path = "../dnsy-engine" }
-dnsy-filter = { version = "0.1.0", path = "../dnsy-filter" }
+dnsy-engine = { version = "0.1.0", path = "../dnsy-engine", features = ["fetch"] }
+dnsy-filter = { version = "0.1.0", path = "../dnsy-filter", features = ["fetch"] }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 dnsy-resolver = { version = "0.1.0", path = "../dnsy-resolver" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }

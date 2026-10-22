@@ -15,7 +15,8 @@ use dnsy_core::Clock;
 use tokio::sync::Mutex;
 
 use crate::BlockMode;
-use crate::fetch::{FetchError, Fetched, Fetcher, Validators};
+use crate::fetch::{Fetched, Fetcher, Validators};
+use crate::location::FetchError;
 use crate::matcher::{BlocklistError, FilterLimits, FilterSet, FilterSetBuilder};
 use crate::parse::{ListFormat, ParseStats};
 use crate::rules::FilterError;

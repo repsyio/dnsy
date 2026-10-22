@@ -1,55 +1,11 @@
+//! Client admission: the CIDR and client-certificate ACL snapshot.
+
 use std::collections::HashMap;
 use std::net::IpAddr;
 
 use dnsy_core::Principal;
+use dnsy_filter::{AclAction, AclMatcher};
 use ipnet::IpNet;
-
-/// What to do with a request from a client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AclAction {
-    Allow,
-    /// Answer REFUSED.
-    Refuse,
-    /// Send nothing.
-    Drop,
-}
-
-impl AclAction {
-    /// Higher is stricter; used to break ties between equally specific rules.
-    fn strictness(self) -> u8 {
-        match self {
-            AclAction::Allow => 0,
-            AclAction::Refuse => 1,
-            AclAction::Drop => 2,
-        }
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            AclAction::Allow => "allow",
-            AclAction::Refuse => "refuse",
-            AclAction::Drop => "drop",
-        }
-    }
-
-    pub(crate) fn parse(s: &str) -> Option<AclAction> {
-        match s {
-            "allow" => Some(AclAction::Allow),
-            "refuse" => Some(AclAction::Refuse),
-            "drop" => Some(AclAction::Drop),
-            _ => None,
-        }
-    }
-}
-
-/// What a rule matches on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AclMatcher {
-    /// Client address inside the network (host bits are ignored).
-    Cidr(IpNet),
-    /// mTLS client certificate by SHA-256 fingerprint.
-    ClientCert([u8; 32]),
-}
 
 /// Immutable ACL snapshot. Build with [`Acl::new`] and swap atomically.
 ///
@@ -282,13 +238,5 @@ mod tests {
             subject: String::new(),
         };
         assert_eq!(acl.check(ip("192.0.2.1"), Some(&p)), AclAction::Drop);
-    }
-
-    #[test]
-    fn action_names_round_trip() {
-        for a in [AclAction::Allow, AclAction::Refuse, AclAction::Drop] {
-            assert_eq!(AclAction::parse(a.as_str()), Some(a));
-        }
-        assert_eq!(AclAction::parse("x"), None);
     }
 }

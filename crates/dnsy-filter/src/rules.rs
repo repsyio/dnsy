@@ -3,7 +3,53 @@ use dnsy_store::{Store, StoreError};
 use ipnet::IpNet;
 use rusqlite::{ErrorCode, params};
 
-use crate::acl::{AclAction, AclMatcher};
+/// What to do with a request from a client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AclAction {
+    Allow,
+    /// Answer REFUSED.
+    Refuse,
+    /// Send nothing.
+    Drop,
+}
+
+impl AclAction {
+    /// Higher is stricter; used to break ties between equally specific rules.
+    #[must_use]
+    pub fn strictness(self) -> u8 {
+        match self {
+            AclAction::Allow => 0,
+            AclAction::Refuse => 1,
+            AclAction::Drop => 2,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            AclAction::Allow => "allow",
+            AclAction::Refuse => "refuse",
+            AclAction::Drop => "drop",
+        }
+    }
+
+    pub(crate) fn parse(s: &str) -> Option<AclAction> {
+        match s {
+            "allow" => Some(AclAction::Allow),
+            "refuse" => Some(AclAction::Refuse),
+            "drop" => Some(AclAction::Drop),
+            _ => None,
+        }
+    }
+}
+
+/// What a rule matches on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AclMatcher {
+    /// Client address inside the network (host bits are ignored).
+    Cidr(IpNet),
+    /// mTLS client certificate by SHA-256 fingerprint.
+    ClientCert([u8; 32]),
+}
 
 /// Failure of a rule persistence operation.
 #[derive(Debug, thiserror::Error)]
@@ -217,6 +263,14 @@ impl RuleStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_names_round_trip() {
+        for a in [AclAction::Allow, AclAction::Refuse, AclAction::Drop] {
+            assert_eq!(AclAction::parse(a.as_str()), Some(a));
+        }
+        assert_eq!(AclAction::parse("x"), None);
+    }
 
     fn setup() -> (RuleStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();

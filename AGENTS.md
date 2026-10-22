@@ -25,7 +25,7 @@ crates/
   dnsy-observe/     query events, query log, stats
   dnsy-zone/        zone model, JSON files, hot reload, authoritative lookup
   dnsy-resolver/    upstream client, cache, load balancing, validating forwarder
-  dnsy-filter/      blocklists, allowlist, ACL, rate limit
+  dnsy-filter/      blocklists, allowlist, stored ACL rules and list sources (`fetch` feature: URL fetching)
   dnsy-engine/      Handler trait and request pipeline
   dnsy-server/      UDP, TCP, DoT, DoH listeners
   dnsy-api/         REST API (axum + utoipa), embedded UI

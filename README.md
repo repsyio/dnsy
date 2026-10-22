@@ -161,7 +161,7 @@ curl -H "Authorization: Bearer $TOKEN" \
                   |  dnsy-engine  pipeline: sanity, ACL, rate limit, filter,
                   |        |      local zones, cache, validation, shaping
                   |        |---> dnsy-zone      JSON zones, signing, lookup
-                  |        |---> dnsy-filter    blocklists, ACL, rate limit
+                  |        |---> dnsy-filter    blocklists, ACL rules
                   |        '---> dnsy-resolver  cache, load balancing ----> 1.1.1.1 ...
                   |                  '--- dnsy-dnssec  validation          9.9.9.9 ...
                   |  dnsy-observe  query log + stats   dnsy-auth  users, tokens

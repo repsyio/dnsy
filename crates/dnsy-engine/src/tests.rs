@@ -4,10 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::Acl;
 use dnsy_config::Config;
 use dnsy_core::SystemClock;
 use dnsy_core::{DnssecStatus, Principal, TokenId, Transport, UserId};
-use dnsy_filter::{Acl, AclAction, AclMatcher, BlockMode, FilterLimits, FilterSetBuilder};
+use dnsy_filter::{AclAction, AclMatcher, BlockMode, FilterLimits, FilterSetBuilder};
 use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink};
 use dnsy_proto::{
     Class, Edns, EdnsOption, Header, Message, Name, Opcode, Question, RData, Rcode, Record,
@@ -823,6 +824,7 @@ async fn from_config_shim_takes_its_handles_from_services() {
     assert!(local.header.aa);
 }
 
+#[cfg(feature = "fetch")]
 #[tokio::test]
 async fn from_config_assembles_pipeline() {
     let upstream = udp_upstream(false).await;
@@ -962,7 +964,7 @@ async fn reload_trust_anchors_swaps_anchors_and_keeps_mode_and_ntas() {
     );
 }
 
-async fn acl_for(limits: &str) -> (TempDir, dnsy_filter::Acl) {
+async fn acl_for(limits: &str) -> (TempDir, Acl) {
     let dir = tempfile::tempdir().unwrap();
     let config = Config::from_toml(&format!(
         "[zones]\ndir = {:?}\n{limits}",

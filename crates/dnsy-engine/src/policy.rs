@@ -49,15 +49,7 @@ pub trait LivePolicy: Send + Sync {
     fn dnssec_clock_untrusted(&self) -> bool;
 }
 
-/// Upper-case hexadecimal.
-#[must_use]
-pub fn hex_upper(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02X}");
-        s
-    })
-}
+pub use dnsy_core::hex::upper as hex_upper;
 
 impl<E: Exchange + 'static> LivePolicy for Engine<E> {
     fn apply_acl_rules(&self, rules: Vec<(AclMatcher, AclAction)>) {

@@ -5,8 +5,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use dnsy_core::Transport;
-use dnsy_core::net::ClientKey;
-pub use dnsy_core::net::client_key;
+use dnsy_core::net::{ClientKey, client_key};
 
 const SHARDS: usize = 16;
 /// Buckets examined when a full shard needs room; the least recently used of them is evicted.

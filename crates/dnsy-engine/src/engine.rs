@@ -22,12 +22,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::acl::Acl;
+use crate::ratelimit::{RateLimiter, RateVerdict};
 use arc_swap::ArcSwap;
 use dnsy_core::{Clock, DnssecStatus, Principal, Transport, Validation};
-use dnsy_filter::{
-    Acl, AclAction, BlockMode, FilterSet, ListManager, RateLimiter, RateVerdict, Verdict,
-    block_response,
-};
+#[cfg(feature = "fetch")]
+use dnsy_filter::ListManager;
+use dnsy_filter::{AclAction, BlockMode, FilterSet, Verdict, block_response};
 use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink};
 use dnsy_proto::{EDNS_VERSION, Edns, Message, Name, Opcode, Question, Rcode, RecordType, ede};
 use dnsy_resolver::forward::{DnssecPolicy, UpstreamFetcher, cap_ttls, dnssec_query};
@@ -130,6 +131,7 @@ pub struct Engine<E = UpstreamClient> {
 pub(crate) enum Filters {
     Fixed(Arc<FilterSet>),
     /// Persisted list sources; the manager swaps in rebuilt filters.
+    #[cfg(feature = "fetch")]
     Lists(ListManager),
 }
 
@@ -137,6 +139,7 @@ impl Filters {
     fn current(&self) -> Arc<FilterSet> {
         match self {
             Self::Fixed(set) => Arc::clone(set),
+            #[cfg(feature = "fetch")]
             Self::Lists(manager) => manager.current(),
         }
     }
