@@ -399,11 +399,7 @@ mod tests {
                 .records
                 .push(r);
         }
-        SignedZone {
-            origin: Name::from_ascii("example.com.").unwrap(),
-            rrsets,
-            next_resign: 0,
-        }
+        SignedZone::new(Name::from_ascii("example.com.").unwrap(), rrsets, 0)
     }
 
     fn proto(name: &str, ttl: u32, data: RData) -> dnsy_proto::Record {

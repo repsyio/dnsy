@@ -1,9 +1,12 @@
 //! NSEC (RFC 4034 4, RFC 4035 2.3) and NSEC3 (RFC 5155 7.1) chains.
 
-use super::parallel;
+use super::{Position, parallel};
 use crate::{DnssecError, nsec3_hash};
 use dnsy_proto::{Class, Name, Nsec3, RData, Record, RecordType, TypeBitmap, base32hex_encode};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+
+/// NSEC3 hashes by the name they were made from.
+pub(super) type NameHashes = HashMap<Name, [u8; 20]>;
 
 /// NSEC3 flag: this record may cover unsigned delegations (RFC 5155 3.1.2.1).
 const OPT_OUT: u8 = 1;
@@ -20,6 +23,7 @@ pub(super) struct ChainNode {
     pub signed: bool,
     /// A delegation without DS.
     pub insecure_cut: bool,
+    pub position: Position,
 }
 
 /// The NSEC chain: one NSEC per node pointing at the next, the last back to the apex. The
@@ -53,11 +57,11 @@ pub(super) fn nsec3_chain(
     origin: &Name,
     nodes: &[ChainNode],
     ttl: u32,
-    iterations: u16,
-    salt: &[u8],
+    (iterations, salt): (u16, &[u8]),
     opt_out: bool,
+    cached: Option<&NameHashes>,
     workers: usize,
-) -> Result<Vec<Record>, DnssecError> {
+) -> Result<(Vec<Record>, NameHashes), DnssecError> {
     let kept: Vec<&ChainNode> = nodes
         .iter()
         .filter(|n| !(opt_out && n.insecure_cut))
@@ -82,23 +86,29 @@ pub(super) fn nsec3_chain(
         .map(|n| (&n.name, Some(*n)))
         .chain(empty.iter().map(|n| (n, None)))
         .collect();
-    // Hashing is independent per name; with many iterations it dominates the chain.
-    let mut hashed: Vec<([u8; 20], TypeBitmap)> =
-        parallel::map_with(names, workers, |(name, node)| {
-            let mut types = node.map(|n| n.types.clone()).unwrap_or_default();
-            if node.is_some_and(|n| n.signed) {
-                types.push(RecordType::Rrsig);
-            }
-            (
-                nsec3_hash(name, salt, iterations),
-                TypeBitmap::from_types(&types),
-            )
-        });
+    // Hashing is independent per name; with many iterations it dominates the chain. Names
+    // that were hashed for the previous snapshot with the same parameters are not hashed again.
+    let mut hashed: Vec<([u8; 20], TypeBitmap)> = Vec::with_capacity(names.len());
+    let mut by_name = HashMap::with_capacity(names.len());
+    let results = parallel::map_with(names, workers, |(name, node)| {
+        let mut types = node.map(|n| n.types.clone()).unwrap_or_default();
+        if node.is_some_and(|n| n.signed) {
+            types.push(RecordType::Rrsig);
+        }
+        let hash = cached
+            .and_then(|c| c.get(name).copied())
+            .unwrap_or_else(|| nsec3_hash(name, salt, iterations));
+        (name, hash, TypeBitmap::from_types(&types))
+    });
+    for (name, hash, types) in results {
+        by_name.insert(name.clone(), hash);
+        hashed.push((hash, types));
+    }
     hashed.sort_by_key(|h| h.0);
 
     let origin_labels: Vec<&[u8]> = origin.labels().collect();
     let flags = if opt_out { OPT_OUT } else { 0 };
-    hashed
+    let records = hashed
         .iter()
         .enumerate()
         .map(|(i, (hash, types))| {
@@ -122,5 +132,6 @@ pub(super) fn nsec3_chain(
                 }),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, DnssecError>>()?;
+    Ok((records, by_name))
 }

@@ -176,6 +176,20 @@ whose data, key and validity window are unchanged; after one record changes, onl
 and, when a name is added or removed, its NSEC3 (or NSEC) record and the chain predecessor are
 signed again.
 
+A `SignedZone` also keeps the NSEC3 hash of every chain name. `resign` reuses those hashes
+while the iterations and salt are unchanged and hashes only new names, which matters with a
+non-zero iteration count (RFC 9276 recommends 0, where SHA-1 costs little). The cache adds
+about one name and 20 bytes per chain name to a snapshot and is dropped when the parameters
+change or the zone is signed with NSEC.
+
+Timing and memory harnesses for a 100,000-name zone are ignored tests in `dnsy-dnssec`; run
+them by hand in release mode on a quiet host:
+
+```sh
+cargo test --release -p dnsy-dnssec big_zone_timing -- --ignored --nocapture
+RSS_SNAPSHOTS=1 cargo test --release -p dnsy-dnssec big_zone_rss -- --ignored --nocapture
+```
+
 ### What is signed
 
 | RRset | Signed by |
