@@ -10,6 +10,7 @@ use dnsy_filter::{
     Acl, AclAction, BlockMode, FilterError, FilterLimits, FilterSet, FilterSetBuilder, ListManager,
     RateLimiter, RefreshError, RuleStore,
 };
+use dnsy_keys::KeyStoreError;
 use dnsy_observe::QueryEventSink;
 use dnsy_resolver::forward::{
     DnssecConfigError, DnssecOptions, DnssecPolicy, MAX_CONCURRENT_FETCHES,
@@ -20,7 +21,7 @@ use dnsy_resolver::{
     UpstreamConfig, UpstreamError,
 };
 use dnsy_store::Store;
-use dnsy_zone::{KeyStoreError, ZoneError, ZoneStore};
+use dnsy_zone::{ZoneError, ZoneStore};
 use std::sync::atomic::AtomicBool;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;

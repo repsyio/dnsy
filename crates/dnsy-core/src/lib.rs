@@ -10,6 +10,10 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
+mod key;
+
+pub use key::{KeyRole, KeyState};
+
 /// Transport a DNS request arrived on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

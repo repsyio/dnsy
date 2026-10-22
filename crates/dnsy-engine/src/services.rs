@@ -9,16 +9,14 @@ use std::time::Duration;
 use arc_swap::ArcSwapOption;
 use dnsy_config::Config;
 use dnsy_core::SystemClock;
-use dnsy_dnssec::RolloverTimings;
 use dnsy_filter::{FETCH_TIMEOUT, Fetcher, FilterLimits, ListManager, MAX_LIST_BYTES, SourceStore};
+use dnsy_keys::{KeyStore, RolloverTimings, passphrase_from_environment};
 use dnsy_observe::{QueryEventSink, QueryLogWriter, WriterConfig};
 use dnsy_proto::Name;
 use dnsy_resolver::Cache;
 use dnsy_resolver::groups::{GroupSet, GroupStore, ThreadRng};
 use dnsy_store::Store;
-use dnsy_zone::{
-    KeyStore, ZoneError, ZoneSigning, ZoneStore, ZoneWatcher, passphrase_from_environment,
-};
+use dnsy_zone::{ZoneError, ZoneSigning, ZoneStore, ZoneWatcher};
 use tokio::task::JoinHandle;
 
 use crate::builder::{EngineError, cache_options};

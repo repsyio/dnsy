@@ -84,13 +84,22 @@ openssl.
 
 ## Signing keys
 
-The `KeyStore` in `dnsy-zone` keeps each signing zone's keys in the `dnssec_keys` table
+The `KeyStore` in `dnsy-keys` keeps each signing zone's keys in the `dnssec_keys` table
 (migration `0006`). A key has a role (`csk`, `ksk` or `zsk`), an algorithm (13 or 15), its key
 tag, a state and a timestamp for every state it has reached. Generation uses `ring` through
 `SigningKey::generate`; RSA keys cannot be generated.
 
 When a zone's policy enables DNSSEC, `bootstrap` creates the first keys as `active`: one CSK,
 or a KSK and a ZSK when `key_layout` is `ksk_zsk`.
+
+The crate is split by concern: `passphrase` (the passphrase and where it comes from), `sealed`
+(argon2id and AES-256-GCM, testable without SQLite), `repo` (the `dnssec_keys` rows),
+`rollover` (`KeyRecord`, the rollover planner and the rollover steps) and `bundle` (backup
+bundles). `KeyRole` and `KeyState` live in `dnsy-core`, because the signer in `dnsy-dnssec` uses
+them too, and `dnsy-keys` re-exports them. The on-disk format of the rows and the bundles did
+not change when the key store moved out of `dnsy-zone`: `crates/dnsy-keys/tests/legacy_keystore.rs`
+opens a database and a bundle written by the old code and checks every key against the PKCS#8
+digests the old code produced.
 
 ### Encryption at rest
 

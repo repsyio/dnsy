@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use dnsy_core::ManualClock;
 use dnsy_dnssec::{
-    ActiveKeys, Algorithm, KeyRole, KeyState, SignedZone, SigningKey, ZoneKey, ZoneSigner,
-    nsec3_hash, verify_rrsig,
+    ActiveKeys, Algorithm, SignedZone, SigningKey, ZoneKey, ZoneSigner, nsec3_hash, verify_rrsig,
 };
+use dnsy_keys::{KdfCost, KeyRole, KeyState, KeyStore, Passphrase};
 use dnsy_proto::{
     Class, Dnskey, Message, Name, Question, RData, Record, RecordType, base32hex_encode,
 };
@@ -777,15 +777,29 @@ async fn unopenable_keys_withhold_the_zone_instead_of_serving_it_unsigned() {
     let db = Store::open(&f.dir.path().join("other.db")).unwrap();
     let sealed = KeyStore::open(
         db.clone(),
-        Some(crate::Passphrase::new("secret")),
+        Some(Passphrase::new("secret")),
         Arc::new(f.clock.clone()),
     )
-    .with_kdf_cost(crate::KdfCost {
+    .with_kdf_cost(KdfCost {
         memory_kib: 8,
         iterations: 1,
     });
-    let policy = f.store.snapshot().get(&origin()).unwrap().dnssec.clone();
-    sealed.bootstrap(&origin(), &policy.unwrap()).await.unwrap();
+    let policy = f
+        .store
+        .snapshot()
+        .get(&origin())
+        .unwrap()
+        .dnssec
+        .clone()
+        .unwrap();
+    sealed
+        .bootstrap(
+            &origin(),
+            policy.key_layout,
+            Algorithm::from(policy.algorithm),
+        )
+        .await
+        .unwrap();
     let locked = KeyStore::open(db, None, Arc::new(f.clock.clone()));
     let signing = ZoneSigning::new(Arc::clone(&f.store), locked);
     assert_eq!(signing.sign_due().await, 0);
@@ -831,12 +845,12 @@ async fn failed_resign_keeps_the_signed_snapshot() {
     let db = Store::open(&f.dir.path().join("dnsy.db")).unwrap();
     let ks = KeyStore::open(
         db,
-        Some(crate::Passphrase::new("secret")),
+        Some(Passphrase::new("secret")),
         Arc::new(f.clock.clone()),
     );
     // Seal the keys under a passphrase the signer below does not have.
     f.keys
-        .change_passphrase(crate::Passphrase::new("other"))
+        .change_passphrase(Passphrase::new("other"))
         .await
         .unwrap();
     let signing = ZoneSigning::new(Arc::clone(&f.store), ks);
@@ -1044,7 +1058,7 @@ async fn ksk_tags(f: &Fixture, states: &[KeyState]) -> Vec<u16> {
 #[tokio::test]
 async fn ksk_rollover_timeline_keeps_every_dnskey_signature_valid() {
     use dnsy_core::Clock;
-    use dnsy_dnssec::RolloverTimings;
+    use dnsy_keys::RolloverTimings;
     let timings = RolloverTimings {
         dnskey_ttl: 3600,
         propagation: 0,
@@ -1169,4 +1183,41 @@ fn nsec3_owner_hashes_are_cached_at_index_build() {
         key("nope.example.com."),
         hash_label(&name("nope.example.com."))
     );
+}
+
+#[tokio::test]
+async fn active_keys_load_signers_and_sign_a_zone() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("dnsy.db")).unwrap();
+    let clock = ManualClock::new(i64::from(T));
+    let ks = KeyStore::open(
+        db.clone(),
+        Some(Passphrase::new("pw")),
+        Arc::new(clock.clone()),
+    )
+    .with_kdf_cost(KdfCost {
+        memory_kib: 8,
+        iterations: 1,
+    });
+    let alg = Algorithm::EcdsaP256Sha256;
+    let zone = Name::from_ascii("example.com.").unwrap();
+    ks.bootstrap(&zone, dnsy_keys::KeyLayout::KskZsk, alg)
+        .await
+        .unwrap();
+    ks.start_rollover(&zone, KeyRole::Ksk, alg).await.unwrap();
+    let rec = ks.start_rollover(&zone, KeyRole::Zsk, alg).await.unwrap();
+    let keys = ks.active_keys(&zone).await.unwrap();
+    let published_zsk = keys.keys.iter().find(|k| k.dnskey.key_tag() == rec.key_tag);
+    assert_eq!(keys.keys.len(), 4);
+    assert_eq!(published_zsk.unwrap().state, KeyState::Published);
+
+    let (z, _) = Zone::from_json(include_str!("../tests/fixtures/example.com.json")).unwrap();
+    let p = z.dnssec.as_ref().unwrap().signing_policy().unwrap();
+    let signed = ZoneSigner::sign(&z.signing_data(), &keys, &p, T).unwrap();
+    let dnskey = signed.rrset(&z.origin, RecordType::Dnskey).unwrap();
+    assert_eq!(dnskey.records.len(), 4);
+    assert_eq!(dnskey.rrsigs.len(), 2, "both KSKs sign the DNSKEY RRset");
+
+    let locked = KeyStore::open(db, None, Arc::new(clock));
+    assert!(locked.active_keys(&zone).await.is_err());
 }

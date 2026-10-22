@@ -9,11 +9,12 @@ use axum::http::{Method, Request};
 use dnsy_config::Config;
 use dnsy_core::{DnssecStatus, ManualClock, Role, Scope, SystemClock};
 use dnsy_engine::{Engine, EngineBuilder, Services};
+use dnsy_keys::{KdfCost, KeyStore, Passphrase};
 use dnsy_proto::{Class, Header, Message, Opcode, Question, RData, Rcode, Record, RecordType};
 use dnsy_resolver::forward::DnssecPolicy as ResolverPolicy;
 use dnsy_resolver::groups::Exchange;
 use dnsy_resolver::{CacheKey, Upstream, UpstreamError};
-use dnsy_zone::{KdfCost, KeyStore, Passphrase, ZoneStore};
+use dnsy_zone::ZoneStore;
 use serde_json::json;
 use tower::ServiceExt;
 

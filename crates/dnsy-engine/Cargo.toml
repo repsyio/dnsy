@@ -14,6 +14,7 @@ workspace = true
 dnsy-config = { version = "0.1.0", path = "../dnsy-config" }
 dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
 dnsy-dnssec = { version = "0.1.0", path = "../dnsy-dnssec" }
+dnsy-keys = { version = "0.1.0", path = "../dnsy-keys" }
 dnsy-filter = { version = "0.1.0", path = "../dnsy-filter" }
 dnsy-observe = { version = "0.1.0", path = "../dnsy-observe" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }

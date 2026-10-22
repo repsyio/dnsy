@@ -14,7 +14,6 @@ mod algorithm;
 pub mod anchors;
 mod ds;
 mod error;
-mod keys;
 mod nsec3;
 mod pubkey;
 mod sign;
@@ -26,7 +25,6 @@ pub use algorithm::{Algorithm, DigestType};
 pub use anchors::{TrustAnchor, TrustAnchorError};
 pub use ds::ds_for;
 pub use error::{DnssecError, VerifyError};
-pub use keys::{KeyRecord, KeyRole, KeyState, RolloverTimings, Transition, plan};
 pub use nsec3::{MAX_NSEC3_ITERATIONS, checked_nsec3_hash, nsec3_hash};
 pub use sign::{
     ActiveKeys, Denial, SignedRrset, SignedZone, SigningPolicy, ZoneData, ZoneKey, ZoneSigner,
