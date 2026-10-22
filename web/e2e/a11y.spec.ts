@@ -25,6 +25,7 @@ const PAGES: [string, string][] = [
   ['/query-log', 'Query log'],
   ['/users', 'Users'],
   ['/acl', 'ACL and rate limits'],
+  ['/response-ip', 'Response IP policy'],
   ['/client-certs', 'Client certificates'],
   ['/cache', 'Cache'],
   ['/dnssec', 'DNSSEC validation'],

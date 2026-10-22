@@ -8,7 +8,7 @@ import { messageOf } from '../../shared/util/util';
 import { ConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { AclService } from './acl.service';
 import type { AclAction, AclOverview, AclRule } from './acl.service';
-import { validateCidr } from './cidr';
+import { validateCidr } from '../../shared/util/cidr';
 
 const ACTIONS: AclAction[] = ['allow', 'refuse', 'drop'];
 

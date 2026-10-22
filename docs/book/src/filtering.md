@@ -120,3 +120,9 @@ file:
 
 The API has no endpoint to test a domain against the filters, so the page has no "test a domain"
 box; query the server with `dig` instead.
+
+The Response IP policy page (`/response-ip`, "Response IPs" in the navigation) edits the
+[response-IP policy](#response-ip-policy): a textarea with one address or CIDR per line, checked in
+the browser and by the server (a 422 message is shown under the field), saved as a whole-list
+replace that applies live. Saving an empty list turns the policy off. Operators and admins can edit;
+viewers see the list read-only.
