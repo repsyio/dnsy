@@ -20,5 +20,22 @@ export default defineConfig({
     video: 'off',
     actionTimeout: 10_000,
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // CI runs a Chrome binary installed by the workflow (CHROME_BIN); locally Playwright's own
+  // Chromium is used. The runner user is root, which Chrome only starts as with --no-sandbox.
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        ...(process.env['CHROME_BIN']
+          ? {
+              launchOptions: {
+                executablePath: process.env['CHROME_BIN'],
+                args: ['--no-sandbox'],
+              },
+            }
+          : {}),
+      },
+    },
+  ],
 });
