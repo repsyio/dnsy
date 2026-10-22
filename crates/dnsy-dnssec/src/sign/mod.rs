@@ -13,7 +13,7 @@ mod parallel;
 mod tests;
 
 use crate::{DigestType, DnssecError, KeyRole, KeyState, SigningKey, ds_for};
-use chain::{ChainNode, NSEC3_SHA1, nsec_chain, nsec3_chain};
+use chain::{ChainNode, NSEC3_SHA1, NameHashes, nsec_chain, nsec3_chain};
 use dnsy_proto::{
     Class, Dnskey, Name, Nsec3Param, RData, Record, RecordType, canonical, serial_lt,
 };
@@ -136,9 +136,44 @@ pub struct SignedZone {
     pub rrsets: BTreeMap<(Name, u16), SignedRrset>,
     /// Unix time from which some signature is within `refresh_days` of expiry.
     pub next_resign: u32,
+    /// The NSEC3 hash of every chain name, so a re-sign does not hash an unchanged name again.
+    nsec3_hashes: Option<Nsec3Hashes>,
+}
+
+/// The NSEC3 owner hashes of one snapshot, valid for the iterations and salt they were made
+/// with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Nsec3Hashes {
+    iterations: u16,
+    salt: Vec<u8>,
+    by_name: NameHashes,
+}
+
+impl Nsec3Hashes {
+    /// The cached hashes of `previous`, if they were made with these parameters.
+    fn matching<'a>(
+        previous: Option<&'a SignedZone>,
+        iterations: u16,
+        salt: &[u8],
+    ) -> Option<&'a NameHashes> {
+        previous
+            .and_then(|p| p.nsec3_hashes.as_ref())
+            .filter(|h| h.iterations == iterations && h.salt == salt)
+            .map(|h| &h.by_name)
+    }
 }
 
 impl SignedZone {
+    /// A snapshot from its `RRsets`, without cached NSEC3 hashes.
+    pub fn new(origin: Name, rrsets: BTreeMap<(Name, u16), SignedRrset>, next_resign: u32) -> Self {
+        SignedZone {
+            origin,
+            rrsets,
+            next_resign,
+            nsec3_hashes: None,
+        }
+    }
+
     pub fn rrset(&self, name: &Name, rtype: RecordType) -> Option<&SignedRrset> {
         self.rrsets.get(&(name.clone(), u16::from(rtype)))
     }
@@ -317,62 +352,54 @@ fn sign_zone(
 
     let (positions, nodes) = classify(&owners, origin)?;
 
-    let chain = match &policy.denial {
-        Denial::Nsec => nsec_chain(&nodes, denial_ttl),
-        Denial::Nsec3 {
-            iterations,
-            salt,
-            opt_out,
-        } => nsec3_chain(
-            origin,
-            &nodes,
-            denial_ttl,
-            *iterations,
-            salt,
-            *opt_out,
-            workers,
-        )?,
-    };
+    let (chain, nsec3_hashes) =
+        denial_chain(origin, &nodes, denial_ttl, policy, previous, workers)?;
     // Every RRset is signed independently, so the work is split over worker threads. Results
     // come back in canonical order, which keeps the output identical to a serial pass. Chain
     // records are RRsets of their own (one NSEC per node, one NSEC3 per hash), so they become
     // jobs directly instead of going through `owners`.
     let mut jobs = Vec::new();
-    let authoritative = |position: Position, rtype: RecordType| -> Vec<&SigningKey> {
-        match (position, rtype) {
-            (Position::Occluded, _) => Vec::new(),
-            // At a cut only DS and the NSEC proving the delegation are authoritative.
-            (Position::Cut, t) if !matches!(t, RecordType::Ds | RecordType::Nsec) => Vec::new(),
-            (_, RecordType::Dnskey) => key_signers.clone(),
-            (_, RecordType::Cds | RecordType::Cdnskey) => union(&key_signers, &zone_signers),
-            _ => zone_signers.clone(),
-        }
+    let authoritative = |position: Position, rtype: RecordType| match (position, rtype) {
+        (Position::Occluded, _) => Duty::None,
+        // At a cut only DS and the NSEC proving the delegation are authoritative.
+        (Position::Cut, t) if !matches!(t, RecordType::Ds | RecordType::Nsec) => Duty::None,
+        (_, RecordType::Dnskey) => Duty::Dnskeys,
+        (_, RecordType::Cds | RecordType::Cdnskey) => Duty::Both,
+        _ => Duty::Zone,
     };
-    for r in chain {
-        // An NSEC sits at a node (cut or not); an NSEC3 at a hashed name of its own.
+    jobs.reserve(chain.len() + owners.len());
+    // An NSEC sits at a node (cut or not), in node order; an NSEC3 at a hashed name of its own.
+    let node_positions = nodes
+        .iter()
+        .map(|n| Some(n.position))
+        .chain(std::iter::repeat(None));
+    for (r, node_position) in chain.into_iter().zip(node_positions) {
         let position = if r.rtype == RecordType::Nsec {
-            positions[&r.name]
+            node_position.unwrap_or(Position::Authoritative)
         } else {
             Position::Authoritative
         };
         jobs.push(Job {
             key: (r.name.clone(), u16::from(r.rtype)),
-            signing: authoritative(position, r.rtype),
+            duty: authoritative(position, r.rtype),
             records: vec![r],
         });
     }
-    for (name, types) in owners {
-        let position = positions[&name];
+    for ((name, types), position) in owners.into_iter().zip(positions) {
         for (code, records) in types {
             jobs.push(Job {
                 key: (name.clone(), code),
-                signing: authoritative(position, RecordType::from(code)),
+                duty: authoritative(position, RecordType::from(code)),
                 records,
             });
         }
     }
+    let signers = Signers {
+        zone: &zone_signers,
+        dnskeys: &key_signers,
+    };
     let signed = parallel::map_with(jobs, workers, |job| {
-        sign_job(job, previous, origin, &timing)
+        sign_job(job, &signers, previous, origin, &timing)
     });
     let mut sets = Vec::with_capacity(signed.len());
     let mut next_resign: Option<u32> = None;
@@ -394,31 +421,95 @@ fn sign_zone(
         origin: origin.clone(),
         rrsets,
         next_resign: next_resign.unwrap_or(now),
+        nsec3_hashes,
     })
 }
 
-/// One `RRset` to sign: its key in the snapshot, its records and the keys that sign it.
-struct Job<'a> {
+/// The NSEC or NSEC3 chain of `nodes`, and the NSEC3 hashes it was made from.
+fn denial_chain(
+    origin: &Name,
+    nodes: &[ChainNode],
+    denial_ttl: u32,
+    policy: &SigningPolicy,
+    previous: Option<&SignedZone>,
+    workers: usize,
+) -> Result<(Vec<Record>, Option<Nsec3Hashes>), DnssecError> {
+    Ok(match &policy.denial {
+        Denial::Nsec => (nsec_chain(nodes, denial_ttl), None),
+        Denial::Nsec3 {
+            iterations,
+            salt,
+            opt_out,
+        } => {
+            let (records, by_name) = nsec3_chain(
+                origin,
+                nodes,
+                denial_ttl,
+                (*iterations, salt),
+                *opt_out,
+                Nsec3Hashes::matching(previous, *iterations, salt),
+                workers,
+            )?;
+            let hashes = Nsec3Hashes {
+                iterations: *iterations,
+                salt: salt.clone(),
+                by_name,
+            };
+            (records, Some(hashes))
+        }
+    })
+}
+
+/// Which keys sign an `RRset`.
+#[derive(Clone, Copy)]
+enum Duty {
+    /// Unsigned: delegation NS, glue.
+    None,
+    /// The zone-signing keys.
+    Zone,
+    /// The key-signing keys (the DNSKEY `RRset`).
+    Dnskeys,
+    /// Both sets (CDS and CDNSKEY).
+    Both,
+}
+
+/// The keys that sign zone data and the DNSKEY `RRset`.
+struct Signers<'a> {
+    zone: &'a [&'a SigningKey],
+    dnskeys: &'a [&'a SigningKey],
+}
+
+impl<'a> Signers<'a> {
+    fn of(&self, duty: Duty) -> Vec<&'a SigningKey> {
+        match duty {
+            Duty::None => Vec::new(),
+            Duty::Zone => self.zone.to_vec(),
+            Duty::Dnskeys => self.dnskeys.to_vec(),
+            Duty::Both => union(self.dnskeys, self.zone),
+        }
+    }
+}
+
+/// One `RRset` to sign: its key in the snapshot, its records and which keys sign it.
+struct Job {
     key: (Name, u16),
     records: Vec<Record>,
-    signing: Vec<&'a SigningKey>,
+    duty: Duty,
 }
 
 fn sign_job(
-    job: Job<'_>,
+    job: Job,
+    signers: &Signers<'_>,
     previous: Option<&SignedZone>,
     origin: &Name,
     timing: &Timing,
 ) -> Result<((Name, u16), SignedRrset), DnssecError> {
-    let Job {
-        key,
-        records,
-        signing,
-    } = job;
+    let Job { key, records, duty } = job;
     let old = previous
         .and_then(|p| p.rrsets.get(&key))
         .filter(|old| same_data(&old.records, &records));
-    let rrsigs = signing
+    let rrsigs = signers
+        .of(duty)
         .into_iter()
         .map(|signer| rrsig_for(signer, &records, old, origin, timing))
         .collect::<Result<Vec<_>, _>>()?;
@@ -429,10 +520,10 @@ fn sign_job(
 fn classify(
     owners: &Owners,
     origin: &Name,
-) -> Result<(BTreeMap<Name, Position>, Vec<ChainNode>), DnssecError> {
+) -> Result<(Vec<Position>, Vec<ChainNode>), DnssecError> {
     // Classify names and collect the denial chain; canonical order puts every name right
     // after its ancestors, so one pass tracks the innermost enclosing cut.
-    let mut positions: BTreeMap<Name, Position> = BTreeMap::new();
+    let mut positions = Vec::with_capacity(owners.len());
     let mut nodes = Vec::new();
     let mut cut: Option<Name> = None;
     for (name, types) in owners {
@@ -453,7 +544,7 @@ fn classify(
         }
         let node_types: Vec<RecordType> = match position {
             Position::Occluded => {
-                positions.insert(name.clone(), position);
+                positions.push(position);
                 continue;
             }
             Position::Cut => [RecordType::Ns, RecordType::Ds]
@@ -468,8 +559,9 @@ fn classify(
             types: node_types,
             signed: secure,
             insecure_cut: !secure,
+            position,
         });
-        positions.insert(name.clone(), position);
+        positions.push(position);
     }
 
     Ok((positions, nodes))

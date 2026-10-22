@@ -817,6 +817,7 @@ fn big_zone(names: u32) -> ZoneData {
 }
 
 /// Timing harness: `cargo test --release -p dnsy-dnssec big_zone_timing -- --ignored --nocapture`.
+/// Prints a full sign and a re-sign of the unchanged zone on every core and on 4 workers.
 #[test]
 #[ignore = "timing harness, run by hand in release mode"]
 fn big_zone_timing() {
@@ -824,18 +825,60 @@ fn big_zone_timing() {
     let keys = csk(Algorithm::EcdsaP256Sha256);
     for (label, denial) in [("nsec", Denial::Nsec), ("nsec3", nsec3(false))] {
         let p = policy(denial);
-        let t = std::time::Instant::now();
-        let full = ZoneSigner::sign(&zone, &keys, &p, NOW).unwrap();
-        let full_t = t.elapsed();
-        let t = std::time::Instant::now();
-        let again = ZoneSigner::resign(&zone, &keys, &p, &full, NOW).unwrap();
-        let resign_t = t.elapsed();
-        assert_eq!(full, again);
-        println!(
-            "{label}: full {full_t:?} resign-unchanged {resign_t:?} ({:.0}%)",
-            resign_t.as_secs_f64() / full_t.as_secs_f64() * 100.0
-        );
+        for workers in [parallel::cores(), 4] {
+            let t = std::time::Instant::now();
+            let full = sign_zone(&zone, &keys, &p, None, NOW, workers).unwrap();
+            let full_t = t.elapsed();
+            let t = std::time::Instant::now();
+            let again = sign_zone(&zone, &keys, &p, Some(&full), NOW, workers).unwrap();
+            let resign_t = t.elapsed();
+            assert_eq!(full, again);
+            println!(
+                "{label} workers {workers}: full {full_t:?} resign-unchanged {resign_t:?} ({:.0}%)",
+                resign_t.as_secs_f64() / full_t.as_secs_f64() * 100.0
+            );
+        }
     }
+}
+
+/// The process's peak resident set (`VmHWM`) and current one (`VmRSS`), in MiB.
+fn rss_mib() -> (u64, u64) {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let kib = |field: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            .unwrap()
+            / 1024
+    };
+    (kib("VmHWM:"), kib("VmRSS:"))
+}
+
+/// Memory harness, one process per run so the peak is not shared:
+/// `cargo test --release -p dnsy-dnssec big_zone_rss -- --ignored --nocapture --exact` with
+/// `RSS_SNAPSHOTS=0|1|2` holding that many signed snapshots next to the zone.
+#[test]
+#[ignore = "memory harness, run by hand in release mode"]
+fn big_zone_rss() {
+    let snapshots: usize = std::env::var("RSS_SNAPSHOTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let keys = csk(Algorithm::EcdsaP256Sha256);
+    let p = policy(nsec3(false));
+    let zone = big_zone(100_000);
+    let idle = rss_mib();
+    let mut held: Vec<SignedZone> = Vec::new();
+    for _ in 0..snapshots {
+        let next = sign_zone(&zone, &keys, &p, held.last(), NOW, parallel::cores()).unwrap();
+        held.push(next);
+    }
+    let (peak, now) = rss_mib();
+    println!(
+        "snapshots {snapshots}: zone only {} MiB, now {now} MiB, peak {peak} MiB",
+        idle.1
+    );
 }
 
 fn sign_with(
@@ -966,4 +1009,92 @@ fn nsec3_resign_after_adding_a_name_touches_the_name_and_its_chain_neighbour() {
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     assert_nsec3_ring_complete(&second, &refs);
     verify_zone(&second, NOW);
+}
+
+fn cached_hashes(z: &SignedZone) -> &NameHashes {
+    &z.nsec3_hashes.as_ref().unwrap().by_name
+}
+
+#[test]
+fn nsec3_hashes_are_kept_per_snapshot() {
+    let zone = big_zone(50);
+    let keys = csk(Algorithm::Ed25519);
+    let first = sign_with(&zone, &keys, nsec3(false), None, 1);
+    // Every zone name and the apex has a hash; the NSEC3 records are built from them.
+    assert_eq!(cached_hashes(&first).len(), 50 + 2);
+    assert_eq!(
+        cached_hashes(&first)[&n("h7.example.")],
+        crate::nsec3_hash(&n("h7.example."), &[], 0)
+    );
+    let again = sign_with(&zone, &keys, nsec3(false), Some(&first), 1);
+    assert_eq!(cached_hashes(&again), cached_hashes(&first));
+    assert!(
+        sign_with(&zone, &keys, Denial::Nsec, None, 1)
+            .nsec3_hashes
+            .is_none()
+    );
+}
+
+#[test]
+fn resign_reuses_cached_nsec3_hashes_only_for_the_same_parameters() {
+    let zone = big_zone(50);
+    let keys = csk(Algorithm::Ed25519);
+    let mut first = sign_with(&zone, &keys, nsec3(false), None, 1);
+    let name = n("h7.example.");
+    let real = cached_hashes(&first)[&name];
+    // A planted hash shows the cache is read: the chain follows it.
+    let planted = [0xab; 20];
+    first
+        .nsec3_hashes
+        .as_mut()
+        .unwrap()
+        .by_name
+        .insert(name.clone(), planted);
+    let reused = sign_with(&zone, &keys, nsec3(false), Some(&first), 1);
+    assert_eq!(cached_hashes(&reused)[&name], planted);
+    // Other iterations or another salt make the cache void: the hash is computed afresh.
+    for denial in [
+        Denial::Nsec3 {
+            iterations: 1,
+            salt: Vec::new(),
+            opt_out: false,
+        },
+        Denial::Nsec3 {
+            iterations: 0,
+            salt: vec![1, 2],
+            opt_out: false,
+        },
+    ] {
+        let Denial::Nsec3 {
+            iterations, salt, ..
+        } = denial.clone()
+        else {
+            unreachable!()
+        };
+        let fresh = sign_with(&zone, &keys, denial, Some(&first), 1);
+        assert_eq!(
+            cached_hashes(&fresh)[&name],
+            crate::nsec3_hash(&name, &salt, iterations)
+        );
+        assert_ne!(cached_hashes(&fresh)[&name], planted);
+    }
+    // With the original parameters a fresh sign still gives the real hash.
+    assert_eq!(
+        cached_hashes(&sign_with(&zone, &keys, nsec3(false), None, 1))[&name],
+        real
+    );
+}
+
+#[test]
+fn resign_drops_cached_hashes_of_removed_names() {
+    let mut zone = big_zone(50);
+    let keys = csk(Algorithm::Ed25519);
+    let first = sign_with(&zone, &keys, nsec3(false), None, 1);
+    zone.records.retain(|r| r.name != n("h7.example."));
+    zone.records.push(a("new.example.", [192, 0, 2, 9]));
+    let second = sign_with(&zone, &keys, nsec3(false), Some(&first), 1);
+    let hashes = cached_hashes(&second);
+    assert!(!hashes.contains_key(&n("h7.example.")));
+    assert!(hashes.contains_key(&n("new.example.")));
+    assert_eq!(second, sign_with(&zone, &keys, nsec3(false), None, 1));
 }
