@@ -523,6 +523,10 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn login_attempts_record_peer_ip_through_real_listener() {
         let s = server().await;
@@ -539,6 +543,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn forwarded_for_is_ignored_from_an_untrusted_peer() {
         let s = server_with(proxied(256)).await;
@@ -559,6 +567,10 @@ mod tests {
         assert_eq!(recorded_ips(&plain).await, vec!["127.0.0.2".to_owned()]);
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn forwarded_for_is_used_from_a_trusted_proxy() {
         let s = server_with(proxied(256)).await;
@@ -570,6 +582,10 @@ mod tests {
         assert_eq!(recorded_ips(&s).await, vec!["203.0.113.9".to_owned()]);
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn trusted_proxy_without_a_usable_header_is_not_keyed_as_the_proxy() {
         let s = server_with(proxied(256)).await;
@@ -582,6 +598,10 @@ mod tests {
         assert_eq!(recorded_ips(&s).await, vec!["0.0.0.0".to_owned()]);
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn forwarded_lockout_is_per_forwarded_client() {
         let s = server_with(proxied(256)).await;
@@ -597,6 +617,10 @@ mod tests {
         assert_eq!(login_with(&s, "127.0.0.2", PW, b).await.0, 200);
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn trusted_proxy_is_exempt_from_the_per_client_connection_cap() {
         let s = server_with(proxied(1)).await;
@@ -622,6 +646,10 @@ mod tests {
         assert_eq!(rest, Vec::<u8>::new());
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn locked_out_address_does_not_lock_out_another_address() {
         let s = server().await;
@@ -793,6 +821,10 @@ mod tests {
         socket.connect(to).await.unwrap()
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn api_per_client_cap_leaves_room_for_other_clients() {
         let s = server_with(HttpLimits::new(256, 2)).await;

@@ -412,6 +412,10 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS has no loopback address besides 127.0.0.1"
+    )]
     #[tokio::test]
     async fn accept_loop_keeps_serving_while_a_recycle_is_pending() {
         use dnsy_engine::RefusedHandler;
