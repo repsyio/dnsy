@@ -37,6 +37,7 @@ rand = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+zeroize = { workspace = true, features = ["serde"] }
 sha2 = { workspace = true }
 subtle = { workspace = true }
 thiserror = { workspace = true }

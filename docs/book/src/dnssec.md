@@ -61,7 +61,7 @@ records can be checked, and should not be used to publish new ones.
 `nsec3_hash(name, salt, iterations)` is the RFC 5155 hash (SHA-1, salted, iterated) of the
 lowercased name. Resolvers must bound the iteration count of records they receive, since each
 iteration costs one SHA-1 per name (RFC 9276). `checked_nsec3_hash` rejects iterations above a
-caller-chosen maximum (`MAX_NSEC3_ITERATIONS` is 150) and salts longer than 255 octets.
+caller-chosen maximum (`MAX_NSEC3_ITERATIONS` is 100, the same cap the validator applies by default and zone signing enforces) and salts longer than 255 octets.
 
 ## Signing keys
 
@@ -102,12 +102,15 @@ error that never includes key material.
 
 The passphrase is read from `DNSY_DNSSEC_PASSPHRASE` (an empty value counts as unset), else
 from the first line of `dnssec.key_passphrase_file`. Keep that file at mode `0600`; DNSY logs
-a warning when other users can read it.
+a warning when other users can read it (the check only warns; there is no setting that makes it fatal,
+so enforce the mode with your deployment tooling).
 
 Without a passphrase keys are stored unencrypted, DNSY logs a warning at startup and the API
 reports `keys_encrypted=false`. Protect the database file accordingly (mode `0600`, owned by
-the service user). Key material is zeroized after use and `Debug` output of keys and
-passphrases is redacted; keys and the passphrase are never logged.
+the service user). Key material is zeroized after use (including the sealed key on its way into
+the database, the passphrases of `POST /dnssec/keys/export` and `POST /dnssec/passphrase`, and
+secrets the CLI reads from stdin) and `Debug` output of keys and passphrases is redacted; keys
+and the passphrase are never logged.
 
 ### Key states and rollover
 
@@ -339,6 +342,9 @@ one) makes the answer `Insecure`, anything else leaves it `Bogus`.
 
 ### Work limits
 
+NSEC3 records with an unknown hash algorithm, or with any flag bit other than Opt-Out set, are
+ignored when building a denial proof (RFC 5155 8.1 and 8.2).
+
 Each validation runs under `ValidationLimits` so that a hostile zone cannot exhaust CPU
 (KeyTrap, CVE-2023-50387; NSEC3 floods, CVE-2023-50868). Exceeding any limit makes the answer
 `Bogus` with EDE 6.
@@ -349,7 +355,7 @@ Each validation runs under `ValidationLimits` so that a hostile zone cannot exha
 | `max_rrsig_verifications`: signature checks per RRset | 8 |
 | `max_verifications`: signature checks per validation | 64 |
 | `max_fetches`: DS/DNSKEY fetches per validation | 32 |
-| `max_nsec3_iterations`: above this, NSEC3 proofs are `Insecure` | 100 |
+| `max_nsec3_iterations`: above this, NSEC3 proofs are `Insecure` | 100 (`MAX_NSEC3_ITERATIONS`) |
 | `max_nsec3_hashes`: distinct NSEC3 hashes per validation | 64 |
 | `clock_skew`: seconds the RRSIG validity window is widened (`dnssec.clock_skew_s`) | 300 |
 

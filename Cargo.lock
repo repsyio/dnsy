@@ -532,6 +532,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -569,6 +570,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-axum",
+ "zeroize",
 ]
 
 [[package]]
@@ -616,6 +618,7 @@ dependencies = [
 name = "dnsy-core"
 version = "0.1.0"
 dependencies = [
+ "ipnet",
  "serde",
  "serde_json",
 ]
@@ -1272,6 +1275,9 @@ name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "itertools"
@@ -3104,6 +3110,9 @@ name = "zeroize"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "zerotrie"

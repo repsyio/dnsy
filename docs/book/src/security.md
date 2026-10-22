@@ -33,8 +33,30 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
 - Behind a TLS-terminating reverse proxy set `[api] secure_cookies = true`: the session and CSRF
   cookies then carry `Secure` and responses send `Strict-Transport-Security`, even though DNSY
   itself speaks plain HTTP to the proxy. `auto` (the default) follows `api.tls_cert`; `false`
-  turns both off. DNSY does not read `X-Forwarded-For`, so login throttling and the query log see
-  the proxy's address; trusted-proxy support is planned after 1.0.
+  turns both off.
+- Behind a reverse proxy list the proxy's own addresses in `[api] trusted_proxies` and
+  `[doh] trusted_proxies` (CIDRs, empty by default). Only a connection from a listed peer has its
+  `X-Forwarded-For` read: the header instances are walked right to left, listed proxies are
+  skipped and the first other address is the client; entries left of it are never looked at. A
+  request from a listed peer that names no usable client (no header, only listed proxies, more
+  than 16 listed hops, or a reached entry that is not a bare IPv4/IPv6 address or a `[v6]`
+  literal, such as a port suffix, a hostname or an empty entry) is keyed to `0.0.0.0`: one shared
+  bucket with no ACL `allow`, no private-network trust and no known-client standing, never the
+  proxy's own address. With `limits.open_resolver = false` forwarded public clients are refused
+  like direct ones; add ACL rules for the networks the proxy serves. On the API the forwarded address keys the login throttle and the known-client
+  exemption; on DoH it keys the auth-failure throttle, ACL rules, per-client QPS and the query
+  log, and every `DoH` answer carries `Cache-Control: private` (as do answers to requests with a
+  token on any listener), so a shared cache never hands one client's answer to another.
+  Connections from a listed proxy count only against `max_conns`, not
+  `max_conns_per_client`. `Forwarded` (RFC 7239), `X-Real-IP` and the PROXY protocol are not
+  supported.
+  Spoofing risk: a listed peer chooses the client address of every request it sends. A list wider
+  than the proxies themselves lets any direct client pick its key: bypass the login and DoH
+  auth throttles, claim the owner's usual address for the known-client lockout exemption, match an
+  ACL `allow` rule by address, dodge per-client QPS and pollute the query log. So the list is
+  explicit, `0.0.0.0/0` and `::/0` are refused at load, and loopback is not trusted implicitly.
+  The proxy must append its hop to `X-Forwarded-For` rather than pass a client-supplied header
+  through unchanged; client-supplied entries to the left of the proxy's hop are then ignored.
 - Set a DNSSEC key passphrase before enabling signing.
 - Leave `doh.require_token = true` on public listeners.
 - DNSY is private-only by default: `limits.open_resolver = false` serves only loopback, RFC 1918,

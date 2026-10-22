@@ -261,7 +261,8 @@ fn recycle_key(ip: IpAddr) -> IpAddr {
 pub struct Slot {
     _total: OwnedSemaphorePermit,
     clients: Arc<ClientCounts>,
-    key: ClientKey,
+    /// `None` for a shared slot ([`SlotLimit::try_acquire_shared`]): no per-client count held.
+    key: Option<ClientKey>,
     activity: Arc<Activity>,
     registered: Option<(Arc<Registry>, u64)>,
 }
@@ -321,6 +322,14 @@ impl SlotLimit {
         self.acquire_now(ip).ok()
     }
 
+    /// A slot counted against the global pool only, for a peer that multiplexes many clients
+    /// (a trusted reverse proxy), or `None` when the global pool is exhausted.
+    #[must_use]
+    pub fn try_acquire_shared(&self) -> Option<Slot> {
+        let total = Arc::clone(&self.total).try_acquire_owned().ok()?;
+        Some(self.register(None, total))
+    }
+
     fn acquire_now(&self, ip: IpAddr) -> Result<Slot, Denied> {
         let total = Arc::clone(&self.total)
             .try_acquire_owned()
@@ -342,19 +351,23 @@ impl SlotLimit {
             }
             *count += 1;
         }
+        Ok(self.register(Some(key), total))
+    }
+
+    fn register(&self, key: Option<ClientKey>, total: OwnedSemaphorePermit) -> Slot {
         let activity = Activity::new();
         let registered = self.registry.as_ref().map(|registry| {
             let id = registry.next.fetch_add(1, Ordering::Relaxed);
             registry.live().insert(id, Arc::clone(&activity));
             (Arc::clone(registry), id)
         });
-        Ok(Slot {
+        Slot {
             _total: total,
             clients: Arc::clone(&self.clients),
             key,
             activity,
             registered,
-        })
+        }
     }
 
     /// Like [`SlotLimit::try_acquire`], but when only the global pool is full, asks a victim (see
@@ -518,15 +531,18 @@ impl Drop for Slot {
         if let Some((registry, id)) = &self.registered {
             registry.live().remove(id);
         }
+        let Some(key) = self.key else {
+            return;
+        };
         let mut held = self
             .clients
             .held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(count) = held.get_mut(&self.key) {
+        if let Some(count) = held.get_mut(&key) {
             *count -= 1;
             if *count == 0 {
-                held.remove(&self.key);
+                held.remove(&key);
             }
         }
     }
@@ -538,6 +554,24 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn shared_slot_counts_against_total_only() {
+        let limit = SlotLimit::new_connections(3, 1);
+        let a = limit.try_acquire_shared().unwrap();
+        let _b = limit.try_acquire_shared().unwrap();
+        // The per-client share of 1 does not apply to shared slots, and they leave the
+        // per-client table alone.
+        assert!(limit.clients.held.lock().unwrap().is_empty());
+        let _c = limit.try_acquire(ip("192.0.2.1")).unwrap();
+        assert!(
+            limit.try_acquire_shared().is_none(),
+            "global cap still applies"
+        );
+        drop(a);
+        assert!(limit.try_acquire_shared().is_some());
+        assert_eq!(limit.clients.held.lock().unwrap().len(), 1);
     }
 
     #[test]

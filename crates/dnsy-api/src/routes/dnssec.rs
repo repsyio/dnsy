@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
+use zeroize::Zeroizing;
 
 use super::zones::{edit, existing, zone_name};
 use crate::auth::{AdminScope, Read, RequireScope};
@@ -231,8 +232,9 @@ pub struct AbortRolloverInput {
 #[serde(deny_unknown_fields)]
 pub struct ExportKeysInput {
     /// Passphrase the bundle is encrypted under (at least 12 characters). It may differ from
-    /// the key passphrase; keep it apart from the bundle.
-    pub passphrase: String,
+    /// the key passphrase; keep it apart from the bundle. Wiped from memory on drop.
+    #[schema(value_type = String)]
+    pub passphrase: Zeroizing<String>,
     /// Export only this zone's keys; omitted exports every zone's.
     pub zone: Option<String>,
 }
@@ -257,8 +259,9 @@ pub struct KeyBackup {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChangePassphraseInput {
-    /// The new key passphrase (at least 12 characters).
-    pub new_passphrase: String,
+    /// The new key passphrase (at least 12 characters). Wiped from memory on drop.
+    #[schema(value_type = String)]
+    pub new_passphrase: Zeroizing<String>,
 }
 
 impl std::fmt::Debug for ChangePassphraseInput {

@@ -4,10 +4,11 @@ use crate::DnssecError;
 use dnsy_proto::Name;
 use ring::digest::{Context, SHA1_FOR_LEGACY_USE_ONLY};
 
-/// Upper bound on NSEC3 iterations a validator should accept. RFC 9276 3.2 lets a resolver
-/// treat a higher count as insecure; zones should publish 0. Every extra iteration costs the
-/// resolver one SHA-1 per name, so the cap bounds attacker-chosen work.
-pub const MAX_NSEC3_ITERATIONS: u16 = 150;
+/// The one NSEC3 iteration cap: the validator's default limit (RFC 9276 3.2 lets a resolver
+/// treat a higher count as insecure) and the most a signed zone may use (it should publish 0,
+/// and a zone above the cap would be insecure to validators like this one). Every extra
+/// iteration costs the resolver one SHA-1 per name, so the cap bounds attacker-chosen work.
+pub const MAX_NSEC3_ITERATIONS: u16 = 100;
 
 /// `IH(salt, name, iterations)` for hash algorithm 1 (SHA-1): the hash of the lowercased
 /// owner name wire form, then `iterations` further rounds, each salted.

@@ -263,6 +263,7 @@ fn server_config(
         let mut doh = DohConfig::new(config.doh.listen.clone(), cert, key, auth);
         doh.require_token = config.doh.require_token;
         doh.path.clone_from(&config.doh.path);
+        doh.trusted_proxies.clone_from(&config.doh.trusted_proxies);
         sc.doh = Some(doh);
     }
     Ok((sc, verifier, list))

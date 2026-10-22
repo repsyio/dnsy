@@ -49,6 +49,7 @@ tokio-rustls = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

@@ -1,15 +1,12 @@
 //! The optional `dnssec` block of a zone file.
 
-use dnsy_dnssec::{RolloverTimings, SigningPolicy};
+use dnsy_dnssec::{MAX_NSEC3_ITERATIONS, RolloverTimings, SigningPolicy};
 use serde::{Deserialize, Serialize};
 
 use crate::model::ZoneError;
 
 /// Longest propagation delay accepted (seven days).
 const MAX_PROPAGATION_DELAY: u32 = 7 * 86_400;
-
-/// Highest NSEC3 iteration count accepted even with the override (RFC 9276 advises 0).
-const MAX_NSEC3_ITERATIONS: u16 = 500;
 
 /// Whether one key signs everything or keys are split into KSK and ZSK.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,7 +214,7 @@ mod tests {
             r#"{"nsec3":{"salt":"zz"}}"#,
             r#"{"nsec3":{"salt":"abc"}}"#,
             r#"{"nsec3":{"iterations":5}}"#,
-            r#"{"nsec3":{"iterations":501,"allow_nonzero_iterations":true}}"#,
+            r#"{"nsec3":{"iterations":101,"allow_nonzero_iterations":true}}"#,
         ];
         for b in bad {
             assert!(policy(b).validate().is_err(), "{b}");
@@ -228,6 +225,26 @@ mod tests {
         let w = ok.validate().unwrap();
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("non-zero"));
+    }
+
+    #[test]
+    fn nsec3_iteration_cap_is_the_validator_cap() {
+        let at = |n: u16| {
+            policy(&format!(
+                r#"{{"nsec3":{{"iterations":{n},"allow_nonzero_iterations":true}}}}"#
+            ))
+            .validate()
+        };
+        assert_eq!(MAX_NSEC3_ITERATIONS, 100);
+        assert_eq!(
+            dnsy_dnssec::ValidationLimits::default().max_nsec3_iterations,
+            MAX_NSEC3_ITERATIONS
+        );
+        assert!(at(MAX_NSEC3_ITERATIONS).is_ok());
+        assert!(at(MAX_NSEC3_ITERATIONS + 1).is_err());
+        let src = include_str!("policy.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!prod.contains("const MAX_NSEC3_ITERATIONS"));
     }
 
     #[test]

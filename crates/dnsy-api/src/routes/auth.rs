@@ -17,7 +17,9 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use super::users::{UserInfo, check_password};
-use crate::auth::{AuthMethod, CSRF_COOKIE, Read, RequireScope, SESSION_COOKIE, cookie};
+use crate::auth::{
+    AuthMethod, CSRF_COOKIE, ClientAddr, Read, RequireScope, SESSION_COOKIE, cookie,
+};
 use crate::error::{ApiError, Problem};
 use crate::state::ApiState;
 
@@ -66,9 +68,15 @@ pub fn router() -> OpenApiRouter<ApiState> {
         .routes(routes!(change_password))
 }
 
-/// The peer address, or an internal error: without it the throttle would key everyone together.
-fn client_ip(info: Option<Extension<ConnectInfo<SocketAddr>>>) -> Result<IpAddr, ApiError> {
-    info.map(|Extension(ConnectInfo(a))| a.ip())
+/// The client address the listener resolved ([`ClientAddr`]), else the peer address, or an
+/// internal error: without either the throttle would key everyone together.
+fn client_ip(
+    client: Option<Extension<ClientAddr>>,
+    info: Option<Extension<ConnectInfo<SocketAddr>>>,
+) -> Result<IpAddr, ApiError> {
+    client
+        .map(|Extension(ClientAddr(ip))| ip)
+        .or_else(|| info.map(|Extension(ConnectInfo(a))| a.ip()))
         .ok_or_else(|| ApiError::Internal("the server did not provide the peer address".to_owned()))
 }
 
@@ -143,6 +151,7 @@ fn clear_cookies(state: &ApiState) -> AppendHeaders<[(axum::http::HeaderName, He
     ))]
 async fn login(
     State(state): State<ApiState>,
+    client: Option<Extension<ClientAddr>>,
     connect: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Json(body): Json<Login>,
@@ -155,7 +164,7 @@ async fn login(
             &state.auth.users,
             &body.username,
             &body.password,
-            client_ip(connect)?,
+            client_ip(client, connect)?,
             previous,
         )
         .await?;
@@ -232,7 +241,8 @@ async fn bootstrap(
     Ok((StatusCode::CREATED, Json(user.into())))
 }
 
-/// Change the caller's password. Ends all sessions and starts a new one for this client.
+/// Change the caller's password. Ends all sessions and starts a new one for this client. The
+/// current password is checked as a login (same throttle, 429 when locked out).
 #[utoipa::path(put, path = "/auth/me/password", tag = "auth", security(("session" = [])),
     request_body = ChangePassword,
     responses(
@@ -240,10 +250,12 @@ async fn bootstrap(
         (status = 400, body = Problem, content_type = "application/problem+json"),
         (status = 401, description = "Current password is wrong", body = Problem, content_type = "application/problem+json"),
         (status = 403, description = "Not a session", body = Problem, content_type = "application/problem+json"),
+        (status = 429, description = "Too many failed attempts", body = Problem, content_type = "application/problem+json"),
     ))]
 async fn change_password(
     scope: RequireScope<Read>,
     State(state): State<ApiState>,
+    client: Option<Extension<ClientAddr>>,
     connect: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(body): Json<ChangePassword>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -253,11 +265,20 @@ async fn change_password(
         ));
     }
     check_password(&body.new_password)?;
+    let ip = client_ip(client, connect)?;
     let user = state.auth.users.get(scope.0.user).await?;
+    // The current password goes through the login throttle, so a stolen session cannot be used
+    // to guess it without limit. The session this creates is ended by `set_password` below.
     state
         .auth
-        .users
-        .verify_password(&user.username, &body.current_password)
+        .sessions
+        .login(
+            &state.auth.users,
+            &user.username,
+            &body.current_password,
+            ip,
+            None,
+        )
         .await?;
     state
         .auth
@@ -271,7 +292,7 @@ async fn change_password(
             &state.auth.users,
             &user.username,
             &body.new_password,
-            client_ip(connect)?,
+            ip,
             None,
         )
         .await?;

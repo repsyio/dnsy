@@ -11,6 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+ipnet = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]

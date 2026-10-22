@@ -47,7 +47,10 @@ pub fn verify_rrsig_with_skew(
         return Err(VerifyError::KeyTagMismatch);
     }
     let skew = skew.min(MAX_CLOCK_SKEW);
-    if serial_lt(now_unix.wrapping_add(skew), rrsig.inception) {
+    // RFC 1982 leaves a distance of exactly 2^31 undefined; it counts as valid on the
+    // expiration side only, so no timestamp pair is accepted at both bounds at once.
+    let latest = now_unix.wrapping_add(skew);
+    if !(rrsig.inception == latest || serial_lt(rrsig.inception, latest)) {
         return Err(VerifyError::NotYetValid);
     }
     if serial_lt(rrsig.expiration, now_unix.wrapping_sub(skew)) {

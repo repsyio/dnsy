@@ -68,6 +68,17 @@ async fn fixture(require: bool, max_failures: u32) -> Fixture {
 }
 
 async fn fixture_tracking(require: bool, max_failures: u32, max_tracked: usize) -> Fixture {
+    fixture_with(require, max_failures, |doh| {
+        doh.max_tracked_clients = max_tracked;
+    })
+    .await
+}
+
+async fn fixture_with(
+    require: bool,
+    max_failures: u32,
+    tweak: impl FnOnce(&mut DohConfig),
+) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let ca_key = KeyPair::generate().unwrap();
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -107,7 +118,7 @@ async fn fixture_tracking(require: bool, max_failures: u32, max_tracked: usize) 
     );
     doh.require_token = require;
     doh.max_auth_failures = max_failures;
-    doh.max_tracked_clients = max_tracked;
+    tweak(&mut doh);
     let mut config = ServerConfig::new(vec![], vec![]);
     config.doh = Some(doh);
     let server = Server::start(config, Arc::new(recorder.clone()))
@@ -353,10 +364,138 @@ async fn doh_bad_content_type_415() {
 
 #[tokio::test]
 async fn doh_cache_control_min_ttl() {
-    let f = fixture(true, 10).await;
+    let f = fixture(false, 10).await;
+    let mut c = Client::connect(&f, false).await;
+    let r = c.send(get_dns("/dns-query", None)).await;
+    assert_eq!(r.headers[header::CACHE_CONTROL], "max-age=60");
+}
+
+#[tokio::test]
+async fn doh_response_with_token_is_private() {
+    let f = fixture(false, 10).await;
     let mut c = Client::connect(&f, false).await;
     let r = c.send(get_dns("/dns-query", Some(&f.good))).await;
-    assert_eq!(r.headers[header::CACHE_CONTROL], "max-age=60");
+    assert_eq!(r.headers[header::CACHE_CONTROL], "private, max-age=60");
+    let r = c
+        .send(get_dns(&format!("/dns-query/{}", f.good), None))
+        .await;
+    assert_eq!(r.headers[header::CACHE_CONTROL], "private, max-age=60");
+}
+
+fn forwarded(mut req: Request<Full<Bytes>>, xff: &str) -> Request<Full<Bytes>> {
+    req.headers_mut()
+        .append("x-forwarded-for", xff.parse().unwrap());
+    req
+}
+
+async fn proxied_fixture(max_failures: u32) -> Fixture {
+    fixture_with(true, max_failures, |doh| {
+        doh.trusted_proxies = vec!["127.0.0.2/32".parse().unwrap()];
+    })
+    .await
+}
+
+#[tokio::test]
+async fn doh_throttle_keys_on_forwarded_client_from_trusted_proxy_only() {
+    let f = proxied_fixture(2).await;
+    let mut proxy = Client::connect_from(&f, false, Some("127.0.0.2")).await;
+    for _ in 0..2 {
+        let r = proxy
+            .send(forwarded(
+                get_dns("/dns-query", Some("garbage")),
+                "203.0.113.1",
+            ))
+            .await;
+        assert_eq!(r.status, 401);
+    }
+    let a = forwarded(get_dns("/dns-query", Some(&f.good)), "203.0.113.1");
+    assert_eq!(proxy.send(a).await.status, 429);
+    // Another client behind the same proxy is not locked out.
+    let b = forwarded(get_dns("/dns-query", Some(&f.good)), "203.0.113.2");
+    assert_eq!(proxy.send(b).await.status, 200);
+
+    // An untrusted peer cannot dodge its own lockout by varying the header.
+    let mut direct = Client::connect_from(&f, false, Some("127.0.0.3")).await;
+    for n in 0..2 {
+        let r = direct
+            .send(forwarded(
+                get_dns("/dns-query", Some("garbage")),
+                &format!("198.51.100.{n}"),
+            ))
+            .await;
+        assert_eq!(r.status, 401);
+    }
+    let r = direct
+        .send(forwarded(
+            get_dns("/dns-query", Some(&f.good)),
+            "198.51.100.9",
+        ))
+        .await;
+    assert_eq!(r.status, 429);
+}
+
+#[tokio::test]
+async fn doh_response_from_a_proxied_listener_is_private() {
+    let f = fixture_with(false, 10, |doh| {
+        doh.trusted_proxies = vec!["127.0.0.2/32".parse().unwrap()];
+    })
+    .await;
+    // Even without a token, and even for a peer that is not the proxy.
+    for from in ["127.0.0.2", "127.0.0.3"] {
+        let mut c = Client::connect_from(&f, false, Some(from)).await;
+        let r = c
+            .send(forwarded(get_dns("/dns-query", None), "203.0.113.9"))
+            .await;
+        assert_eq!(
+            r.headers[header::CACHE_CONTROL],
+            "private, max-age=60",
+            "{from}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn doh_trusted_proxy_without_a_usable_header_is_not_the_proxy() {
+    let f = proxied_fixture(10).await;
+    let mut proxy = Client::connect_from(&f, false, Some("127.0.0.2")).await;
+    assert_answer(&proxy.send(get_dns("/dns-query", Some(&f.good))).await);
+    let r = proxy
+        .send(forwarded(
+            get_dns("/dns-query", Some(&f.good)),
+            "203.0.113.9:80",
+        ))
+        .await;
+    assert_answer(&r);
+    let seen = f.recorder.seen.lock().unwrap();
+    for (_, _, ctx) in seen.iter() {
+        assert!(ctx.contains("client: 0.0.0.0:0"), "{ctx}");
+        assert!(!ctx.contains("127.0.0.2"), "{ctx}");
+    }
+}
+
+#[tokio::test]
+async fn doh_request_context_carries_the_forwarded_client() {
+    let f = proxied_fixture(10).await;
+    let mut proxy = Client::connect_from(&f, true, Some("127.0.0.2")).await;
+    let r = proxy
+        .send(forwarded(
+            get_dns("/dns-query", Some(&f.good)),
+            "203.0.113.9, 127.0.0.2",
+        ))
+        .await;
+    assert_answer(&r);
+    let mut direct = Client::connect_from(&f, false, Some("127.0.0.3")).await;
+    let r = direct
+        .send(forwarded(
+            get_dns("/dns-query", Some(&f.good)),
+            "203.0.113.7",
+        ))
+        .await;
+    assert_answer(&r);
+    let seen = f.recorder.seen.lock().unwrap();
+    assert!(seen[0].2.contains("client: 203.0.113.9:0"), "{}", seen[0].2);
+    assert!(seen[1].2.contains("client: 127.0.0.3:"), "{}", seen[1].2);
+    assert!(!seen[1].2.contains("203.0.113.7"));
 }
 
 #[tokio::test]

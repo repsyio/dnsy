@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use dnsy_core::{BlockMode, Validation};
+use ipnet::IpNet;
 use serde::Deserialize;
 
 /// Root KSK-2017 (key tag 20326) as a DS record.
@@ -135,6 +136,10 @@ pub struct Doh {
     pub path: String,
     /// Whether a token is required to query.
     pub require_token: bool,
+    /// Reverse proxies (CIDRs) whose `X-Forwarded-For` header names the client. Empty (the
+    /// default) ignores the header. The forwarded address keys the auth throttle, ACL rules,
+    /// per-client QPS and the query log.
+    pub trusted_proxies: Vec<IpNet>,
 }
 
 impl Default for Doh {
@@ -145,6 +150,7 @@ impl Default for Doh {
             key: None,
             path: "/dns-query".to_owned(),
             require_token: true,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -175,6 +181,10 @@ pub struct Api {
     /// Maximum concurrent API connections per client address (IPv6 `/64`; default 64), so one
     /// address cannot take every connection.
     pub max_conns_per_client: u32,
+    /// Reverse proxies (CIDRs) whose `X-Forwarded-For` header names the client. Empty (the
+    /// default) ignores the header. The forwarded address keys the login throttle and the
+    /// known-client exemption.
+    pub trusted_proxies: Vec<IpNet>,
 }
 
 /// `[api] secure_cookies`: the string `"auto"` or a boolean.
@@ -228,6 +238,7 @@ impl Default for Api {
             login_hash_wait_ms: 5000,
             max_conns: 256,
             max_conns_per_client: 64,
+            trusted_proxies: Vec::new(),
         }
     }
 }

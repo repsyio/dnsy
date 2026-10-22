@@ -20,6 +20,7 @@ use crate::cli::{
     UserCommand, ZoneCommand,
 };
 use crate::{Error, Result, db_path, open_store};
+use zeroize::Zeroizing;
 
 /// Environment variable holding the password for `user create` / `reset-password`.
 const PASSWORD_ENV: &str = "DNSY_PASSWORD";
@@ -156,22 +157,26 @@ fn parse_scope(s: &str) -> Result<Scope> {
 }
 
 /// The password from stdin, `DNSY_PASSWORD`, or a generated one; the flag says it was generated.
-fn password(from_stdin: bool, input: &mut impl std::io::BufRead) -> Result<(String, bool)> {
+/// Every buffer holding it is wiped on drop.
+fn password(
+    from_stdin: bool,
+    input: &mut impl std::io::BufRead,
+) -> Result<(Zeroizing<String>, bool)> {
     if from_stdin {
-        let mut line = String::new();
+        let mut line = Zeroizing::new(String::new());
         input.read_line(&mut line)?;
-        let line = line.trim_end_matches(['\r', '\n']).to_owned();
+        let line = Zeroizing::new(line.trim_end_matches(['\r', '\n']).to_owned());
         if line.is_empty() {
             return Err(Error::msg("no password on stdin"));
         }
         return Ok((line, false));
     }
     if let Some(p) = std::env::var(PASSWORD_ENV).ok().filter(|p| !p.is_empty()) {
-        return Ok((p, false));
+        return Ok((Zeroizing::new(p), false));
     }
-    let mut raw = [0_u8; 18];
+    let mut raw = Zeroizing::new([0_u8; 18]);
     rand::fill(&mut raw[..]);
-    Ok((URL_SAFE_NO_PAD.encode(raw), true))
+    Ok((Zeroizing::new(URL_SAFE_NO_PAD.encode(*raw)), true))
 }
 
 pub(crate) async fn user(config: &Config, cmd: UserCommand, out: &mut impl Write) -> Result<()> {
@@ -191,7 +196,7 @@ pub(crate) async fn user(config: &Config, cmd: UserCommand, out: &mut impl Write
                 user.username, user.role, user.id.0
             )?;
             if generated {
-                writeln!(out, "password (shown once): {pw}")?;
+                writeln!(out, "password (shown once): {}", pw.as_str())?;
             }
         }
         UserCommand::ResetPassword {
@@ -203,7 +208,7 @@ pub(crate) async fn user(config: &Config, cmd: UserCommand, out: &mut impl Write
             users.set_password(id, &pw).await?;
             writeln!(out, "password of {username} changed")?;
             if generated {
-                writeln!(out, "password (shown once): {pw}")?;
+                writeln!(out, "password (shown once): {}", pw.as_str())?;
             }
         }
         UserCommand::Disable { username } => {
@@ -341,18 +346,18 @@ fn passphrase_input(
     input: &mut impl std::io::BufRead,
 ) -> Result<Passphrase> {
     let text = if from_stdin {
-        let mut line = String::new();
+        let mut line = Zeroizing::new(String::new());
         input.read_line(&mut line)?;
-        line.trim_end_matches(['\r', '\n']).to_owned()
+        Zeroizing::new(line.trim_end_matches(['\r', '\n']).to_owned())
     } else {
-        std::env::var(env).unwrap_or_default()
+        Zeroizing::new(std::env::var(env).unwrap_or_default())
     };
     if text.chars().count() < MIN_PASSPHRASE_LEN {
         return Err(Error::msg(format!(
             "the passphrase needs at least {MIN_PASSPHRASE_LEN} characters (stdin with the flag, else ${env})"
         )));
     }
-    Ok(Passphrase::new(text))
+    Ok(Passphrase::new(text.as_str()))
 }
 
 pub(crate) async fn dnssec(
@@ -555,6 +560,22 @@ mod tests {
         let (p, generated) = password(true, &mut std::io::Cursor::new(b"s3cret\r\n")).unwrap();
         assert_eq!((p.as_str(), generated), ("s3cret", false));
         assert!(password(true, &mut std::io::Cursor::new(b"\n")).is_err());
+    }
+
+    #[test]
+    fn stdin_secret_buffers_are_zeroizing() {
+        let _: Zeroizing<String> = password(true, &mut std::io::Cursor::new(b"s3cret\n"))
+            .unwrap()
+            .0;
+        let src = include_str!("admin.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(prod.matches("read_line(&mut line)").count(), 2);
+        assert_eq!(
+            prod.matches("let mut line = Zeroizing::new(String::new());")
+                .count(),
+            2
+        );
+        assert!(!prod.contains("let mut line = String::new();"));
     }
 
     #[test]

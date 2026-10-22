@@ -68,7 +68,7 @@ impl Default for ValidationLimits {
             max_rrsig_verifications: 8,
             max_verifications: 64,
             max_fetches: 32,
-            max_nsec3_iterations: 100,
+            max_nsec3_iterations: crate::MAX_NSEC3_ITERATIONS,
             max_nsec3_hashes: 64,
             clock_skew: 300,
             indeterminate_ttl: 5,

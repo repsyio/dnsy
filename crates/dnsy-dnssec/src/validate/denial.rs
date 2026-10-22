@@ -133,7 +133,8 @@ impl Denial {
     }
 
     /// Adds the verified NSEC/NSEC3 records of `rrset`, signed by `zone`. NSEC3 records with
-    /// an unknown hash algorithm or a malformed owner hash are ignored (RFC 5155 8.1).
+    /// an unknown hash algorithm or a malformed owner hash are ignored (RFC 5155 8.1), as are
+    /// those with flag bits other than Opt-Out set (RFC 5155 8.2: flags other than 0 or 1).
     pub(super) fn add(&mut self, rrset: &[Record], zone: &Name) {
         for r in rrset {
             match &r.data {
@@ -143,7 +144,7 @@ impl Denial {
                     types: types.clone(),
                     zone: zone.clone(),
                 }),
-                RData::Nsec3(n) if n.hash_alg == NSEC3_SHA1 => {
+                RData::Nsec3(n) if n.hash_alg == NSEC3_SHA1 && n.flags & !NSEC3_OPT_OUT == 0 => {
                     let hash = r
                         .name
                         .labels()
@@ -609,5 +610,35 @@ mod tests {
         assert!(d.is_empty());
         d.add(&[rec(&good, 1)], &zone);
         assert!(!d.is_empty());
+    }
+
+    #[test]
+    fn nsec3_records_with_unknown_flag_bits_are_ignored() {
+        let zone = n("example.");
+        let rec = |flags: u8| Record {
+            name: n(&format!("{}.example.", "0".repeat(32))),
+            rtype: RecordType::Nsec3,
+            class: dnsy_proto::Class::In,
+            ttl: 1,
+            data: RData::Nsec3(Nsec3 {
+                hash_alg: 1,
+                flags,
+                iterations: 0,
+                salt: vec![],
+                next_hashed: vec![0; 20],
+                types: TypeBitmap::default(),
+            }),
+        };
+        // RFC 5155 8.2: a flags value other than 0 or 1 makes the record unusable.
+        for flags in [0x02, 0x80, 0x03, 0xff] {
+            let mut d = Denial::new(100);
+            d.add(&[rec(flags)], &zone);
+            assert!(d.is_empty(), "flags {flags:#04x}");
+        }
+        for flags in [0x00, NSEC3_OPT_OUT] {
+            let mut d = Denial::new(100);
+            d.add(&[rec(flags)], &zone);
+            assert!(!d.is_empty(), "flags {flags:#04x}");
+        }
     }
 }

@@ -397,7 +397,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Change the caller's password. Ends all sessions and starts a new one for this client.",
+        "summary": "Change the caller's password. Ends all sessions and starts a new one for this client. The\ncurrent password is checked as a login (same throttle, 429 when locked out).",
         "operationId": "change_password",
         "requestBody": {
           "content": {
@@ -441,6 +441,16 @@
           },
           "403": {
             "description": "Not a session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5095,7 +5105,7 @@
         "properties": {
           "new_passphrase": {
             "type": "string",
-            "description": "The new key passphrase (at least 12 characters)."
+            "description": "The new key passphrase (at least 12 characters). Wiped from memory on drop."
           }
         },
         "additionalProperties": false
@@ -5762,7 +5772,7 @@
         "properties": {
           "passphrase": {
             "type": "string",
-            "description": "Passphrase the bundle is encrypted under (at least 12 characters). It may differ from\nthe key passphrase; keep it apart from the bundle."
+            "description": "Passphrase the bundle is encrypted under (at least 12 characters). It may differ from\nthe key passphrase; keep it apart from the bundle. Wiped from memory on drop."
           },
           "zone": {
             "type": [
