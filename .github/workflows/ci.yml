@@ -159,7 +159,7 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo build --workspace --exclude dnsy-bench --all-targets
-      - run: cargo nextest run --workspace --exclude dnsy-e2e --exclude dnsy-bench --no-tests=pass
+      - run: cargo nextest run --workspace --exclude dnsy-e2e --exclude dnsy-bench --no-tests=pass --no-fail-fast
 
   # Single required check for branch protection: `ci` passes only when every job above passed.
   ci:
