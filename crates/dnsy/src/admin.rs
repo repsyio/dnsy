@@ -9,11 +9,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dnsy_auth::{TokenService, UserService};
 use dnsy_config::Config;
 use dnsy_core::{Clock as _, Role, Scope, SystemClock};
-use dnsy_dnssec::{Algorithm, DigestType, KeyRole, KeyState, ds_for};
+use dnsy_dnssec::{Algorithm, DigestType, ds_for};
+use dnsy_keys::{KeyRole, KeyState, KeyStore, Passphrase, passphrase_from_environment};
 use dnsy_proto::Name;
-use dnsy_zone::{
-    KeyStore, Passphrase, ZoneSigning, ZoneStore, export_bind, passphrase_from_environment,
-};
+use dnsy_zone::{ZoneSigning, ZoneStore, export_bind};
 
 use crate::cli::{
     DbCommand, DnssecCommand, KeysCommand, PassphraseCommand, RolloverCommand, TokenCommand,

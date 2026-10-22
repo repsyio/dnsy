@@ -24,15 +24,16 @@ dependencies) feeds the DNS crates, and the binary `dnsy` wires them together.
 
 | Crate | Role |
 | --- | --- |
-| `dnsy-core` | shared vocabulary types (transport, principal, role, scope, DNSSEC status) and the one `Clock` trait (`SystemClock`; `ManualClock` behind the `test-util` feature) |
+| `dnsy-core` | shared vocabulary types (transport, principal, role, scope, DNSSEC status, key role and state) and the one `Clock` trait (`SystemClock`; `ManualClock` behind the `test-util` feature) |
 | `dnsy-proto` | wire format, names, records, EDNS, canonical form |
 | `dnsy-dnssec` | validation, signing, key handling over `ring` primitives |
+| `dnsy-keys` | the DNSSEC key store: encrypted private keys, rollover, backup bundles |
 | `dnsy-config` | TOML schema, defaults, validation |
 | (config consumers) | Only `dnsy-engine` (its builder), `dnsy-api` and `dnsy` depend on `dnsy-config`. The shared enums `Validation` and `BlockMode` live in `dnsy-core` (config re-exports them, serde strings unchanged); the resolver owns `CacheOptions` and `DnssecOptions`, which the engine builder fills from `[cache]` and `[dnssec]`; `dnsy_dnssec::TrustAnchor::parse` parses trust anchors (config only checks the shape, `EngineBuilder::from_config` and `dnsy config check` parse fully); the key store takes the passphrase environment variable name as a parameter |
 | `dnsy-store` | SQLite handle and migrations |
 | `dnsy-auth` | users, roles, tokens, sessions |
 | `dnsy-observe` | query events, query log, statistics |
-| `dnsy-zone` | zone model, JSON files, hot reload, authoritative lookup, signing |
+| `dnsy-zone` | zone model, JSON files, hot reload, authoritative lookup, signing (`ZoneSigning` over the `dnsy-keys` store) |
 | `dnsy-resolver` | upstream client, cache, load balancing, validating forwarder |
 | `dnsy-filter` | blocklists, allowlist, ACL, rate limit |
 | `dnsy-engine` | the `Handler` trait and the request pipeline |

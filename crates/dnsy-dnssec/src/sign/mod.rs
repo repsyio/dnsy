@@ -12,8 +12,9 @@ mod parallel;
 #[cfg(test)]
 mod tests;
 
-use crate::{DigestType, DnssecError, KeyRole, KeyState, SigningKey, ds_for};
+use crate::{DigestType, DnssecError, SigningKey, ds_for};
 use chain::{ChainNode, NSEC3_SHA1, NameHashes, nsec_chain, nsec3_chain};
+use dnsy_core::{KeyRole, KeyState};
 use dnsy_proto::{
     Class, Dnskey, Name, Nsec3Param, RData, Record, RecordType, canonical, serial_lt,
 };

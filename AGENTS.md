@@ -15,11 +15,12 @@ DNSY is a single-binary Rust DNS server: UDP/TCP, DoT (with mTLS), DoH (with tok
 ```
 Cargo.toml          workspace, [workspace.dependencies], [workspace.lints]
 crates/
-  dnsy-core/        shared vocabulary types (Transport, Principal, Role, Scope, DnssecStatus, ids)
+  dnsy-core/        shared vocabulary types (Transport, Principal, Role, Scope, DnssecStatus, KeyRole, KeyState, ids)
   dnsy-proto/       wire format, std only
   dnsy-dnssec/      in-house DNSSEC over ring primitives
   dnsy-config/      TOML schema, defaults, validation
   dnsy-store/       SQLite handle and migrations
+  dnsy-keys/        DNSSEC key store: passphrase, sealed keys, key rows, rollover, bundles
   dnsy-auth/        users, roles, tokens, sessions
   dnsy-observe/     query events, query log, stats
   dnsy-zone/        zone model, JSON files, hot reload, authoritative lookup
@@ -35,7 +36,7 @@ docs/               book, landing page, superpowers spec and plan
 .claude/skills/     dnsy-* workflow skills
 ```
 
-Dependency direction: `core` <- everything; `proto` <- `dnssec`, `zone`, `resolver`, `filter`, `observe`, `engine`, `server`; `dnssec` <- `zone`, `resolver`; `store` <- `auth`, `observe`, `filter`, `resolver`, `zone`; `engine` <- `server`; `api` -> services only (never `server`); `dnsy` -> all.
+Dependency direction: `core` <- everything; `proto` <- `dnssec`, `keys`, `zone`, `resolver`, `filter`, `observe`, `engine`, `server`; `dnssec` <- `keys`, `zone`, `resolver`; `store` <- `keys`, `auth`, `observe`, `filter`, `resolver`, `zone`; `keys` <- `zone`, `engine`, `api`; `engine` <- `server`; `api` -> services only (never `server`); `dnsy` -> all.
 
 ## Commands
 

@@ -17,9 +17,10 @@ use dnsy_core::{Clock as _, SystemClock};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use dnsy_core::{KeyRole, KeyState};
 use dnsy_dnssec::{
-    ActiveKeys, Algorithm, Denial, DigestType, KeyRole, KeyState, SignedZone, SigningKey,
-    SigningPolicy, ZoneData, ZoneKey, ZoneSigner, ds_for,
+    ActiveKeys, Algorithm, Denial, DigestType, SignedZone, SigningKey, SigningPolicy, ZoneData,
+    ZoneKey, ZoneSigner, ds_for,
 };
 use dnsy_proto::{Class, Dnskey, Name, RData, Rcode, Record, RecordType, Soa};
 

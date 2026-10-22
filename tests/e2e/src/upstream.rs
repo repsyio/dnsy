@@ -7,9 +7,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use dnsy_core::{KeyRole, KeyState};
 use dnsy_dnssec::{
-    ActiveKeys, Algorithm, Denial, DigestType, KeyRole, KeyState, SignedZone, SigningKey,
-    SigningPolicy, ZoneData, ZoneKey, ZoneSigner, ds_for,
+    ActiveKeys, Algorithm, Denial, DigestType, SignedZone, SigningKey, SigningPolicy, ZoneData,
+    ZoneKey, ZoneSigner, ds_for,
 };
 use dnsy_proto::{Class, Message, Name, RData, Rcode, Record, RecordType, Soa};
 use tokio::net::UdpSocket;

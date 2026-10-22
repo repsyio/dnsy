@@ -1,20 +1,13 @@
 //! The optional `dnssec` block of a zone file.
 
-use dnsy_dnssec::{MAX_NSEC3_ITERATIONS, RolloverTimings, SigningPolicy};
+use dnsy_dnssec::{MAX_NSEC3_ITERATIONS, SigningPolicy};
+use dnsy_keys::{KeyLayout, RolloverTimings};
 use serde::{Deserialize, Serialize};
 
 use crate::model::ZoneError;
 
 /// Longest propagation delay accepted (seven days).
 const MAX_PROPAGATION_DELAY: u32 = 7 * 86_400;
-
-/// Whether one key signs everything or keys are split into KSK and ZSK.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KeyLayout {
-    Csk,
-    KskZsk,
-}
 
 /// Authenticated denial of existence mechanism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

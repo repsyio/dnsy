@@ -511,6 +511,7 @@ dependencies = [
  "dnsy-dnssec",
  "dnsy-engine",
  "dnsy-filter",
+ "dnsy-keys",
  "dnsy-observe",
  "dnsy-proto",
  "dnsy-resolver",
@@ -548,6 +549,7 @@ dependencies = [
  "dnsy-dnssec",
  "dnsy-engine",
  "dnsy-filter",
+ "dnsy-keys",
  "dnsy-observe",
  "dnsy-proto",
  "dnsy-resolver",
@@ -662,6 +664,7 @@ dependencies = [
  "dnsy-core",
  "dnsy-dnssec",
  "dnsy-filter",
+ "dnsy-keys",
  "dnsy-observe",
  "dnsy-proto",
  "dnsy-resolver",
@@ -699,6 +702,27 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "webpki-roots",
+]
+
+[[package]]
+name = "dnsy-keys"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "base64",
+ "dnsy-core",
+ "dnsy-dnssec",
+ "dnsy-proto",
+ "dnsy-store",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -789,23 +813,20 @@ name = "dnsy-zone"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
- "argon2",
- "base64",
  "dnsy-core",
  "dnsy-dnssec",
+ "dnsy-keys",
  "dnsy-proto",
  "dnsy-store",
  "insta",
  "notify",
  "ring",
- "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
  "tracing",
- "zeroize",
 ]
 
 [[package]]

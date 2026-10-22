@@ -16,10 +16,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use dnsy_core::Clock;
-use dnsy_dnssec::{KeyState, SignedZone, ZoneSigner, nsec3_hash};
+use dnsy_dnssec::{Algorithm, SignedZone, ZoneSigner, nsec3_hash};
+use dnsy_keys::{KeyState, KeyStore, KeyStoreError};
 use dnsy_proto::{Name, RData, Record, RecordType, base32hex_encode};
 
-use crate::keystore::KeyStore;
 use crate::lookup::LookupResult;
 use crate::model::Zone;
 use crate::store::{SignedEntry, ZoneStore};
@@ -471,7 +471,11 @@ impl ZoneSigning {
         };
         let keys = &self.inner.keys;
         let fingerprint: KeyFingerprint = keys
-            .bootstrap(&zone.origin, policy)
+            .bootstrap(
+                &zone.origin,
+                policy.key_layout,
+                Algorithm::from(policy.algorithm),
+            )
             .await?
             .into_iter()
             .filter(|k| k.state != KeyState::Removed)
@@ -534,7 +538,7 @@ impl ZoneSigning {
 #[derive(Debug, thiserror::Error)]
 enum SigningError {
     #[error(transparent)]
-    Keys(#[from] crate::keystore::KeyStoreError),
+    Keys(#[from] KeyStoreError),
     #[error(transparent)]
     Policy(#[from] crate::model::ZoneError),
     #[error(transparent)]

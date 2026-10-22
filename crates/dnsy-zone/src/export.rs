@@ -481,8 +481,8 @@ mod tests {
         policy.nsec3.opt_out = denial == "nsec3";
         let keys = dnsy_dnssec::ActiveKeys {
             keys: vec![dnsy_dnssec::ZoneKey::new(
-                dnsy_dnssec::KeyRole::Csk,
-                dnsy_dnssec::KeyState::Active,
+                dnsy_keys::KeyRole::Csk,
+                dnsy_keys::KeyState::Active,
                 dnsy_dnssec::SigningKey::generate(alg, true).unwrap(),
             )],
         };
@@ -605,8 +605,8 @@ mod tests {
                 serde_json::from_str(&format!("\"{denial}\"")).unwrap();
             let keys = dnsy_dnssec::ActiveKeys {
                 keys: vec![dnsy_dnssec::ZoneKey::new(
-                    dnsy_dnssec::KeyRole::Csk,
-                    dnsy_dnssec::KeyState::Active,
+                    dnsy_keys::KeyRole::Csk,
+                    dnsy_keys::KeyState::Active,
                     dnsy_dnssec::SigningKey::generate(
                         dnsy_dnssec::Algorithm::EcdsaP256Sha256,
                         true,
