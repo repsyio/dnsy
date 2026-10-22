@@ -250,9 +250,7 @@ pub(crate) async fn serve(
             // it): the peer, or the `X-Forwarded-For` client when the peer is a trusted proxy.
             let service = service_fn(move |req: hyper::Request<Incoming>| {
                 let mut req = req.map(axum::body::Body::new);
-                let client = request_client(&req, peer.ip(), &trusted);
-                req.extensions_mut().insert(ConnectInfo(peer));
-                req.extensions_mut().insert(ClientAddr(client));
+                tag_request(&mut req, peer, &trusted);
                 let exempt = req.uri().path() == STREAM_PATH;
                 let declared = declared_length(&req);
                 let call =
@@ -320,6 +318,13 @@ fn admit(slots: &SlotLimit, peer: IpAddr, trusted: &[IpNet]) -> Option<dnsy_serv
     } else {
         slots.try_acquire(peer)
     }
+}
+
+/// Records the peer and the client address (see [`forwarded_client`]) for the handlers.
+fn tag_request<B>(req: &mut hyper::Request<B>, peer: std::net::SocketAddr, trusted: &[IpNet]) {
+    let client = request_client(req, peer.ip(), trusted);
+    req.extensions_mut().insert(ConnectInfo(peer));
+    req.extensions_mut().insert(ClientAddr(client));
 }
 
 /// The request's client address (see [`forwarded_client`]).
