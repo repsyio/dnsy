@@ -1,7 +1,7 @@
 //! Persistence of upstream groups (migration `0005`).
 
+use dnsy_core::{Clock, SystemClock};
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use dnsy_store::{Store, StoreError};
 use rusqlite::params;
@@ -25,12 +25,6 @@ pub enum GroupStoreError {
 #[derive(Clone)]
 pub struct GroupStore {
     store: Store,
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 impl GroupStore {
@@ -78,7 +72,7 @@ impl GroupStore {
     /// Store failure.
     pub async fn put(&self, spec: &GroupSpec) -> Result<(), GroupStoreError> {
         let spec = spec.clone();
-        let now = unix_now();
+        let now = SystemClock.unix_secs();
         self.store
             .write(move |tx| {
                 tx.execute("DELETE FROM upstreams WHERE group_name = ?1", [&spec.name])?;

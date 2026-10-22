@@ -13,6 +13,12 @@ workspace = true
 [dependencies]
 ipnet = { workspace = true }
 serde = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+
+[features]
+# ManualClock, for tests of other crates.
+test-util = []
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

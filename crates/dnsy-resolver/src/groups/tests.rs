@@ -1,26 +1,13 @@
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 
+use dnsy_core::{Clock, ManualClock, SystemClock};
 use dnsy_store::Store;
 
 use std::net::SocketAddr;
 
 use super::health::backoff;
 use super::*;
-
-struct ManualClock(Mutex<Duration>);
-
-impl ManualClock {
-    fn advance(&self, d: Duration) {
-        *self.0.lock().unwrap() += d;
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> Duration {
-        *self.0.lock().unwrap()
-    }
-}
 
 /// splitmix64: deterministic and well distributed.
 struct SeededRng(AtomicU64);
@@ -54,7 +41,7 @@ impl Exchange for Fake {
     ) -> Result<Message, UpstreamError> {
         let key = upstream.to_string();
         *self.hits.lock().unwrap().entry(key.clone()).or_default() += 1;
-        self.clock.advance(
+        self.clock.advance_by(
             self.latency
                 .get(&key)
                 .copied()
@@ -108,7 +95,7 @@ fn spec(name: &str, strategy: Strategy, hosts: &[&str]) -> GroupSpec {
 }
 
 fn setup(specs: Vec<GroupSpec>, latency: &[(&str, u64)]) -> (GroupSet, Fake, Arc<ManualClock>) {
-    let clock = Arc::new(ManualClock(Mutex::new(Duration::ZERO)));
+    let clock = Arc::new(ManualClock::new(0));
     let set = GroupSet::new(
         specs,
         clock.clone(),
@@ -241,21 +228,21 @@ async fn ejection_and_recovery() {
     assert_eq!(fake.hits(&a), 3);
 
     // Backoff not over: no probe.
-    clock.advance(Duration::from_secs(3));
+    clock.advance_by(Duration::from_secs(3));
     set.run_probes(&fake).await;
     assert_eq!(fake.hits(&a), 3);
 
     // Backoff over but still down: probe fails, backoff doubles to 10 s.
-    clock.advance(Duration::from_secs(3));
+    clock.advance_by(Duration::from_secs(3));
     set.run_probes(&fake).await;
     assert_eq!(fake.hits(&a), 4);
-    clock.advance(Duration::from_secs(9));
+    clock.advance_by(Duration::from_secs(9));
     set.run_probes(&fake).await;
     assert_eq!(fake.hits(&a), 4);
 
     // Back up: the next probe re-admits it.
     fake.set_down(&a, false);
-    clock.advance(Duration::from_secs(2));
+    clock.advance_by(Duration::from_secs(2));
     set.run_probes(&fake).await;
     let h = &set.health("default").unwrap()[0];
     assert!(h.available);
@@ -349,7 +336,7 @@ async fn query_without_question_is_rejected() {
 #[test]
 fn invalid_configuration_is_rejected() {
     let build = |specs| {
-        GroupSet::new(specs, Arc::new(SystemClock::new()), Arc::new(ThreadRng))
+        GroupSet::new(specs, Arc::new(SystemClock), Arc::new(ThreadRng))
             .err()
             .map(|e| e.to_string())
     };
@@ -403,8 +390,8 @@ fn strategy_names_round_trip() {
 
 #[test]
 fn production_clock_and_rng_work() {
-    let c = SystemClock::default();
-    assert!(c.now() <= c.now());
+    let c = SystemClock;
+    assert!(c.instant() <= c.instant());
     let r = ThreadRng;
     assert_ne!((r.next_u64(), r.next_u64()), (0, 0));
 }
@@ -466,7 +453,7 @@ async fn config_seeds_on_first_start_only() {
             .unwrap()
     );
     assert_eq!(gs.list().await.unwrap(), list);
-    GroupSet::new(list, Arc::new(SystemClock::new()), Arc::new(ThreadRng)).unwrap();
+    GroupSet::new(list, Arc::new(SystemClock), Arc::new(ThreadRng)).unwrap();
 }
 
 #[test]

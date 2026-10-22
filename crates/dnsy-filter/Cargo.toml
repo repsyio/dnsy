@@ -30,6 +30,7 @@ tracing = { workspace = true }
 webpki-roots = { workspace = true }
 
 [dev-dependencies]
+dnsy-core = { version = "0.1.0", path = "../dnsy-core", features = ["test-util"] }
 axum = { workspace = true }
 proptest = { workspace = true }
 rcgen = { workspace = true }

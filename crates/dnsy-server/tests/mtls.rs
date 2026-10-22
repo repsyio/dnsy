@@ -2,12 +2,11 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dnsy_auth::ClientCertService;
-use dnsy_core::Principal;
+use dnsy_core::{Clock as _, ManualClock, Principal, SystemClock};
 use dnsy_engine::{Handler, RequestContext};
 use dnsy_proto::{Class, Message, Name, Question, RecordType};
 use dnsy_server::{
@@ -19,7 +18,7 @@ use rcgen::{
     KeyIdMethod, KeyPair, KeyUsagePurpose, RevocationReason, RevokedCertParams, SerialNumber,
     date_time_ymd,
 };
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -457,21 +456,8 @@ async fn open_connection_closed_after_crl_reload() {
     server.shutdown().await;
 }
 
-/// A clock the test moves: seconds since the epoch.
-fn manual_clock(start: u64) -> (Arc<AtomicU64>, dnsy_server::MtlsClock) {
-    let secs = Arc::new(AtomicU64::new(start));
-    let shared = Arc::clone(&secs);
-    let clock: dnsy_server::MtlsClock = Arc::new(move || {
-        UnixTime::since_unix_epoch(Duration::from_secs(shared.load(Ordering::SeqCst)))
-    });
-    (secs, clock)
-}
-
-fn real_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+fn real_now() -> i64 {
+    SystemClock.unix_secs()
 }
 
 #[tokio::test]
@@ -479,13 +465,13 @@ async fn expired_client_cert_closes_open_connection() {
     let env = env();
     // Valid until 2030; the test clock jumps past that while the connection stays open.
     let c = client_until(&env.client_ca, 1, false, Some((2030, 1, 1)));
-    let (secs, clock) = manual_clock(real_now());
+    let clock = ManualClock::new(real_now());
     let v = MtlsVerifier::with_clock(
         MtlsMode::Required,
         &env.dir.path().join("client-ca.pem"),
         None,
         Some(allow(&[&c])),
-        clock,
+        Arc::new(clock.clone()),
     )
     .unwrap();
     let (server, addr, rec) = start(&env, &v).await;
@@ -493,7 +479,7 @@ async fn expired_client_cert_closes_open_connection() {
     let mut tls = connect(addr, &client_config(&env, Some(&c))).await.unwrap();
     ask(&mut tls).await.unwrap();
     // Nothing was reloaded: only the passage of time invalidates the certificate.
-    secs.store(2_000_000_000, Ordering::SeqCst); // 2033
+    clock.set(2_000_000_000); // 2033
     assert!(ask(&mut tls).await.is_err());
     assert_eq!(rec.0.lock().unwrap().len(), 1);
     server.shutdown().await;
@@ -507,15 +493,15 @@ async fn expired_allowlist_entry_closes_open_connection() {
     let list = Allowlist::new();
     list.replace([AllowedCert {
         sha256: fingerprint(&c),
-        expires_at: Some(i64::try_from(start_at).unwrap() + 3600),
+        expires_at: Some(start_at + 3600),
     }]);
-    let (secs, clock) = manual_clock(start_at);
+    let clock = ManualClock::new(start_at);
     let v = MtlsVerifier::with_clock(
         MtlsMode::Required,
         &env.dir.path().join("client-ca.pem"),
         None,
         Some(list),
-        clock,
+        Arc::new(clock.clone()),
     )
     .unwrap();
     let (server, addr, _rec) = start(&env, &v).await;
@@ -523,9 +509,9 @@ async fn expired_allowlist_entry_closes_open_connection() {
     let mut tls = connect(addr, &client_config(&env, Some(&c))).await.unwrap();
     ask(&mut tls).await.unwrap();
     // Within the interval and before expiry the connection keeps working.
-    secs.store(start_at + 10, Ordering::SeqCst);
+    clock.set(start_at + 10);
     ask(&mut tls).await.unwrap();
-    secs.store(start_at + 7200, Ordering::SeqCst);
+    clock.set(start_at + 7200);
     assert!(ask(&mut tls).await.is_err());
     server.shutdown().await;
 }

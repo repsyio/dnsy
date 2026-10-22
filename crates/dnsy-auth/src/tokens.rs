@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use dnsy_core::{Principal, Role, Scope, TokenId, UserId};
+use dnsy_core::{Clock, Principal, Role, Scope, SystemClock, TokenId, UserId};
 use dnsy_store::Store;
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use crate::{AuthError, unix_now};
+use crate::AuthError;
 
 const PREFIX: &str = "dnsy_";
 /// `last_used_at` is refreshed at most this often.
@@ -188,7 +188,7 @@ impl TokenService {
         scopes: &[Scope],
         expires_at: Option<i64>,
     ) -> Result<(String, TokenMeta), AuthError> {
-        self.create_at(user, name, scopes, expires_at, unix_now())
+        self.create_at(user, name, scopes, expires_at, SystemClock.unix_secs())
             .await
     }
 
@@ -291,7 +291,7 @@ impl TokenService {
     /// # Errors
     /// [`AuthError::TokenNotFound`] or a store failure.
     pub async fn revoke(&self, id: TokenId) -> Result<(), AuthError> {
-        let now = unix_now();
+        let now = SystemClock.unix_secs();
         let n = self
             .store
             .write(move |tx| {
@@ -454,7 +454,8 @@ impl TokenService {
 
 impl TokenVerifier for TokenService {
     async fn verify(&self, presented: &str, needed: Scope) -> Result<Principal, AuthError> {
-        self.verify_at(presented, needed, unix_now()).await
+        self.verify_at(presented, needed, SystemClock.unix_secs())
+            .await
     }
 }
 

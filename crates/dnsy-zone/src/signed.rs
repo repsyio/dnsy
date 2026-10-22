@@ -15,7 +15,8 @@ use std::ops::Bound;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use dnsy_dnssec::{Clock, KeyState, SignedZone, ZoneSigner, nsec3_hash};
+use dnsy_core::Clock;
+use dnsy_dnssec::{KeyState, SignedZone, ZoneSigner, nsec3_hash};
 use dnsy_proto::{Name, RData, Record, RecordType, base32hex_encode};
 
 use crate::keystore::KeyStore;
@@ -476,7 +477,7 @@ impl ZoneSigning {
             .filter(|k| k.state != KeyState::Removed)
             .map(|k| (k.id, k.state))
             .collect();
-        let now = serial_time(self.inner.clock.now());
+        let now = serial_time(self.inner.clock.unix_secs());
         let keys_changed = self
             .lock()
             .get(&zone.origin)

@@ -7,8 +7,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request};
 use dnsy_config::Config;
-use dnsy_core::{DnssecStatus, Role, Scope};
-use dnsy_dnssec::{Clock as _, ManualClock, SystemClock};
+use dnsy_core::{DnssecStatus, ManualClock, Role, Scope, SystemClock};
 use dnsy_engine::{Engine, EngineBuilder, Services};
 use dnsy_proto::{Class, Header, Message, Opcode, Question, RData, Rcode, Record, RecordType};
 use dnsy_resolver::forward::DnssecPolicy as ResolverPolicy;
@@ -75,7 +74,7 @@ async fn fx_with(passphrase: Option<&str>, wire_signing: bool) -> Fx {
             )
             .build(),
     );
-    let clock = ManualClock::new(SystemClock.now());
+    let clock = ManualClock::new(SystemClock.unix_secs());
     let mut state = ApiState::new(store.clone())
         .with_clock(Arc::new(clock.clone()))
         .with_services(&services)
@@ -1445,7 +1444,7 @@ async fn dnssec_ops_need_signing() {
 async fn nta_expiry_through_the_api() {
     let fx = fx().await;
     let url = "/api/v1/settings/dnssec";
-    let now = fx.clock.now();
+    let now = fx.clock.unix_secs();
     let res = admin(
         &fx,
         Method::PATCH,

@@ -13,15 +13,13 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use dnsy_config::Config;
-use dnsy_core::{DnssecStatus, Role, Scope, Transport};
+use dnsy_core::{DnssecStatus, Role, Scope, SystemClock, Transport};
 use dnsy_engine::{Engine, EngineBuilder, RequestContext, Services};
-use dnsy_filter::{Fetcher, FilterLimits, ListManager, SourceStore, SystemClock};
+use dnsy_filter::{Fetcher, FilterLimits, ListManager, SourceStore};
 use dnsy_proto::{
     Class, Header, Message, Name, Opcode, Question, RData, Rcode, Record, RecordType,
 };
-use dnsy_resolver::groups::{
-    Exchange, GroupMember, GroupSet, GroupSpec, Strategy, SystemClock as GroupClock, ThreadRng,
-};
+use dnsy_resolver::groups::{Exchange, GroupMember, GroupSet, GroupSpec, Strategy, ThreadRng};
 use dnsy_resolver::{CacheKey, Upstream, UpstreamClient, UpstreamConfig, UpstreamError};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -51,7 +49,7 @@ fn default_group() -> GroupSet {
                 weight: 1,
             }],
         }],
-        Arc::new(GroupClock::new()),
+        Arc::new(SystemClock),
         Arc::new(ThreadRng),
     )
     .unwrap()

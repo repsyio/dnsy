@@ -36,7 +36,7 @@ pub use doh::{
     TokenAuth,
 };
 pub use dot::DotConfig;
-pub use dot::mtls::{AllowedCert, Allowlist, Clock as MtlsClock, MtlsMode, MtlsVerifier};
+pub use dot::mtls::{AllowedCert, Allowlist, MtlsMode, MtlsVerifier};
 pub use query::{MAX_UDP_PAYLOAD, MIN_UDP_PAYLOAD};
 
 /// Listener settings.

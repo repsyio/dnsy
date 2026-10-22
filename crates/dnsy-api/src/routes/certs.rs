@@ -7,6 +7,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use dnsy_auth::ClientCert;
+use dnsy_core::{Clock as _, SystemClock};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
@@ -36,12 +37,6 @@ pub struct ClientCertView {
     pub expired: bool,
 }
 
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
-
 impl From<ClientCert> for ClientCertView {
     fn from(c: ClientCert) -> Self {
         ClientCertView {
@@ -49,7 +44,7 @@ impl From<ClientCert> for ClientCertView {
             sha256: hex(&c.sha256),
             label: c.label,
             enabled: c.enabled,
-            expired: c.expires_at.is_some_and(|t| t <= now()),
+            expired: c.expires_at.is_some_and(|t| t <= SystemClock.unix_secs()),
             expires_at: c.expires_at,
             created_at: c.created_at,
         }
@@ -122,7 +117,7 @@ async fn create_cert(
             "label must be 1 to {MAX_LABEL} characters"
         )));
     }
-    if req.expires_at.is_some_and(|t| t <= now()) {
+    if req.expires_at.is_some_and(|t| t <= SystemClock.unix_secs()) {
         return Err(ApiError::Unprocessable(
             "expires_at must be in the future".to_owned(),
         ));

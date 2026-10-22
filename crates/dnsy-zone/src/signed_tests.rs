@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use dnsy_core::ManualClock;
 use dnsy_dnssec::{
-    ActiveKeys, Algorithm, KeyRole, KeyState, ManualClock, SignedZone, SigningKey, ZoneKey,
-    ZoneSigner, nsec3_hash, verify_rrsig,
+    ActiveKeys, Algorithm, KeyRole, KeyState, SignedZone, SigningKey, ZoneKey, ZoneSigner,
+    nsec3_hash, verify_rrsig,
 };
 use dnsy_proto::{
     Class, Dnskey, Message, Name, Question, RData, Record, RecordType, base32hex_encode,
@@ -1042,7 +1043,8 @@ async fn ksk_tags(f: &Fixture, states: &[KeyState]) -> Vec<u16> {
 
 #[tokio::test]
 async fn ksk_rollover_timeline_keeps_every_dnskey_signature_valid() {
-    use dnsy_dnssec::{Clock, RolloverTimings};
+    use dnsy_core::Clock;
+    use dnsy_dnssec::RolloverTimings;
     let timings = RolloverTimings {
         dnskey_ttl: 3600,
         propagation: 0,
@@ -1060,7 +1062,7 @@ async fn ksk_rollover_timeline_keeps_every_dnskey_signature_valid() {
             ),
     );
     f.store.reload().unwrap();
-    let now = |f: &Fixture| u32::try_from(Clock::now(&f.clock)).unwrap();
+    let now = |f: &Fixture| u32::try_from(Clock::unix_secs(&f.clock)).unwrap();
     let all = [KeyState::Published, KeyState::Active, KeyState::Retired];
 
     // Steady state: one KSK signs.

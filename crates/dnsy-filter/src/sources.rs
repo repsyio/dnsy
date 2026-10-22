@@ -1,11 +1,12 @@
 //! Persistence of list sources and custom rules (`blocklists`, `custom_rules`).
 
+use dnsy_core::{Clock, SystemClock};
 use dnsy_store::{Store, StoreError};
 use rusqlite::{ErrorCode, Row, params};
 
 use crate::fetch::Location;
 use crate::parse::ListFormat;
-use crate::rules::{FilterError, unix_now};
+use crate::rules::FilterError;
 
 /// A persisted list source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,7 +168,7 @@ impl SourceStore {
         }
         let interval = i64::try_from(new.interval_secs)
             .map_err(|_| FilterError::Invalid("interval too large".into()))?;
-        let now = unix_now();
+        let now = SystemClock.unix_secs();
         self.store
             .write(move |tx| {
                 tx.execute(
@@ -301,7 +302,7 @@ impl SourceStore {
     /// [`FilterError::Duplicate`] if the rule exists.
     pub async fn add_custom_rule(&self, kind: RuleKind, domain: &str) -> Result<i64, FilterError> {
         let domain = domain.to_owned();
-        let now = unix_now();
+        let now = SystemClock.unix_secs();
         self.store
             .write(move |tx| {
                 tx.execute(

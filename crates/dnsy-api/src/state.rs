@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
 use dnsy_auth::{BootstrapCode, ClientCertService, SessionService, TokenService, UserService};
+use dnsy_core::{Clock, SystemClock};
 use dnsy_core::{Role, UserId};
-use dnsy_dnssec::{Clock, SystemClock};
 use dnsy_engine::{GroupsHandle, LivePolicy, Services};
 use dnsy_filter::{ListManager, RuleStore, SourceStore};
 use dnsy_resolver::Cache;

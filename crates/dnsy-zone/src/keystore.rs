@@ -14,9 +14,10 @@ use std::time::Duration;
 use argon2::{Algorithm as Argon2Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use dnsy_core::Clock;
 use dnsy_dnssec::{
-    ActiveKeys, Algorithm, Clock, DnssecError, KeyRecord, KeyRole, KeyState, RolloverTimings,
-    SigningKey, Transition, ZoneKey, plan,
+    ActiveKeys, Algorithm, DnssecError, KeyRecord, KeyRole, KeyState, RolloverTimings, SigningKey,
+    Transition, ZoneKey, plan,
 };
 use dnsy_proto::{Dnskey, Name};
 use dnsy_store::{Store, StoreError};
@@ -486,7 +487,7 @@ impl KeyStore {
         algorithm: Algorithm,
         state: KeyState,
     ) -> Result<NewKey, KeyStoreError> {
-        let now = self.clock.now();
+        let now = self.clock.unix_secs();
         let key = SigningKey::generate(algorithm, role.is_sep())?;
         self.stored_key(zone_key(zone), role, &key, state, now)
     }
@@ -736,7 +737,7 @@ impl KeyStore {
             .into_iter()
             .find(|k| k.role == role && k.state == KeyState::Generated)
         {
-            let now = self.clock.now();
+            let now = self.clock.unix_secs();
             self.store
                 .write(move |tx| {
                     tx.execute(
@@ -780,7 +781,7 @@ impl KeyStore {
     /// # Errors
     /// Unknown key, a ZSK, a key that is not `published`, or a database failure.
     pub async fn confirm_ds(&self, id: i64) -> Result<(), KeyStoreError> {
-        let now = self.clock.now();
+        let now = self.clock.unix_secs();
         self.store
             .write(move |tx| {
                 let row: Option<(String, String)> = tx
@@ -823,7 +824,7 @@ impl KeyStore {
         role: Option<KeyRole>,
     ) -> Result<Vec<KeyRecord>, KeyStoreError> {
         let name = zone_key(zone);
-        let now = self.clock.now();
+        let now = self.clock.unix_secs();
         self.store
             .write(move |tx| {
                 let incoming: Vec<KeyRecord> = list_zone(tx, &name)?
@@ -876,7 +877,7 @@ impl KeyStore {
         name: String,
         timings: RolloverTimings,
     ) -> Result<Vec<Transition>, KeyStoreError> {
-        let now = self.clock.now();
+        let now = self.clock.unix_secs();
         Ok(self
             .store
             .write(move |tx| {
@@ -1195,7 +1196,7 @@ mod tests {
             "impl Drop for NewKey {\n    fn drop(&mut self) {\n        self.private_key.zeroize();"
         ));
     }
-    use dnsy_dnssec::ManualClock;
+    use dnsy_core::ManualClock;
     use std::fmt::Write as _;
 
     const CHEAP: KdfCost = KdfCost {

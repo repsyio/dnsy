@@ -1,5 +1,11 @@
 //! Shared vocabulary types for DNSY. No logic beyond small, total helpers.
 
+mod clock;
+
+#[cfg(feature = "test-util")]
+pub use clock::ManualClock;
+pub use clock::{Clock, SystemClock};
+
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};

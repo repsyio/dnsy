@@ -1,7 +1,7 @@
 use dnsy_store::{Store, StoreError};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::unix_now;
+use dnsy_core::{Clock, SystemClock};
 
 /// One allowlisted client certificate, identified by the SHA-256 of its DER encoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +65,7 @@ impl ClientCertService {
         let label = label.to_owned();
         self.store
             .write(move |tx| {
-                let now = unix_now();
+                let now = SystemClock.unix_secs();
                 tx.execute(
                     "INSERT INTO client_certs (sha256, label, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)",
                     params![sha256.as_slice(), label, expires_at, now],
@@ -93,7 +93,7 @@ impl ClientCertService {
     /// # Errors
     /// Store failure.
     pub async fn active(&self) -> Result<Vec<ClientCert>, StoreError> {
-        let now = unix_now();
+        let now = SystemClock.unix_secs();
         Ok(self
             .store
             .read(|c| list_where(c, "WHERE enabled = 1"))
@@ -182,9 +182,11 @@ mod tests {
     #[tokio::test]
     async fn active_skips_expired() {
         let (s, _d) = svc();
-        s.add([1; 32], "old", Some(unix_now() - 10)).await.unwrap();
+        s.add([1; 32], "old", Some(SystemClock.unix_secs() - 10))
+            .await
+            .unwrap();
         let live = s
-            .add([2; 32], "new", Some(unix_now() + 1000))
+            .add([2; 32], "new", Some(SystemClock.unix_secs() + 1000))
             .await
             .unwrap();
         assert_eq!(s.active().await.unwrap(), vec![live]);

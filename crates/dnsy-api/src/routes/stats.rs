@@ -1,10 +1,11 @@
 //! Stats: summary, timeseries and top lists over the query-log rollups.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
+use dnsy_core::{Clock as _, SystemClock};
 use dnsy_observe::{ObserveError, StatsService, TimeRange, redact_client_ip};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -119,16 +120,8 @@ pub struct TopItem {
     pub count: u64,
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .unwrap_or(0)
-}
-
 fn range(from: Option<i64>, to: Option<i64>) -> Result<TimeRange, ApiError> {
-    let to_ms = check_ms("to", to.unwrap_or_else(now_ms))?;
+    let to_ms = check_ms("to", to.unwrap_or_else(|| SystemClock.unix_millis()))?;
     let from_ms = match from {
         Some(f) => check_ms("from", f)?,
         None => to_ms.saturating_sub(DEFAULT_RANGE_MS).max(0),

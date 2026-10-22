@@ -24,7 +24,7 @@ dependencies) feeds the DNS crates, and the binary `dnsy` wires them together.
 
 | Crate | Role |
 | --- | --- |
-| `dnsy-core` | shared vocabulary types (transport, principal, role, scope, DNSSEC status) |
+| `dnsy-core` | shared vocabulary types (transport, principal, role, scope, DNSSEC status) and the one `Clock` trait (`SystemClock`; `ManualClock` behind the `test-util` feature) |
 | `dnsy-proto` | wire format, names, records, EDNS, canonical form |
 | `dnsy-dnssec` | validation, signing, key handling over `ring` primitives |
 | `dnsy-config` | TOML schema, defaults, validation |

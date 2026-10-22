@@ -242,7 +242,7 @@ signature from `previous` when its RRset is unchanged (same TTL and RDATA in can
 its key still has that signing duty, and it expires more than `refresh_days` from now.
 Anything else is signed again. `SignedZone::next_resign` is the first time some signature
 falls inside the refresh window, and `needs_refresh(now)` says whether that time has come.
-Time is always passed in, so tests drive it with a `ManualClock`.
+Time is always passed in, so tests drive it with a `dnsy_core::ManualClock`.
 
 ### Verification
 

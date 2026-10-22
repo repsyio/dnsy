@@ -4,16 +4,21 @@
 use std::collections::HashMap;
 
 use dnsy_config::Validation;
+use dnsy_core::{Clock, SystemClock};
 use dnsy_dnssec::{Algorithm, DigestType, SigningKey, TrustAnchors, Validator, ds_for};
 use dnsy_proto::{RecordType, TypeBitmap};
 use dnsy_resolver::CacheLookup;
-use dnsy_resolver::forward::{DnssecPolicy, RELEASE_FLOOR_UNIX, unix_now};
+use dnsy_resolver::forward::{DnssecPolicy, RELEASE_FLOOR_UNIX};
 
 use super::*;
 
+fn now_unix() -> u64 {
+    u64::try_from(SystemClock.unix_secs()).unwrap()
+}
+
 /// Seconds since the epoch as the signer sees it.
 fn now32() -> u32 {
-    u32::try_from(unix_now()).unwrap()
+    u32::try_from(now_unix()).unwrap()
 }
 
 struct Zone {
@@ -468,7 +473,7 @@ async fn nta_returns_insecure() {
 async fn expired_nta_stops_applying() {
     let r = rig(Validation::Strict);
     // Expired a minute ago: the subtree is validated (and fails) as without an NTA.
-    let now = u32::try_from(unix_now()).unwrap();
+    let now = u32::try_from(now_unix()).unwrap();
     r.h.engine
         .set_negative_trust_anchor_entries(vec![(name("broken.example."), Some(now - 60))]);
     let resp = r.ask(q("broken.example.", true, false, false)).await;
@@ -485,7 +490,7 @@ async fn expired_nta_stops_applying() {
 #[tokio::test]
 async fn answer_cached_under_an_nta_does_not_outlive_it() {
     let r = rig(Validation::Strict);
-    let now = u32::try_from(unix_now()).unwrap();
+    let now = u32::try_from(now_unix()).unwrap();
     r.h.engine
         .set_negative_trust_anchor_entries(vec![(name("broken.example."), Some(now + 20))]);
     let resp = r.ask(q("broken.example.", true, true, false)).await;
@@ -503,7 +508,7 @@ async fn answer_cached_under_an_nta_does_not_outlive_it() {
 #[tokio::test]
 async fn clock_before_build_time_degrades_to_indeterminate() {
     let r = rig_with(|w| DnssecPolicy {
-        not_before_unix: unix_now() + 365 * 86_400,
+        not_before_unix: now_unix() + 365 * 86_400,
         ..w.policy(Validation::Strict)
     });
     assert!(r.h.engine.dnssec_clock_untrusted());

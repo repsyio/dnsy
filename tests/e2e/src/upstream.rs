@@ -1,6 +1,7 @@
 //! A scriptable fake upstream DNS server (UDP): per name and type answers, delays, failures and
 //! garbage, plus a log of what it was asked.
 
+use dnsy_core::{Clock as _, SystemClock};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -183,10 +184,7 @@ impl FakeUpstream {
             rec(".", 3600, RecordType::Ns, "a.root.test."),
         ];
         all.extend(records);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_secs();
+        let now = u64::try_from(SystemClock.unix_secs()).expect("unix time fits");
         let signed = ZoneSigner::sign(
             &ZoneData {
                 origin: Name::root(),

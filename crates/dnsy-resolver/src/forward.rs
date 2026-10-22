@@ -12,7 +12,7 @@
 
 use std::future::Future;
 use std::path::Path;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use dnsy_core::{DnssecStatus, Validation};
 use dnsy_dnssec::{
@@ -211,14 +211,6 @@ pub fn parse_negative(names: &[String]) -> Result<Vec<Name>, DnssecConfigError> 
                 .map_err(|_| DnssecConfigError::NegativeAnchor(s.clone()))
         })
         .collect()
-}
-
-/// Seconds since the epoch, 0 for a clock before 1970.
-#[must_use]
-pub fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 /// Caps every record TTL (except OPT) of `msg` at `cap`: validated data must not outlive its

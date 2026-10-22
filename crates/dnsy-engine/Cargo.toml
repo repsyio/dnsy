@@ -27,4 +27,5 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+dnsy-core = { version = "0.1.0", path = "../dnsy-core", features = ["test-util"] }
 tempfile = { workspace = true }
