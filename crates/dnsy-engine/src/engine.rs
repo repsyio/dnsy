@@ -890,15 +890,15 @@ fn stale_answer(mut msg: Message) -> Message {
 impl<E: Exchange + 'static> Handler for Engine<E> {
     /// Dropped requests are answered REFUSED here: the `Handler` contract always returns a
     /// response. Transports that can stay silent call [`Engine::process`].
-    async fn handle(&self, ctx: RequestContext, query: Message) -> Message {
-        match self.process(&ctx, &query).await {
+    async fn handle(&self, ctx: RequestContext, query: &Message) -> Message {
+        match self.process(&ctx, query).await {
             Some(response) => response,
-            None => finish(&query, error_response(&query, Rcode::Refused, None)),
+            None => finish(query, error_response(query, Rcode::Refused, None)),
         }
     }
 
-    async fn respond(&self, ctx: RequestContext, query: Message) -> Option<Message> {
-        self.process(&ctx, &query).await
+    async fn respond(&self, ctx: RequestContext, query: &Message) -> Option<Message> {
+        self.process(&ctx, query).await
     }
 
     /// The ACL (without a principal: the listener has none for a packet it cannot decode) and

@@ -110,7 +110,7 @@ mod tests {
         fn handle(
             &self,
             ctx: RequestContext,
-            query: Message,
+            query: &Message,
         ) -> impl Future<Output = Message> + Send {
             RefusedHandler.handle(ctx, query)
         }

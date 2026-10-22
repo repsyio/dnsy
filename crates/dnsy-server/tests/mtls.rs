@@ -33,9 +33,9 @@ struct Recorder(Mutex<Vec<Option<Principal>>>);
 struct Shared(Arc<Recorder>);
 
 impl Handler for Shared {
-    fn handle(&self, ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send {
+    fn handle(&self, ctx: RequestContext, query: &Message) -> impl Future<Output = Message> + Send {
         self.0.0.lock().unwrap().push(ctx.principal);
-        std::future::ready(Message::response_to(&query))
+        std::future::ready(Message::response_to(query))
     }
 }
 

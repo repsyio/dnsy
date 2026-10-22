@@ -154,7 +154,7 @@ impl ZoneSigner { pub fn sign(zone: &ZoneData, keys: &ActiveKeys, policy: &Signi
 // dnsy-engine (DNSY-23 creates the module, DNSY-31 implements the pipeline)
 pub struct RequestContext { pub client: SocketAddr, pub transport: Transport, pub principal: Option<Principal>, pub received_at: Instant }
 pub trait Handler: Send + Sync + 'static {
-    fn handle(&self, ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send;
+    fn handle(&self, ctx: RequestContext, query: &Message) -> impl Future<Output = Message> + Send; // amended by DNSY-101: query by reference (respond too)
 }
 
 // dnsy-observe (DNSY-10)

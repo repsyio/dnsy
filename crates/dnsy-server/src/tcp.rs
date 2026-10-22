@@ -205,7 +205,7 @@ async fn connection<H: Handler, S: AsyncRead + AsyncWrite + Send + 'static>(
                 };
                 requests.spawn(async move {
                     let _busy = busy;
-                    let Some(mut response) = handler.respond(ctx, query.clone()).await else {
+                    let Some(mut response) = handler.respond(ctx, &query).await else {
                         return;
                     };
                     if flavor.pad && query.edns.as_ref().is_some_and(Edns::has_padding) {

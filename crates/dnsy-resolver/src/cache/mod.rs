@@ -25,7 +25,8 @@ pub use stale::{Joined, RefreshGuard, RefreshWait, Refreshes};
 #[cfg(test)]
 mod tests;
 
-const MAX_SHARDS: usize = 16;
+/// Fewest shards; the cache uses `max(MIN_SHARDS, 4 x cores)` so contention stays flat as cores grow.
+const MIN_SHARDS: usize = 16;
 /// Random positions examined in a shard when an eviction is needed; the least recently used of
 /// them goes.
 const EVICTION_SAMPLE: usize = 8;
@@ -158,12 +159,14 @@ impl Hasher for PassThrough {
 
 #[derive(Debug)]
 struct Entry {
-    msg: Message,
+    /// Shared: a hit clones the `Arc` under the shard lock and copies the message outside it.
+    msg: Arc<Message>,
     dnssec: DnssecStatus,
     stored_at: Instant,
     expires_at: Instant,
     /// End of the serve-stale window.
     stale_until: Instant,
+    /// The shard's `clock` at the last use (only compared within one shard).
     last_used: u64,
     /// Fresh hits so far (prefetch popularity).
     hits: u32,
@@ -184,11 +187,35 @@ struct Slot {
 struct Shard {
     index: HashMap<u64, usize, BuildHasherDefault<PassThrough>>,
     slots: Vec<Slot>,
+    /// Advances on each use under the shard lock; eviction only compares entries of one shard,
+    /// so no global counter is needed.
+    clock: u64,
+}
+
+/// A shard with its own counters, padded so neighbouring shards never share a cache line.
+#[derive(Default)]
+#[repr(align(128))]
+struct ShardCell {
+    shard: Mutex<Shard>,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    inserts: AtomicU64,
 }
 
 impl Shard {
     fn len(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Drops every entry (the clock keeps running).
+    fn clear(&mut self) {
+        self.index.clear();
+        self.slots.clear();
+    }
+
+    fn touch(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
     }
 
     fn position(&self, probe: &Probe<'_>) -> Option<usize> {
@@ -272,15 +299,11 @@ impl Shard {
 
 /// A sharded, bounded DNS cache.
 pub struct Cache {
-    shards: Vec<Mutex<Shard>>,
+    shards: Vec<ShardCell>,
     hasher: RandomState,
     cfg: ArcSwap<CacheOptions>,
-    tick: AtomicU64,
     /// Live entries across all shards: the bound applies to this, not to each shard.
     len: AtomicUsize,
-    hits: AtomicU64,
-    misses: AtomicU64,
-    inserts: AtomicU64,
     evictions: AtomicU64,
     expired: AtomicU64,
     stale_served: AtomicU64,
@@ -299,17 +322,20 @@ impl Cache {
     /// A cache sized and tuned by `[cache]`.
     #[must_use]
     pub fn new(cfg: CacheOptions) -> Cache {
-        let count = cfg.max_entries.clamp(1, MAX_SHARDS);
-        let shards = (0..count).map(|_| Mutex::new(Shard::default())).collect();
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        // At least 16 shards (fewer only for a cache smaller than that), at most 4 per core, and
+        // never so many that a shard holds fewer than about 64 entries (eviction samples inside one shard).
+        let wanted = MIN_SHARDS.max(4 * cores);
+        let count = wanted
+            .min(cfg.max_entries / 64)
+            .max(MIN_SHARDS.min(cfg.max_entries))
+            .max(1);
+        let shards = (0..count).map(|_| ShardCell::default()).collect();
         Cache {
             shards,
             hasher: RandomState::new(),
             cfg: ArcSwap::from_pointee(cfg),
-            tick: AtomicU64::new(0),
             len: AtomicUsize::new(0),
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
-            inserts: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
             expired: AtomicU64::new(0),
             stale_served: AtomicU64::new(0),
@@ -352,12 +378,12 @@ impl Cache {
         usize::try_from((hash >> 32) % self.shards.len() as u64).unwrap_or(0)
     }
 
-    fn shard_for(&self, probe: &Probe<'_>) -> &Mutex<Shard> {
+    fn cell_for(&self, probe: &Probe<'_>) -> &ShardCell {
         &self.shards[self.shard_index(probe.hash)]
     }
 
-    fn next_tick(&self) -> u64 {
-        self.tick.fetch_add(1, Ordering::Relaxed)
+    fn shard_for(&self, probe: &Probe<'_>) -> &Mutex<Shard> {
+        &self.cell_for(probe).shard
     }
 
     /// Looks `key` up at `now`. An NXDOMAIN cached for the name answers any type. A Bogus entry
@@ -369,24 +395,24 @@ impl Cache {
     /// Like [`Cache::get`]; with `serve_bogus` (permissive validation) a Bogus entry comes back
     /// as its data, still labelled Bogus, so the caller can serve it without AD.
     pub fn get_for(&self, key: &CacheKey, now: Instant, serve_bogus: bool) -> CacheLookup {
+        let exact = self.exact_key(key);
         if self.cfg().enabled && key.qtype != RESERVED_TYPE {
             let mut stale = None;
-            for k in [self.exact_key(key), self.name_key(key)] {
-                match self.get_exact(&k, key, now, serve_bogus) {
-                    Some(found @ CacheLookup::Fresh { .. }) => {
-                        self.hits.fetch_add(1, Ordering::Relaxed);
-                        return found;
-                    }
-                    Some(found) => stale = stale.or(Some(found)),
-                    None => {}
-                }
+            match self.get_exact(&exact, key, now, serve_bogus) {
+                Some(found @ CacheLookup::Fresh { .. }) => return found,
+                other => stale = stale.or(other),
+            }
+            // The name-level NXDOMAIN is looked at only when the exact entry did not answer.
+            match self.get_exact(&self.name_key(key), key, now, serve_bogus) {
+                Some(found @ CacheLookup::Fresh { .. }) => return found,
+                other => stale = stale.or(other),
             }
             if let Some(found) = stale {
-                self.misses.fetch_add(1, Ordering::Relaxed);
+                self.cell_for(&exact).misses.fetch_add(1, Ordering::Relaxed);
                 return found;
             }
         }
-        self.misses.fetch_add(1, Ordering::Relaxed);
+        self.cell_for(&exact).misses.fetch_add(1, Ordering::Relaxed);
         CacheLookup::Miss
     }
 
@@ -397,8 +423,9 @@ impl Cache {
         now: Instant,
         serve_bogus: bool,
     ) -> Option<CacheLookup> {
-        let tick = self.next_tick();
-        let mut shard = lock(self.shard_for(stored_key));
+        let cell = self.cell_for(stored_key);
+        let mut shard = lock(&cell.shard);
+        let tick = shard.touch();
         let entry = shard.get_mut(stored_key)?;
         if now >= entry.expires_at {
             if let Some(stale) = self.stale_view(entry, stored_key.by_name, asked, now) {
@@ -412,6 +439,7 @@ impl Cache {
         }
         entry.last_used = tick;
         entry.hits = entry.hits.saturating_add(1);
+        cell.hits.fetch_add(1, Ordering::Relaxed);
         // A Bogus result is only ever shown to a validating (CD=0) client as SERVFAIL.
         if entry.dnssec == DnssecStatus::Bogus && !asked.cd_bit && !serve_bogus {
             return Some(CacheLookup::Fresh {
@@ -419,8 +447,11 @@ impl Cache {
                 dnssec: DnssecStatus::Bogus,
             });
         }
+        let (stored, dnssec) = (Arc::clone(&entry.msg), entry.dnssec);
         let elapsed = secs(now.saturating_duration_since(entry.stored_at));
-        let mut msg = entry.msg.clone();
+        // The copy and the TTL decrement happen outside the shard lock.
+        drop(shard);
+        let mut msg = Message::clone(&stored);
         for r in section_records_mut(&mut msg) {
             r.ttl = r.ttl.saturating_sub(elapsed);
         }
@@ -429,10 +460,7 @@ impl Cache {
         {
             q.qtype = asked.qtype;
         }
-        Some(CacheLookup::Fresh {
-            msg,
-            dnssec: entry.dnssec,
-        })
+        Some(CacheLookup::Fresh { msg, dnssec })
     }
 
     /// Stores `msg` (a response to `key`) with its validation outcome, if cacheable. The message
@@ -463,7 +491,7 @@ impl Cache {
     ) -> Message {
         match self.entry_for(key, msg, dnssec, now) {
             Ok((key, entry)) => {
-                let served = entry.msg.clone();
+                let served = Message::clone(&entry.msg);
                 self.put(key, entry, now);
                 served
             }
@@ -511,12 +539,12 @@ impl Cache {
         Ok((
             key,
             Entry {
-                msg: stored,
+                msg: Arc::new(stored),
                 dnssec,
                 stored_at: now,
                 expires_at: now + lifetime,
                 stale_until: now + lifetime + stale,
-                last_used: self.next_tick(),
+                last_used: 0,
                 hits: 0,
                 prefetch_started: false,
             },
@@ -524,9 +552,10 @@ impl Cache {
     }
 
     /// Stores a prepared entry and evicts down to the bound.
-    fn put(&self, key: StoreKey, entry: Entry, now: Instant) {
+    fn put(&self, key: StoreKey, mut entry: Entry, now: Instant) {
         let (hash, idx) = (key.hash, self.shard_index(key.hash));
-        let mut shard = lock(&self.shards[idx]);
+        let mut shard = lock(&self.shards[idx].shard);
+        entry.last_used = shard.touch();
         if entry.dnssec == DnssecStatus::Bogus
             && shard
                 .get(&key.probe())
@@ -535,7 +564,7 @@ impl Cache {
             return;
         }
         let added = shard.insert(key, entry);
-        self.inserts.fetch_add(1, Ordering::Relaxed);
+        self.shards[idx].inserts.fetch_add(1, Ordering::Relaxed);
         if !added {
             return;
         }
@@ -572,7 +601,7 @@ impl Cache {
         let n = self.shards.len();
         let start = rand::random_range(0..n);
         for i in (0..n).map(|o| (start + o) % n).filter(|&i| i != skip) {
-            let mut shard = lock(&self.shards[i]);
+            let mut shard = lock(&self.shards[i].shard);
             if shard.len() > fair_share
                 && let Some(victim) = shard.sample_victim(None)
             {
@@ -617,9 +646,9 @@ impl Cache {
         self.shards
             .iter()
             .map(|s| {
-                let mut shard = lock(s);
+                let mut shard = lock(&s.shard);
                 let n = shard.len();
-                *shard = Shard::default();
+                shard.clear();
                 self.len.fetch_sub(n, Ordering::Relaxed);
                 n
             })
@@ -631,7 +660,7 @@ impl Cache {
         self.shards
             .iter()
             .map(|s| {
-                let removed = lock(s).retain(|k| {
+                let removed = lock(&s.shard).retain(|k| {
                     let hit = if subtree {
                         k.key.name.is_subdomain_of(name)
                     } else {
@@ -645,15 +674,23 @@ impl Cache {
             .sum()
     }
 
+    /// One per-shard counter summed over the shards.
+    fn sum(&self, counter: impl Fn(&ShardCell) -> &AtomicU64) -> u64 {
+        self.shards
+            .iter()
+            .map(|c| counter(c).load(Ordering::Relaxed))
+            .sum()
+    }
+
     /// A snapshot of the counters.
     pub fn stats(&self) -> CacheStats {
         let entries = self.len.load(Ordering::Relaxed) as u64;
         CacheStats {
             entries,
             capacity: self.cfg().max_entries as u64,
-            hits: self.hits.load(Ordering::Relaxed),
-            misses: self.misses.load(Ordering::Relaxed),
-            inserts: self.inserts.load(Ordering::Relaxed),
+            hits: self.sum(|c| &c.hits),
+            misses: self.sum(|c| &c.misses),
+            inserts: self.sum(|c| &c.inserts),
             evictions: self.evictions.load(Ordering::Relaxed),
             expired: self.expired.load(Ordering::Relaxed),
             stale_served: self.stale_served.load(Ordering::Relaxed),

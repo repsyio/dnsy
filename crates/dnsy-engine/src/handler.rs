@@ -28,14 +28,14 @@ pub enum Admission {
 /// Answers one decoded query. Implementations never panic on hostile queries and always return
 /// a response to the query they were given; transports apply size limits and framing.
 pub trait Handler: Send + Sync + 'static {
-    fn handle(&self, ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send;
+    fn handle(&self, ctx: RequestContext, query: &Message) -> impl Future<Output = Message> + Send;
 
     /// Like [`Handler::handle`], but `None` means the request must be dropped without a reply
     /// (ACL `drop`, UDP rate limiting). Transports call this; the default always answers.
     fn respond(
         &self,
         ctx: RequestContext,
-        query: Message,
+        query: &Message,
     ) -> impl Future<Output = Option<Message>> + Send {
         async move { Some(self.handle(ctx, query).await) }
     }
@@ -54,8 +54,12 @@ pub trait Handler: Send + Sync + 'static {
 pub struct RefusedHandler;
 
 impl Handler for RefusedHandler {
-    fn handle(&self, _ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send {
-        let mut response = Message::response_to(&query);
+    fn handle(
+        &self,
+        _ctx: RequestContext,
+        query: &Message,
+    ) -> impl Future<Output = Message> + Send {
+        let mut response = Message::response_to(query);
         response.header.rcode = Rcode::Refused;
         std::future::ready(response)
     }
@@ -82,7 +86,7 @@ mod tests {
             principal: None,
             received_at: Instant::now(),
         };
-        let response = RefusedHandler.handle(ctx, query.clone()).await;
+        let response = RefusedHandler.handle(ctx, &query).await;
         assert!(response.header.qr);
         assert_eq!(response.header.id, 0x1234);
         assert_eq!(response.header.rcode, Rcode::Refused);

@@ -71,8 +71,12 @@ below zero. An expired entry is a miss and is dropped.
 **Security state.** Each entry stores its DNSSEC status. A Bogus entry lives at most `bogus_ttl`, is
 only ever returned to a CD=0 query as SERVFAIL, and never replaces a live Secure entry.
 
-**Bounded size.** The cache is split into up to 16 shards, each with its own lock, so concurrent
-readers do not contend on a global lock. `max_entries` bounds the total number of entries across
+**Bounded size.** The cache is split into `max(16, 4 x cores)` shards (fewer for a small cache: each shard keeps
+about 64 entries at least), each with its own lock, its own recency clock and its own hit, miss and
+insert counters (summed when the stats are read), so concurrent readers share no global lock or
+counter. A hit takes a reference to the stored message under the shard lock and copies it, with
+the TTLs decremented, after releasing it. The name-level NXDOMAIN entry is looked up only when the
+exact entry does not answer. `max_entries` bounds the total number of entries across
 shards. When an insert takes it over, the inserting shard evicts the least recently used of 8
 entries sampled at random positions, as long as it holds more than its share (`max_entries /
 shards`); otherwise the first other shard over its share (visited one lock at a time from a random

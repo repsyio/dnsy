@@ -9,6 +9,9 @@ use dnsy_proto::{Class, Message, Name, RData, Rcode, Record, RecordType};
 use dnsy_resolver::CacheOptions;
 use dnsy_resolver::{Cache, CacheKey};
 
+const THREADS: usize = 16;
+const PER_THREAD: usize = 20_000;
+
 fn response() -> Message {
     let mut m = dnsy_e2e::query("www.example.test.", RecordType::A);
     m.header.qr = true;
@@ -46,6 +49,32 @@ fn cache(c: &mut Criterion) {
     };
     cache.insert(key.clone(), response(), DnssecStatus::Insecure, now);
     c.bench_function("cache/hit", |b| b.iter(|| cache.get(black_box(&key), now)));
+
+    // The same hit from 16 threads over 1000 names; criterion reports the time for one pass of
+    // `THREADS * PER_THREAD` lookups, so ops/s = lookups / time.
+    let keys: Vec<CacheKey> = (0..1000)
+        .map(|i| CacheKey {
+            name: Name::from_ascii(&format!("h{i}.example.test.")).expect("name"),
+            ..key.clone()
+        })
+        .collect();
+    for k in &keys {
+        cache.insert(k.clone(), response(), DnssecStatus::Insecure, now);
+    }
+    c.bench_function("cache/hit_16_threads_320k", |b| {
+        b.iter(|| {
+            std::thread::scope(|s| {
+                for t in 0..THREADS {
+                    let (cache, keys) = (&cache, &keys);
+                    s.spawn(move || {
+                        for i in 0..PER_THREAD {
+                            black_box(cache.get(&keys[(t * 31 + i) % keys.len()], now));
+                        }
+                    });
+                }
+            });
+        });
+    });
 }
 
 criterion_group!(benches, codec, cache);

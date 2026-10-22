@@ -238,7 +238,7 @@ fn q(qname: &str, do_bit: bool, ad: bool, cd: bool) -> Message {
 
 impl Rig {
     async fn ask(&self, m: Message) -> Message {
-        self.h.engine.handle(ctx(), m).await
+        self.h.engine.handle(ctx(), &m).await
     }
 
     fn statuses(&self) -> Vec<DnssecStatus> {

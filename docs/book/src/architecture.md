@@ -45,7 +45,7 @@ query is decided. The sections below describe the listeners and the pipeline.
 
 ## Handler and plain DNS listeners
 
-`dnsy-engine::handler` defines the transport-agnostic contract: a `Handler` takes a `RequestContext` (client address, transport, optional principal, receive time) and a decoded `Message` and returns the response `Message`. DoT and DoH reuse it unchanged. `Engine` (below) is the real handler; `RefusedHandler` answers REFUSED and remains only for listener tests.
+`dnsy-engine::handler` defines the transport-agnostic contract: a `Handler` takes a `RequestContext` (client address, transport, optional principal, receive time) and a decoded `Message`, borrowed (`&Message`, so the transports keep the query for sizing and encoding without cloning it), and returns the response `Message`. DoT and DoH reuse it unchanged. `Engine` (below) is the real handler; `RefusedHandler` answers REFUSED and remains only for listener tests.
 
 `dnsy-server` runs the UDP and TCP listeners (`[dns] udp`/`tcp`) and only frames bytes:
 

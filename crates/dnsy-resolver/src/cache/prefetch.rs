@@ -18,7 +18,8 @@ impl Cache {
         if !live.enabled || !cfg.enabled {
             return false;
         }
-        for k in [self.exact_key(key), self.name_key(key)] {
+        for by_name in [false, true] {
+            let k = self.probe(key, by_name);
             let mut shard = lock(self.shard_for(&k));
             let Some(e) = shard.get_mut(&k) else {
                 continue;

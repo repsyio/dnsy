@@ -32,13 +32,13 @@ struct Recorder {
 }
 
 impl Handler for Recorder {
-    fn handle(&self, ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send {
+    fn handle(&self, ctx: RequestContext, query: &Message) -> impl Future<Output = Message> + Send {
         self.seen.lock().unwrap().push((
             ctx.transport,
             ctx.principal.clone(),
             format!("{ctx:?} {query:?}"),
         ));
-        let mut r = Message::response_to(&query);
+        let mut r = Message::response_to(query);
         r.header.rcode = Rcode::NoError;
         for ttl in [300, 60] {
             r.answers.push(Record {

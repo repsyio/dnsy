@@ -236,9 +236,13 @@ impl Eq for Name {}
 
 impl Hash for Name {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        for b in self.wire.iter() {
-            state.write_u8(b.to_ascii_lowercase());
-        }
+        // One `write` of the lowercased octets (a name is at most 255), not one call per byte.
+        let wire: &[u8] = &self.wire;
+        let mut lower = [0u8; MAX_WIRE];
+        let lower = &mut lower[..wire.len()];
+        lower.copy_from_slice(wire);
+        lower.make_ascii_lowercase();
+        state.write(lower);
     }
 }
 

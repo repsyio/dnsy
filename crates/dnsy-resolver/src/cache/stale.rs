@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use dnsy_core::DnssecStatus;
-use dnsy_proto::Rcode;
+use dnsy_proto::{Message, Rcode};
 use tokio::sync::watch;
 
 use super::{Cache, CacheKey, CacheLookup, Entry, section_records_mut};
@@ -35,7 +35,7 @@ impl Cache {
         {
             return None;
         }
-        let mut msg = entry.msg.clone();
+        let mut msg = Message::clone(&entry.msg);
         for r in section_records_mut(&mut msg) {
             r.ttl = cfg.answer_ttl;
         }
