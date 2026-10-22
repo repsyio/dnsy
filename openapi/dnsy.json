@@ -1981,6 +1981,104 @@
         ]
       }
     },
+    "/api/v1/stats/dashboard": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Summary, timeseries and the three top lists for one range: the same data as the individual\n`/stats/*` routes, with the same parameters, limits and read scope.",
+        "operationId": "dashboard",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive start, unix milliseconds (default: `to` minus 24 hours).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Exclusive end, unix milliseconds (default: now).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "bucket",
+            "in": "query",
+            "description": "Timeseries bucket width in seconds, a multiple of 60 (default 3600).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Entries per top list, 1 to 100 (default 10).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/stats/summary": {
       "get": {
         "tags": [
@@ -5410,6 +5508,46 @@
           "token": {
             "type": "string",
             "description": "The secret. Store it now; it cannot be retrieved again."
+          }
+        }
+      },
+      "DashboardBody": {
+        "type": "object",
+        "description": "Everything the dashboard shows from the stats rollups, in one response.",
+        "required": [
+          "summary",
+          "series",
+          "top_domains",
+          "top_blocked",
+          "top_clients"
+        ],
+        "properties": {
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeriesPoint"
+            }
+          },
+          "summary": {
+            "$ref": "#/components/schemas/SummaryBody"
+          },
+          "top_blocked": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopItem"
+            }
+          },
+          "top_clients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopItem"
+            }
+          },
+          "top_domains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TopItem"
+            }
           }
         }
       },

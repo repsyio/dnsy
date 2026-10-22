@@ -44,19 +44,23 @@ describe('DashboardPage', () => {
     } = {},
   ) {
     const total = opts.total ?? 100;
-    ctrl.expectOne((r) => r.url === '/api/v1/stats/summary').flush(summary(total, opts.dropped));
     ctrl
-      .expectOne((r) => r.url === '/api/v1/stats/timeseries')
-      .flush([
-        { start_ms: Date.now() - 120_000, total: 5, blocked: 1, cache_hits: 2, max_latency_us: 1 },
-      ]);
-    ctrl
-      .expectOne((r) => r.url === '/api/v1/stats/top-domains')
-      .flush([{ key: 'a.example', count: 9 }]);
-    ctrl
-      .expectOne((r) => r.url === '/api/v1/stats/top-blocked')
-      .flush([{ key: 'ads.example', count: 4 }]);
-    ctrl.expectOne((r) => r.url === '/api/v1/stats/top-clients').flush([]);
+      .expectOne((r) => r.url === '/api/v1/stats/dashboard')
+      .flush({
+        summary: summary(total, opts.dropped),
+        series: [
+          {
+            start_ms: Date.now() - 120_000,
+            total: 5,
+            blocked: 1,
+            cache_hits: 2,
+            max_latency_us: 1,
+          },
+        ],
+        top_domains: [{ key: 'a.example', count: 9 }],
+        top_blocked: [{ key: 'ads.example', count: 4 }],
+        top_clients: [],
+      });
     const cache = ctrl.expectOne('/api/v1/cache');
     if (opts.cacheFails) cache.flush(null, { status: 503, statusText: 'Unavailable' });
     else cache.flush({ entries: 12, capacity: 1000 });
@@ -108,6 +112,16 @@ describe('DashboardPage', () => {
     expect(el.querySelector('[style]')).toBeNull();
   });
 
+  it('one_refresh_issues_one_stats_request', async () => {
+    const { fixture } = await mount();
+    const stats = ctrl.match((r) => r.url.startsWith('/api/v1/stats/'));
+    expect(stats.map((r) => r.request.url)).toEqual(['/api/v1/stats/dashboard']);
+    expect(stats[0].request.params.get('limit')).toBe('10');
+    stats[0].flush(null, { status: 500, statusText: 'Boom' });
+    ctrl.match(() => true);
+    await fixture.whenStable();
+  });
+
   it('empty_range_shows_mascot', async () => {
     const { fixture, el } = await mount();
     answer({ total: 0 });
@@ -142,7 +156,7 @@ describe('DashboardPage', () => {
   it('shows the error mascot and retries', async () => {
     const { fixture, el } = await mount();
     ctrl
-      .expectOne((r) => r.url === '/api/v1/stats/summary')
+      .expectOne((r) => r.url === '/api/v1/stats/dashboard')
       .flush(null, { status: 500, statusText: 'Boom' });
     await fixture.whenStable();
     expect(el.querySelector('[data-testid="error"]')).not.toBeNull();
@@ -161,7 +175,7 @@ describe('DashboardPage', () => {
     await fixture.whenStable();
     el.querySelector<HTMLButtonElement>('[data-range="7d"]')!.click();
     await fixture.whenStable();
-    const ts = ctrl.expectOne((r) => r.url === '/api/v1/stats/timeseries');
+    const ts = ctrl.expectOne((r) => r.url === '/api/v1/stats/dashboard');
     expect(ts.request.params.get('bucket')).toBe('7200');
     ctrl.match(() => true);
     el.querySelector<HTMLButtonElement>('[data-range="7d"]')!.click(); // no-op: already selected
@@ -181,7 +195,7 @@ describe('DashboardPage', () => {
     await fixture.whenStable();
     expect(el.querySelector('[data-testid="pause"]')?.textContent).toContain('Resume');
     vi.advanceTimersByTime(REFRESH_MS * 2);
-    ctrl.expectNone((r) => r.url === '/api/v1/stats/summary');
+    ctrl.expectNone((r) => r.url === '/api/v1/stats/dashboard');
     el.querySelector<HTMLButtonElement>('[data-testid="pause"]')!.click();
     await fixture.whenStable();
     vi.advanceTimersByTime(REFRESH_MS);
@@ -203,7 +217,7 @@ describe('DashboardPage', () => {
     const { fixture, el } = await mount();
     el.querySelector<HTMLButtonElement>('[data-range="1h"]')!.click();
     await fixture.whenStable();
-    const stale = ctrl.match((r) => r.url === '/api/v1/stats/summary');
+    const stale = ctrl.match((r) => r.url === '/api/v1/stats/dashboard');
     expect(stale).toHaveLength(2);
     ctrl.match(() => true);
     expect(el.querySelector('[data-testid="loading"]')).not.toBeNull();
@@ -213,7 +227,7 @@ describe('DashboardPage', () => {
     await mount();
     // first load still pending: ticks must not issue a second batch
     vi.advanceTimersByTime(REFRESH_MS * 3);
-    expect(ctrl.match((r) => r.url === '/api/v1/stats/summary')).toHaveLength(1);
+    expect(ctrl.match((r) => r.url === '/api/v1/stats/dashboard')).toHaveLength(1);
     ctrl.match(() => true);
   });
 
@@ -223,7 +237,7 @@ describe('DashboardPage', () => {
     await fixture.whenStable();
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
     vi.advanceTimersByTime(REFRESH_MS * 2);
-    ctrl.expectNone((r) => r.url === '/api/v1/stats/summary');
+    ctrl.expectNone((r) => r.url === '/api/v1/stats/dashboard');
     hidden.mockReturnValue(false);
     document.dispatchEvent(new Event('visibilitychange'));
     answer();

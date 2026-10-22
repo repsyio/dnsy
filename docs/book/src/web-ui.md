@@ -274,7 +274,7 @@ at 360 px. Server rejections (409, 422) are shown next to the form that caused t
 ## Dashboard
 
 `/dashboard` (`web/src/app/features/dashboard/`) summarises the selected range, fetched in one go
-from the stats API:
+from the stats API (one `GET /stats/dashboard` for the summary, chart and top lists):
 
 - **Tiles**: queries, blocked share, cache hit ratio (with stale answers), cache entries and
   capacity, average latency, DNSSEC secure share and bogus count, and upstream health (available
@@ -290,9 +290,9 @@ from the stats API:
 - **Auto-refresh**: every 30 seconds, with a Pause/Resume button. Switching range reloads at once and
   discards responses for a range that is no longer selected (the superseded requests are cancelled).
   A tick never starts a second batch while one is still running, and a hidden tab does not poll; it
-  refreshes once when it becomes visible again. Each refresh is eight parallel reads; a single
-  batched stats endpoint is not available yet.
-- **Dropped events**: a badge appears when `/stats/summary` reports `querylog_dropped > 0`, so a
+  refreshes once when it becomes visible again. Each refresh is four parallel reads: `/stats/dashboard`
+  plus the optional cache, DNSSEC status and upstream group reads.
+- **Dropped events**: a badge appears when the dashboard summary reports `querylog_dropped > 0`, so a
   full or failing query log writer is visible.
 - **States**: the loading, empty (no queries in the range) and error (with Retry) mascots; an alert
   banner when `GET /dnssec/status` reports an untrusted clock (validation suspended).

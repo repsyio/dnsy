@@ -441,6 +441,26 @@ export interface paths {
         patch: operations["patch_validation"];
         trace?: never;
     };
+    "/api/v1/stats/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Summary, timeseries and the three top lists for one range: the same data as the individual
+         *     `/stats/*` routes, with the same parameters, limits and read scope.
+         */
+        get: operations["dashboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/summary": {
         parameters: {
             query?: never;
@@ -1182,6 +1202,14 @@ export interface components {
             meta: components["schemas"]["TokenInfo"];
             /** @description The secret. Store it now; it cannot be retrieved again. */
             token: string;
+        };
+        /** @description Everything the dashboard shows from the stats rollups, in one response. */
+        DashboardBody: {
+            series: components["schemas"]["SeriesPoint"][];
+            summary: components["schemas"]["SummaryBody"];
+            top_blocked: components["schemas"]["TopItem"][];
+            top_clients: components["schemas"]["TopItem"][];
+            top_domains: components["schemas"]["TopItem"][];
         };
         /**
          * @description Authenticated denial of existence.
@@ -3331,6 +3359,58 @@ export interface operations {
                 };
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    dashboard: {
+        parameters: {
+            query?: {
+                /** @description Inclusive start, unix milliseconds (default: `to` minus 24 hours). */
+                from?: number;
+                /** @description Exclusive end, unix milliseconds (default: now). */
+                to?: number;
+                /** @description Timeseries bucket width in seconds, a multiple of 60 (default 3600). */
+                bucket?: number;
+                /** @description Entries per top list, 1 to 100 (default 10). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardBody"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

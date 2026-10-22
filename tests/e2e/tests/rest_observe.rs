@@ -330,6 +330,83 @@ async fn stats_top_lists_and_timeseries() {
 }
 
 #[tokio::test]
+async fn stats_dashboard_returns_every_section_to_a_viewer() {
+    let h = Harness::start(opts()).await;
+    let api = h.rest();
+    let admin = Auth::Bearer(&h.api_token);
+    let viewer = api
+        .token_for(&h.api_token, "dash", "viewer", &["api:read"])
+        .await;
+    for _ in 0..3 {
+        ask(&h, "www.example.test.", RecordType::A).await;
+    }
+    ask(&h, "ads.example.net.", RecordType::A).await;
+
+    let d = eventually(WAIT, "the dashboard to count 4 queries", || async {
+        let d = api
+            .get("/stats/dashboard?bucket=60&limit=5", Auth::Bearer(&viewer))
+            .await
+            .ok(200);
+        (d["summary"]["total"] == 4).then_some(d)
+    })
+    .await;
+    assert_eq!(d["summary"]["blocked"], 1);
+    assert_eq!(d["top_domains"][0]["key"], "www.example.test.");
+    assert_eq!(d["top_blocked"][0]["key"], "ads.example.net.");
+    assert_eq!(d["top_clients"][0]["count"], 4);
+    assert_eq!(
+        d["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["total"].as_u64().unwrap())
+            .sum::<u64>(),
+        4
+    );
+    for (route, section) in [
+        ("summary", "summary"),
+        ("timeseries?bucket=60", "series"),
+        ("top-domains?limit=5", "top_domains"),
+        ("top-blocked?limit=5", "top_blocked"),
+        ("top-clients?limit=5", "top_clients"),
+    ] {
+        let from = d["summary"]["from"].as_i64().unwrap();
+        let to = d["summary"]["to"].as_i64().unwrap();
+        let sep = if route.contains('?') { '&' } else { '?' };
+        let one = api
+            .get(&format!("/stats/{route}{sep}from={from}&to={to}"), admin)
+            .await
+            .ok(200);
+        assert_eq!(one, d[section], "{route}");
+    }
+    api.get("/stats/dashboard", Auth::None).await.problem(401);
+}
+
+#[tokio::test]
+async fn stats_dashboard_parameter_validation() {
+    let h = Harness::start(opts()).await;
+    let api = h.rest();
+    let admin = Auth::Bearer(&h.api_token);
+    for bad in [
+        "/stats/dashboard?from=2000&to=1000",
+        "/stats/dashboard?from=0&to=99999999999999",
+        "/stats/dashboard?bucket=61",
+        "/stats/dashboard?bucket=60&from=0&to=99999999999",
+        "/stats/dashboard?limit=0",
+        "/stats/dashboard?limit=101",
+    ] {
+        let r = api.get(bad, admin).await;
+        assert!(
+            matches!(r.status, 400 | 422),
+            "{bad}: {} {}",
+            r.status,
+            r.text
+        );
+        r.problem(r.status);
+    }
+}
+
+#[tokio::test]
 async fn stats_parameter_validation() {
     let h = Harness::start(opts()).await;
     let api = h.rest();

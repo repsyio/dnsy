@@ -52,10 +52,10 @@ test('error: a failing API shows the error mascot and Retry recovers', async ({ 
 });
 
 test('error: the dashboard offers Retry after a failed load', async ({ page }) => {
-  await page.route('**/api/v1/stats/summary*', (route) => route.abort());
+  await page.route('**/api/v1/stats/dashboard*', (route) => route.abort());
   await page.goto('/dashboard');
   await expect(page.getByTestId('error')).toContainText('Could not load the dashboard.');
-  await page.unroute('**/api/v1/stats/summary*');
+  await page.unroute('**/api/v1/stats/dashboard*');
   await page.getByRole('button', { name: 'Retry' }).click();
   await expect(page.locator('[data-tile="queries"]')).toBeVisible();
 });

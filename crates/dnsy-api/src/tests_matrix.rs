@@ -68,6 +68,7 @@ const EXPECTED: &[(&str, &str, Access)] = &[
     ("PATCH", "/api/v1/settings", Admin),
     ("GET", "/api/v1/settings/dnssec", Read),
     ("PATCH", "/api/v1/settings/dnssec", Admin),
+    ("GET", "/api/v1/stats/dashboard", Read),
     ("GET", "/api/v1/stats/summary", Read),
     ("GET", "/api/v1/stats/timeseries", Read),
     ("GET", "/api/v1/stats/top-blocked", Read),

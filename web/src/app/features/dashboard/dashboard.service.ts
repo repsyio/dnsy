@@ -29,26 +29,27 @@ export class DashboardService {
 
   load(range: RangeSpec, now: number): Observable<DashboardData> {
     const from = now - range.spanMs;
-    const q = { from, to: now };
-    const top = { ...q, limit: TOP_LIMIT };
     const optional = <T>(o: Observable<T>) => o.pipe(catchError(() => of(null)));
     return forkJoin({
-      summary: this.api.get<S['SummaryBody']>('/stats/summary', q),
-      series: this.api.get<S['SeriesPoint'][]>('/stats/timeseries', {
-        ...q,
+      stats: this.api.get<S['DashboardBody']>('/stats/dashboard', {
+        from,
+        to: now,
         bucket: range.bucketSecs,
+        limit: TOP_LIMIT,
       }),
-      topDomains: this.api.get<S['TopItem'][]>('/stats/top-domains', top),
-      topBlocked: this.api.get<S['TopItem'][]>('/stats/top-blocked', top),
-      topClients: this.api.get<S['TopItem'][]>('/stats/top-clients', top),
       cache: optional(this.api.get<S['CacheStatsBody']>('/cache')),
       dnssec: optional(this.api.get<S['DnssecStatus']>('/dnssec/status')),
       groups: optional(this.api.get<S['GroupView'][]>('/upstream-groups')),
     }).pipe(
-      map(({ dnssec, groups, ...rest }) => {
+      map(({ stats, cache, dnssec, groups }) => {
         const health = groups?.flatMap((g) => g.health ?? []);
         return {
-          ...rest,
+          summary: stats.summary,
+          series: stats.series,
+          topDomains: stats.top_domains,
+          topBlocked: stats.top_blocked,
+          topClients: stats.top_clients,
+          cache,
           range,
           from,
           to: now,
