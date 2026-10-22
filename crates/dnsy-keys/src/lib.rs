@@ -5,11 +5,11 @@
 //! they are stored unencrypted and [`KeyStore::keys_encrypted`] is false. Key material is
 //! zeroized after use and never appears in `Debug` output, errors or logs.
 //!
-//! * [`passphrase`]: the passphrase type and where it comes from.
-//! * [`sealed`]: the KDF and AEAD that seal a private key or a bundle (no SQLite).
-//! * [`repo`]: the `dnssec_keys` rows.
-//! * [`rollover`]: key records, the rollover planner and the rollover steps.
-//! * [`bundle`]: encrypted backup bundles.
+//! * `passphrase`: the passphrase type and where it comes from.
+//! * `sealed`: the KDF and AEAD that seal a private key or a bundle (no SQLite).
+//! * `repo`: the `dnssec_keys` rows.
+//! * `rollover`: key records, the rollover planner and the rollover steps.
+//! * `bundle`: encrypted backup bundles.
 
 mod bundle;
 mod keystore;
