@@ -671,6 +671,7 @@ dependencies = [
  "dnsy-store",
  "dnsy-zone",
  "ipnet",
+ "rand",
  "tempfile",
  "thiserror",
  "tokio",

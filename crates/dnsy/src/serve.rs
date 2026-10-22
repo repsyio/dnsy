@@ -11,8 +11,8 @@ use dnsy_auth::{ClientCertService, TokenService, UserService};
 use dnsy_config::{Config, Mtls};
 use dnsy_engine::{Engine, EngineBuilder, Services};
 use dnsy_server::{
-    Allowlist, DOH_TOKEN_CACHE_CAPACITY, DOH_TOKEN_CACHE_TTL, DohConfig, DotConfig, MtlsMode,
-    MtlsVerifier, Server, ServerConfig, TokenAuth,
+    AllowedCert, Allowlist, CertSource, DOH_TOKEN_CACHE_CAPACITY, DOH_TOKEN_CACHE_TTL, DohConfig,
+    DotConfig, MtlsMode, MtlsVerifier, Server, ServerConfig, TokenAuth,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -242,9 +242,10 @@ fn server_config(
                 .as_deref()
                 .ok_or_else(|| Error::msg("dot.client_ca is required for mtls"))?;
             let allowlist = Allowlist::new();
-            background.push(
-                allowlist.spawn_refresh(ClientCertService::new(store.clone()), ALLOWLIST_REFRESH),
-            );
+            background.push(allowlist.spawn_refresh(
+                StoredCerts(ClientCertService::new(store.clone())),
+                ALLOWLIST_REFRESH,
+            ));
             let v = MtlsVerifier::new(
                 mode,
                 ca,
@@ -276,8 +277,29 @@ fn server_config(
 /// Reloads the `DoT` fingerprint allowlist from the database after a client-certificate change
 /// through the API; that bumps its generation, so open connections are re-checked. Without mTLS
 /// there is no allowlist and nothing to reload.
+/// The allowed client certificates, read from the database.
+#[derive(Clone)]
+struct StoredCerts(ClientCertService);
+
+impl CertSource for StoredCerts {
+    type Error = dnsy_store::StoreError;
+
+    async fn active(&self) -> std::result::Result<Vec<AllowedCert>, Self::Error> {
+        Ok(self
+            .0
+            .active()
+            .await?
+            .into_iter()
+            .map(|c| AllowedCert {
+                sha256: c.sha256,
+                expires_at: c.expires_at,
+            })
+            .collect())
+    }
+}
+
 fn cert_reload(allowlist: Option<Allowlist>, store: &dnsy_store::Store) -> CertReload {
-    let service = ClientCertService::new(store.clone());
+    let service = StoredCerts(ClientCertService::new(store.clone()));
     Arc::new(move || {
         let allowlist = allowlist.clone();
         let service = service.clone();

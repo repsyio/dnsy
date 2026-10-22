@@ -87,6 +87,39 @@ pub enum DnssecStatus {
     Indeterminate,
 }
 
+/// Hexadecimal encoding shared by the CLI, the API and the engine.
+pub mod hex {
+    use std::fmt::Write as _;
+
+    /// Upper-case hexadecimal.
+    #[must_use]
+    pub fn upper(bytes: &[u8]) -> String {
+        bytes.iter().fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02X}");
+            s
+        })
+    }
+
+    /// Lower-case hexadecimal.
+    #[must_use]
+    pub fn lower(bytes: &[u8]) -> String {
+        bytes.iter().fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn encodes_both_cases() {
+            assert_eq!(super::upper(&[0x00, 0xab, 0xFF]), "00ABFF");
+            assert_eq!(super::lower(&[0x00, 0xab, 0xFF]), "00abff");
+            assert_eq!(super::upper(&[]), "");
+        }
+    }
+}
+
 /// Network vocabulary shared by every per-client limit.
 pub mod net {
     use std::net::{IpAddr, Ipv6Addr};

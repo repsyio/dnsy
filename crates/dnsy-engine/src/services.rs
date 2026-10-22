@@ -9,6 +9,7 @@ use std::time::Duration;
 use arc_swap::ArcSwapOption;
 use dnsy_config::Config;
 use dnsy_core::SystemClock;
+#[cfg(feature = "fetch")]
 use dnsy_filter::{FETCH_TIMEOUT, Fetcher, FilterLimits, ListManager, MAX_LIST_BYTES, SourceStore};
 use dnsy_keys::{KeyStore, RolloverTimings, passphrase_from_environment};
 use dnsy_observe::{QueryEventSink, QueryLogWriter, WriterConfig};
@@ -39,6 +40,7 @@ pub struct Services {
     /// The signer of zones with `dnssec.enabled`, when wired.
     pub signing: Option<ZoneSigning>,
     /// The blocklist manager, when the filter comes from persisted list sources.
+    #[cfg(feature = "fetch")]
     pub lists: Option<ListManager>,
     pub(crate) sink: Option<Arc<dyn QueryEventSink>>,
     querylog_task: Option<JoinHandle<()>>,
@@ -61,6 +63,7 @@ impl Services {
             groups: Arc::new(ArcSwapOption::empty()),
             zones: None,
             signing: None,
+            #[cfg(feature = "fetch")]
             lists: None,
             sink: None,
             querylog_task: None,
@@ -82,19 +85,22 @@ impl Services {
     pub async fn open(config: &Config, store: &Store) -> Result<Self, EngineError> {
         let mut services = Self::bare(config);
 
-        let sources = SourceStore::new(store.clone());
-        sources
-            .seed(&config.filter.blocklists, config.filter.refresh_interval)
-            .await?;
-        let lists = ListManager::new(
-            sources,
-            config.filter.block_mode,
-            FilterLimits::default(),
-            Fetcher::new(MAX_LIST_BYTES, FETCH_TIMEOUT),
-            Arc::new(SystemClock),
-        );
-        lists.reload().await?;
-        services.lists = Some(lists);
+        #[cfg(feature = "fetch")]
+        {
+            let sources = SourceStore::new(store.clone());
+            sources
+                .seed(&config.filter.blocklists, config.filter.refresh_interval)
+                .await?;
+            let lists = ListManager::new(
+                sources,
+                config.filter.block_mode,
+                FilterLimits::default(),
+                Fetcher::new(MAX_LIST_BYTES, FETCH_TIMEOUT),
+                Arc::new(SystemClock),
+            );
+            lists.reload().await?;
+            services.lists = Some(lists);
+        }
 
         let zones = ZoneStore::open(&config.zones.dir)?;
         let passphrase = passphrase_from_environment(
@@ -144,6 +150,7 @@ impl Services {
     /// The zones directory cannot be watched.
     pub fn spawn_background(&self) -> Result<Background, ZoneError> {
         let mut tasks = Vec::new();
+        #[cfg(feature = "fetch")]
         if let Some(lists) = self.lists.clone() {
             tasks.push(tokio::spawn(lists.run()));
         }
@@ -173,6 +180,7 @@ impl Services {
                 Err(e) => tracing::error!(error = %e, "zone reload failed; keeping previous zones"),
             }
         }
+        #[cfg(feature = "fetch")]
         if let Some(lists) = &self.lists
             && let Err(e) = lists.reload().await
         {

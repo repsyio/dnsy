@@ -7,10 +7,14 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use dnsy_config::Config;
 use dnsy_core::{Clock, SystemClock};
 use dnsy_filter::{
-    Acl, AclAction, BlockMode, FilterError, FilterLimits, FilterSet, FilterSetBuilder, ListManager,
-    RateLimiter, RefreshError, RuleStore,
+    AclAction, BlockMode, FilterError, FilterLimits, FilterSet, FilterSetBuilder, RuleStore,
 };
+#[cfg(feature = "fetch")]
+use dnsy_filter::{ListManager, RefreshError};
 use dnsy_keys::KeyStoreError;
+
+use crate::acl::Acl;
+use crate::ratelimit::RateLimiter;
 use dnsy_observe::QueryEventSink;
 use dnsy_resolver::forward::{
     DnssecConfigError, DnssecOptions, DnssecPolicy, MAX_CONCURRENT_FETCHES,
@@ -45,6 +49,7 @@ pub enum EngineError {
     GroupStore(#[from] GroupStoreError),
     #[error("filter rules: {0}")]
     Filter(#[from] FilterError),
+    #[cfg(feature = "fetch")]
     #[error("blocklists: {0}")]
     Lists(#[from] RefreshError),
     #[error("dnssec: {0}")]
@@ -244,6 +249,7 @@ impl<E: Exchange> EngineBuilder<E> {
     }
 
     /// Takes the filter from persisted list sources instead of a fixed set.
+    #[cfg(feature = "fetch")]
     #[must_use]
     pub fn list_manager(mut self, manager: ListManager) -> Self {
         self.filter = Filters::Lists(manager);
@@ -277,6 +283,7 @@ impl<E: Exchange> EngineBuilder<E> {
         if let Some(zones) = &services.zones {
             self.zones = Some(Arc::clone(zones));
         }
+        #[cfg(feature = "fetch")]
         if let Some(lists) = &services.lists {
             self.filter = Filters::Lists(lists.clone());
         }

@@ -10,26 +10,43 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Fetch list sources over http(s) on a schedule: the HTTP client, TLS and the list manager.
+fetch = [
+    "dep:arc-swap",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:rand",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:tokio",
+    "dep:tokio-rustls",
+    "dep:tracing",
+    "dep:webpki-roots",
+]
+
 [dependencies]
 dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 dnsy-store = { version = "0.1.0", path = "../dnsy-store" }
-arc-swap = { workspace = true }
-http-body-util = { workspace = true }
-hyper = { workspace = true, features = ["client", "http1"] }
-hyper-util = { workspace = true }
 ipnet = { workspace = true }
-rand = { workspace = true }
-rustls = { workspace = true }
-rustls-pki-types = { workspace = true }
 rusqlite = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
-tokio-rustls = { workspace = true }
-tracing = { workspace = true }
-webpki-roots = { workspace = true }
+arc-swap = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, features = ["client", "http1"], optional = true }
+hyper-util = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true }
 dnsy-core = { version = "0.1.0", path = "../dnsy-core", features = ["test-util"] }
 axum = { workspace = true }
 proptest = { workspace = true }

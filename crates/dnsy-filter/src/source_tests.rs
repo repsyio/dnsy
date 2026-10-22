@@ -113,7 +113,7 @@ impl Server {
         format!("http://{}{path}", self.addr)
     }
     fn set_body(&self, b: &str) {
-        *self.fx.body.lock().unwrap() = b.to_owned();
+        b.clone_into(&mut self.fx.body.lock().unwrap());
     }
 }
 

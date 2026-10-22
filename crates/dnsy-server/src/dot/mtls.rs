@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use dnsy_auth::ClientCertService;
 use dnsy_core::Principal;
 use dnsy_core::{Clock, SystemClock};
 use rustls::client::danger::HandshakeSignatureValid;
@@ -43,6 +42,18 @@ pub struct AllowedCert {
     pub expires_at: Option<i64>,
 }
 
+/// Where the allowed client certificates come from (the binary adapts its database service).
+pub trait CertSource: Send + Sync + 'static {
+    /// Why the list could not be read.
+    type Error: std::fmt::Display + Send;
+
+    /// The enabled, unexpired certificates.
+    ///
+    /// # Errors
+    /// Whatever the source reports; the previous list stays in effect.
+    fn active(&self) -> impl Future<Output = Result<Vec<AllowedCert>, Self::Error>> + Send;
+}
+
 /// Shared, hot-swappable fingerprint allowlist. Once attached to a verifier, a presented
 /// certificate must be on it (an empty list admits no certificate).
 #[derive(Debug, Clone, Default)]
@@ -68,26 +79,22 @@ impl Allowlist {
         self.generation.fetch_add(1, Ordering::Release);
     }
 
-    /// Reloads the enabled, unexpired entries from the database.
+    /// Reloads the list from `source`.
     ///
     /// # Errors
-    /// Store failure; the previous list stays in effect.
-    pub async fn refresh(&self, service: &ClientCertService) -> Result<(), dnsy_store::StoreError> {
-        let active = service.active().await?;
-        self.replace(active.into_iter().map(|c| AllowedCert {
-            sha256: c.sha256,
-            expires_at: c.expires_at,
-        }));
+    /// The source failed; the previous list stays in effect.
+    pub async fn refresh<S: CertSource>(&self, source: &S) -> Result<(), S::Error> {
+        self.replace(source.active().await?);
         Ok(())
     }
 
-    /// Reloads from the database every `every`, keeping the old list on failure.
+    /// Reloads from `source` every `every`, keeping the old list on failure.
     #[must_use]
-    pub fn spawn_refresh(&self, service: ClientCertService, every: Duration) -> JoinHandle<()> {
+    pub fn spawn_refresh<S: CertSource>(&self, source: S, every: Duration) -> JoinHandle<()> {
         let list = self.clone();
         tokio::spawn(async move {
             loop {
-                if let Err(e) = list.refresh(&service).await {
+                if let Err(e) = list.refresh(&source).await {
                     tracing::warn!(error = %e, "client certificate allowlist refresh failed");
                 }
                 tokio::time::sleep(every).await;

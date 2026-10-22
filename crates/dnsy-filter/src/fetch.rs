@@ -15,6 +15,7 @@ use hyper::{Method, Response, StatusCode};
 use tokio::io::AsyncReadExt;
 
 use crate::http::{self, Target};
+use crate::location::{FetchError, Location};
 
 /// Largest list body accepted from one source.
 pub const MAX_LIST_BYTES: u64 = 50 * 1024 * 1024;
@@ -26,61 +27,6 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_REDIRECTS: usize = 5;
 
 const MAX_VALIDATOR_LEN: usize = 512;
-
-/// Why a fetch failed.
-#[derive(Debug, thiserror::Error)]
-pub enum FetchError {
-    #[error("unsupported location scheme (only http, https and file paths are allowed)")]
-    UnsupportedScheme,
-    #[error("invalid location")]
-    InvalidLocation,
-    #[error("target address is not public")]
-    PrivateTarget,
-    #[error("could not resolve host")]
-    Resolve,
-    #[error("too many redirects")]
-    TooManyRedirects,
-    #[error("redirect refused")]
-    BadRedirect,
-    #[error("list exceeds the size limit")]
-    TooLarge,
-    #[error("timed out")]
-    Timeout,
-    #[error("server answered {0}")]
-    Status(u16),
-    #[error("request failed")]
-    Http,
-    #[error("reading file: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-/// Where a list comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Location {
-    File(PathBuf),
-    Url(Target),
-}
-
-impl Location {
-    /// Classifies `s`: `http://` and `https://` are URLs, any other `scheme://` is refused and
-    /// everything else is a file path. URLs are split by [`Target::parse`] (ASCII only, no
-    /// user info).
-    ///
-    /// # Errors
-    /// [`FetchError::UnsupportedScheme`] or [`FetchError::InvalidLocation`].
-    pub fn parse(s: &str) -> Result<Location, FetchError> {
-        let lower = s.to_ascii_lowercase();
-        if lower.starts_with("http://") || lower.starts_with("https://") {
-            Ok(Location::Url(Target::parse(s)?))
-        } else if s.contains("://") {
-            Err(FetchError::UnsupportedScheme)
-        } else if s.is_empty() {
-            Err(FetchError::InvalidLocation)
-        } else {
-            Ok(Location::File(PathBuf::from(s)))
-        }
-    }
-}
 
 /// Cache validators remembered from a previous successful fetch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

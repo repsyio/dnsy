@@ -9,7 +9,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dnsy_auth::{TokenService, UserService};
 use dnsy_config::Config;
 use dnsy_core::{Clock as _, Role, Scope, SystemClock};
-use dnsy_dnssec::{Algorithm, DigestType, ds_for};
+use dnsy_dnssec::Algorithm;
 use dnsy_keys::{KeyRole, KeyState, KeyStore, Passphrase, passphrase_from_environment};
 use dnsy_proto::Name;
 use dnsy_zone::{ZoneSigning, ZoneStore, export_bind};
@@ -318,14 +318,6 @@ pub(crate) async fn zone(config: &Config, cmd: ZoneCommand, out: &mut impl Write
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02X}");
-        s
-    })
-}
-
 fn key_role(s: &str) -> Result<KeyRole> {
     KeyRole::parse(s).ok_or_else(|| Error::msg(format!("unknown key role `{s}` (csk, ksk or zsk)")))
 }
@@ -523,27 +515,11 @@ async fn dnssec_keys(keys: &KeyStore, cmd: KeysCommand, out: &mut impl Write) ->
         }
         KeysCommand::Ds { zone } => {
             let zone = zone_name(&zone)?;
-            let mut found = false;
-            for (record, dnskey) in keys.dnskeys(&zone).await? {
-                if !record.role.is_sep()
-                    || !matches!(record.state, KeyState::Published | KeyState::Active)
-                {
-                    continue;
-                }
-                for digest in [DigestType::Sha256, DigestType::Sha384] {
-                    let ds = ds_for(&zone, &dnskey, digest)?;
-                    writeln!(
-                        out,
-                        "{zone} IN DS {} {} {} {}",
-                        ds.key_tag,
-                        ds.algorithm,
-                        ds.digest_type,
-                        hex(&ds.digest)
-                    )?;
-                    found = true;
-                }
+            let records = keys.ds_records(&zone).await?;
+            for (_, ds) in &records {
+                writeln!(out, "{zone} IN DS {ds}")?;
             }
-            if !found {
+            if records.is_empty() {
                 return Err(Error::msg(format!(
                     "zone `{zone}` has no published key to make a DS from"
                 )));
@@ -556,6 +532,26 @@ async fn dnssec_keys(keys: &KeyStore, cmd: KeysCommand, out: &mut impl Write) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ds_line_is_byte_identical_to_the_previous_cli_output() {
+        let zone = Name::from_ascii("example.test.").unwrap();
+        let ds = dnsy_proto::Ds {
+            key_tag: 12345,
+            algorithm: 13,
+            digest_type: 2,
+            digest: vec![0xAB, 0x01, 0xFF],
+        };
+        let old = format!(
+            "{zone} IN DS {} {} {} {}",
+            ds.key_tag,
+            ds.algorithm,
+            ds.digest_type,
+            dnsy_core::hex::upper(&ds.digest)
+        );
+        assert_eq!(format!("{zone} IN DS {ds}"), old);
+        assert_eq!(old, "example.test. IN DS 12345 13 2 AB01FF");
+    }
 
     #[test]
     fn password_from_stdin_strips_newline_and_rejects_empty() {

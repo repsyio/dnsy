@@ -10,7 +10,7 @@ use dnsy_core::{Clock as _, ManualClock, Principal, SystemClock};
 use dnsy_engine::{Handler, RequestContext};
 use dnsy_proto::{Class, Message, Name, Question, RecordType};
 use dnsy_server::{
-    AllowedCert, Allowlist, DotConfig, MtlsMode, MtlsVerifier, Server, ServerConfig,
+    AllowedCert, Allowlist, CertSource, DotConfig, MtlsMode, MtlsVerifier, Server, ServerConfig,
 };
 use dnsy_store::Store;
 use rcgen::{
@@ -335,6 +335,48 @@ async fn fingerprint_allowlist_enforced() {
     server.shutdown().await;
 }
 
+/// The database service as a certificate source, as the binary wires it.
+struct Stored(ClientCertService);
+
+impl CertSource for Stored {
+    type Error = dnsy_store::StoreError;
+
+    async fn active(&self) -> Result<Vec<AllowedCert>, Self::Error> {
+        Ok(self
+            .0
+            .active()
+            .await?
+            .into_iter()
+            .map(|c| AllowedCert {
+                sha256: c.sha256,
+                expires_at: c.expires_at,
+            })
+            .collect())
+    }
+}
+
+/// A fixed list, or a failure.
+struct Fixed(Result<Vec<AllowedCert>, &'static str>);
+
+impl CertSource for Fixed {
+    type Error = &'static str;
+
+    fn active(&self) -> impl Future<Output = Result<Vec<AllowedCert>, Self::Error>> + Send {
+        std::future::ready(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn refresh_takes_any_source_and_reports_its_failure() {
+    let list = Allowlist::new();
+    let cert = AllowedCert {
+        sha256: [7; 32],
+        expires_at: None,
+    };
+    list.refresh(&Fixed(Ok(vec![cert]))).await.unwrap();
+    assert_eq!(list.refresh(&Fixed(Err("down"))).await, Err("down"));
+}
+
 #[tokio::test]
 async fn allowlist_from_database_honours_enabled_and_expiry() {
     let env = env();
@@ -351,7 +393,7 @@ async fn allowlist_from_database_honours_enabled_and_expiry() {
         .unwrap();
 
     let list = Allowlist::new();
-    list.refresh(&svc).await.unwrap();
+    list.refresh(&Stored(svc.clone())).await.unwrap();
     let v = verifier(&env, MtlsMode::Required, Some(list.clone()));
     let (server, addr, _rec) = start(&env, &v).await;
     query(&env, addr, Some(&a)).await.unwrap();
@@ -359,7 +401,7 @@ async fn allowlist_from_database_honours_enabled_and_expiry() {
     assert!(query(&env, addr, Some(&c)).await.is_err());
 
     svc.remove(ea.id).await.unwrap();
-    list.refresh(&svc).await.unwrap();
+    list.refresh(&Stored(svc.clone())).await.unwrap();
     assert!(query(&env, addr, Some(&a)).await.is_err());
     server.shutdown().await;
 }

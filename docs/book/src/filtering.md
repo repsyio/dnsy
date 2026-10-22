@@ -1,6 +1,6 @@
 # Filtering
 
-This page covers client ACLs, rate limits and blocklists (`dnsy-filter`). In the request pipeline the ACL runs first, then the rate limiter, then blocklists and the allowlist.
+This page covers client ACLs, rate limits and blocklists. The stored rules, list sources and the matcher live in `dnsy-filter` (fetching list sources over HTTP is its `fetch` feature, which the binary enables); ACL evaluation and the rate limiter live in `dnsy-engine`. In the request pipeline the ACL runs first, then the rate limiter, then blocklists and the allowlist.
 
 ## Client ACL
 
@@ -60,6 +60,8 @@ Every entry is a suffix: blocking `example.com` blocks `example.com` and everyth
 | `NullIp` | `0.0.0.0` for A, `::` for AAAA, empty NOERROR for other types |
 | `Refused` | REFUSED |
 | `CustomIp` | operator addresses; a family without an address answers empty NOERROR |
+
+The blocklist hash tables are keyed per process (SipHash with a random 128-bit seed). A list whose names make a probe run longer than 128 slots makes the table rebuild under a new seed; a table does that at most eight times, so a hostile list cannot slow lookups with colliding names or make loading quadratic.
 
 When the query carried EDNS, the response includes an Extended DNS Error (RFC 8914): code 15 (Blocked) for blocklist matches, 17 (Filtered) for custom rules. Synthesised answers use a TTL of 60 s.
 

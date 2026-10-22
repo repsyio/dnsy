@@ -13,7 +13,7 @@ dependencies) feeds the DNS crates, and the binary `dnsy` wires them together.
                   |  dnsy-engine  pipeline: sanity, ACL, rate limit, filter,
                   |        |      local zones, cache, validation, shaping
                   |        |---> dnsy-zone      JSON zones, signing, lookup
-                  |        |---> dnsy-filter    blocklists, ACL, rate limit
+                  |        |---> dnsy-filter    blocklists, ACL rules
                   |        '---> dnsy-resolver  cache, load balancing ----> 1.1.1.1 ...
                   |                  '--- dnsy-dnssec  validation          9.9.9.9 ...
                   |  dnsy-observe  query log + stats   dnsy-auth  users, tokens
@@ -35,7 +35,7 @@ dependencies) feeds the DNS crates, and the binary `dnsy` wires them together.
 | `dnsy-observe` | query events, query log, statistics |
 | `dnsy-zone` | zone model, JSON files, hot reload, authoritative lookup, signing (`ZoneSigning` over the `dnsy-keys` store) |
 | `dnsy-resolver` | upstream client, cache, load balancing, validating forwarder |
-| `dnsy-filter` | blocklists, allowlist, ACL, rate limit |
+| `dnsy-filter` | blocklists, allowlist, stored ACL rules and list sources; fetching them is the `fetch` feature (ACL evaluation and the rate limiter live in `dnsy-engine`) |
 | `dnsy-engine` | the `Handler` trait and the request pipeline |
 | `dnsy-server` | UDP, TCP, DoT and DoH listeners |
 | `dnsy-api` | REST API (axum, utoipa) and the embedded UI |

@@ -4,7 +4,7 @@ use dnsy_core::{Clock, SystemClock};
 use dnsy_store::{Store, StoreError};
 use rusqlite::{ErrorCode, Row, params};
 
-use crate::fetch::Location;
+use crate::location::Location;
 use crate::parse::ListFormat;
 use crate::rules::FilterError;
 

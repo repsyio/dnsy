@@ -4,8 +4,8 @@ use std::fmt;
 use std::sync::{Arc, RwLock};
 
 use dnsy_core::Clock;
-use dnsy_dnssec::{ActiveKeys, Algorithm, SigningKey, ZoneKey};
-use dnsy_proto::{Dnskey, Name};
+use dnsy_dnssec::{ActiveKeys, Algorithm, DigestType, SigningKey, ZoneKey, ds_for};
+use dnsy_proto::{Dnskey, Ds, Name};
 use dnsy_store::Store;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -278,6 +278,24 @@ impl KeyStore {
             .collect())
     }
 
+    /// The DS records to hand to the parent zone: SHA-256 then SHA-384 for every published or
+    /// active key signing entry point (KSK or CSK), oldest key first, with the key each came from.
+    ///
+    /// # Errors
+    /// Database failure or a key a digest cannot be made of.
+    pub async fn ds_records(&self, zone: &Name) -> Result<Vec<(KeyRecord, Ds)>, KeyStoreError> {
+        let mut out = Vec::new();
+        for (rec, dnskey) in self.dnskeys(zone).await? {
+            if !rec.role.is_sep() || !matches!(rec.state, KeyState::Published | KeyState::Active) {
+                continue;
+            }
+            for digest in [DigestType::Sha256, DigestType::Sha384] {
+                out.push((rec.clone(), ds_for(zone, &dnskey, digest)?));
+            }
+        }
+        Ok(out)
+    }
+
     /// Loads and decrypts one key for signing.
     ///
     /// # Errors
@@ -412,6 +430,28 @@ mod tests {
             f.ks.generate_key(&zone(), KeyRole::Zsk, Algorithm::RsaSha256)
                 .await;
         assert!(matches!(err, Err(KeyStoreError::Key(_))));
+    }
+
+    #[tokio::test]
+    async fn ds_records_are_sha256_then_sha384_for_the_entry_key_only() {
+        let f = fixture(Some("pw"));
+        assert_eq!(f.ks.ds_records(&zone()).await.unwrap(), []);
+        f.ks.bootstrap(&zone(), KeyLayout::KskZsk, Algorithm::EcdsaP256Sha256)
+            .await
+            .unwrap();
+        let records = f.ks.ds_records(&zone()).await.unwrap();
+        let dnskeys = f.ks.dnskeys(&zone()).await.unwrap();
+        let (ksk, ksk_dnskey) = dnskeys
+            .iter()
+            .find(|(r, _)| r.role == KeyRole::Ksk)
+            .unwrap();
+        assert_eq!(records.len(), 2, "the ZSK has no DS");
+        for ((rec, ds), digest) in records.iter().zip([DigestType::Sha256, DigestType::Sha384]) {
+            assert_eq!(rec.id, ksk.id);
+            assert_eq!(*ds, ds_for(&zone(), ksk_dnskey, digest).unwrap());
+        }
+        let digest_types: Vec<u8> = records.iter().map(|(_, d)| d.digest_type).collect();
+        assert_eq!(digest_types, [2, 4]);
     }
 
     #[tokio::test]
