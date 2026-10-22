@@ -297,8 +297,17 @@ struct NewKey {
     ds_confirmed_at: Option<i64>,
     encrypted: bool,
     public_key: Vec<u8>,
+    /// Sealed, or the plain PKCS#8 document when no passphrase is set: wiped on drop.
     private_key: Vec<u8>,
 }
+
+impl Drop for NewKey {
+    fn drop(&mut self) {
+        self.private_key.zeroize();
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for NewKey {}
 
 fn insert(tx: &Transaction<'_>, k: &NewKey) -> Result<i64, StoreError> {
     tx.execute(
@@ -1175,6 +1184,17 @@ fn open_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_key_private_key_is_zeroized_on_drop() {
+        fn zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        zeroize_on_drop::<NewKey>();
+        let src = include_str!("keystore.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        assert!(prod.contains(
+            "impl Drop for NewKey {\n    fn drop(&mut self) {\n        self.private_key.zeroize();"
+        ));
+    }
     use dnsy_dnssec::ManualClock;
     use std::fmt::Write as _;
 

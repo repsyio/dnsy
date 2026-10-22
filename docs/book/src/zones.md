@@ -46,7 +46,7 @@ name does not match its `origin` is rejected.
 The optional `dnssec` block is validated even when `enabled` is false: `algorithm` 13 or 15,
 `key_layout` `csk` or `ksk_zsk`, `denial` `nsec` or `nsec3`, `refresh_days` below
 `signature_validity_days`, NSEC3 salt as hex. NSEC3 `iterations` must be 0 (RFC 9276) unless
-`allow_nonzero_iterations` is set, which is accepted with a warning (at most 500).
+`allow_nonzero_iterations` is set, which is accepted with a warning (at most 100, the validator's own cap: a zone above it would be insecure to validators).
 
 ## Writes and hot reload
 

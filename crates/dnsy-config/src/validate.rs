@@ -70,6 +70,16 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     if !c.doh.path.starts_with('/') {
         return Err(invalid("doh.path must start with `/`"));
     }
+    if c.api
+        .trusted_proxies
+        .iter()
+        .chain(&c.doh.trusted_proxies)
+        .any(|net| net.prefix_len() == 0)
+    {
+        return Err(invalid(
+            "trusted_proxies must list the proxies' own addresses, not a catch-all",
+        ));
+    }
     if c.api.tls_cert.is_some() != c.api.tls_key.is_some() {
         return Err(invalid("api.tls_cert and api.tls_key must be set together"));
     }

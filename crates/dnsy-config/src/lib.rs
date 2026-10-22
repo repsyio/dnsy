@@ -270,6 +270,26 @@ mod tests {
     }
 
     #[test]
+    fn trusted_proxies_parse_and_reject_catch_all() {
+        let d = Config::default();
+        assert!(d.api.trusted_proxies.is_empty() && d.doh.trusted_proxies.is_empty());
+        let c = Config::from_toml(
+            "[api]\ntrusted_proxies = [\"10.0.0.0/8\", \"::1/128\"]\n\
+             [doh]\ntrusted_proxies = [\"192.0.2.1/32\"]",
+        )
+        .unwrap();
+        assert_eq!(c.api.trusted_proxies.len(), 2);
+        assert_eq!(c.doh.trusted_proxies[0].to_string(), "192.0.2.1/32");
+        for bad in [
+            "[api]\ntrusted_proxies = [\"0.0.0.0/0\"]",
+            "[doh]\ntrusted_proxies = [\"::/0\"]",
+        ] {
+            assert!(err(bad).contains("not a catch-all"), "{bad}");
+        }
+        assert!(Config::from_toml("[api]\ntrusted_proxies = [\"proxy.example\"]").is_err());
+    }
+
+    #[test]
     fn login_hash_limits_have_defaults_and_can_be_set() {
         let d = Config::default().api;
         assert_eq!((d.login_hash_per_client, d.login_hash_wait_ms), (16, 5000));

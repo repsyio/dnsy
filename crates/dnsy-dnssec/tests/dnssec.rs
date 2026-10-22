@@ -261,6 +261,30 @@ fn validity_edges_inclusive_and_skew_widens() {
 }
 
 #[test]
+fn serial_half_distance_is_accepted_on_one_side_only() {
+    let e = ecdsa_example();
+    let key = e.key();
+    let now = e.rrsig.expiration;
+    // Inception exactly 2^31 ahead of now: undefined in RFC 1982, refused.
+    let mut ahead = e.rrsig.clone();
+    ahead.inception = now.wrapping_add(1 << 31);
+    assert_eq!(
+        verify_rrsig_with_skew(&e.rrset, &ahead, &key, now, 0),
+        Err(VerifyError::NotYetValid)
+    );
+    // Expiration exactly 2^31 behind now passes the time check (the signature then fails,
+    // since the RRSIG changed).
+    let mut behind = e.rrsig.clone();
+    behind.inception = now.wrapping_sub(10);
+    behind.expiration = now.wrapping_sub(1 << 31);
+    let r = verify_rrsig_with_skew(&e.rrset, &behind, &key, now, 0);
+    assert!(
+        !matches!(r, Err(VerifyError::Expired | VerifyError::NotYetValid)),
+        "{r:?}"
+    );
+}
+
+#[test]
 fn tampered_rdata_fails() {
     let mut e = ecdsa_example();
     e.rrset[0].data = RData::A(Ipv4Addr::new(192, 0, 2, 2));

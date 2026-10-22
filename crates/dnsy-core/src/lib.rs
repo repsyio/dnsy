@@ -81,6 +81,8 @@ pub enum DnssecStatus {
 pub mod net {
     use std::net::{IpAddr, Ipv6Addr};
 
+    pub use ipnet::IpNet;
+
     /// Key under which per-client state is held: an IPv4 address as `/32`, an IPv6 address as its
     /// `/64` (one subscriber owns a whole `/64`, so per-address keys would be trivially bypassed).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -109,12 +111,172 @@ pub mod net {
         })
     }
 
+    /// Most trusted hops [`forwarded_client`] skips before giving up.
+    pub const MAX_TRUSTED_HOPS: usize = 16;
+
+    /// The key of a request from a trusted proxy that names no usable client: no
+    /// `X-Forwarded-For`, every entry a trusted proxy, more than [`MAX_TRUSTED_HOPS`] trusted
+    /// entries, or a malformed entry reached on the walk. The unspecified address `0.0.0.0` is
+    /// never a real peer, so it carries no ACL `allow`, no private-network trust and no
+    /// per-client allowance of the proxy itself; all such requests share one bucket.
+    pub const UNKNOWN_FORWARDED: IpAddr = IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+
+    /// Whether `ip` (IPv4-mapped IPv6 counted as IPv4) lies inside one of `trusted`.
+    #[must_use]
+    pub fn is_trusted(ip: IpAddr, trusted: &[IpNet]) -> bool {
+        let ip = ip.to_canonical();
+        trusted.iter().any(|net| net.contains(&ip))
+    }
+
+    /// The client address of a request that arrived from `peer` carrying the `X-Forwarded-For`
+    /// header instances `xff` (in order), given the proxies listed in `trusted`.
+    ///
+    /// - `peer` not trusted: `peer`; the header is ignored entirely.
+    /// - Otherwise the instances are walked right to left (last instance first, each split on
+    ///   `,`); entries inside `trusted` are skipped and the first entry outside it is the client.
+    ///   Entries left of the client are never looked at, so a client-supplied prefix cannot
+    ///   affect the result.
+    /// - A reached entry that is not a bare IPv4/IPv6 address or a `[v6]` literal (a port suffix,
+    ///   a hostname, an empty entry), more than [`MAX_TRUSTED_HOPS`] trusted entries, no header,
+    ///   or every entry trusted: [`UNKNOWN_FORWARDED`]. A trusted peer never gets its own address
+    ///   back, so nothing a request does can borrow the proxy's identity.
+    #[must_use]
+    pub fn forwarded_client<'a>(
+        peer: IpAddr,
+        xff: impl DoubleEndedIterator<Item = &'a str>,
+        trusted: &[IpNet],
+    ) -> IpAddr {
+        if !is_trusted(peer, trusted) {
+            return peer;
+        }
+        let mut hops = 0usize;
+        for entry in xff.rev().flat_map(|value| value.rsplit(',')) {
+            let Some(ip) = parse_forwarded_entry(entry.trim()) else {
+                return UNKNOWN_FORWARDED;
+            };
+            if !is_trusted(ip, trusted) {
+                return ip.to_canonical();
+            }
+            hops += 1;
+            if hops >= MAX_TRUSTED_HOPS {
+                return UNKNOWN_FORWARDED;
+            }
+        }
+        UNKNOWN_FORWARDED
+    }
+
+    fn parse_forwarded_entry(entry: &str) -> Option<IpAddr> {
+        if let Some(inner) = entry.strip_prefix('[').and_then(|e| e.strip_suffix(']')) {
+            return inner.parse::<std::net::Ipv6Addr>().ok().map(IpAddr::V6);
+        }
+        entry.parse().ok()
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
 
         fn ip(s: &str) -> IpAddr {
             s.parse().unwrap()
+        }
+
+        #[test]
+        fn forwarded_client_rules() {
+            let trusted: Vec<IpNet> =
+                vec!["10.0.0.0/8".parse().unwrap(), "::1/128".parse().unwrap()];
+            let proxy = ip("10.0.0.1");
+            let unknown = "0.0.0.0";
+            let cases: &[(&str, IpAddr, &[&str], &str)] = &[
+                (
+                    "untrusted peer ignores header",
+                    ip("198.51.100.7"),
+                    &["203.0.113.9"],
+                    "198.51.100.7",
+                ),
+                (
+                    "rightmost untrusted",
+                    proxy,
+                    &["1.1.1.1, 203.0.113.9"],
+                    "203.0.113.9",
+                ),
+                (
+                    "two trusted hops skipped",
+                    proxy,
+                    &["203.0.113.9, 10.1.1.1, 10.2.2.2"],
+                    "203.0.113.9",
+                ),
+                ("all trusted", proxy, &["10.1.1.1, 10.2.2.2"], unknown),
+                ("no header", proxy, &[], unknown),
+                (
+                    "garbage reached",
+                    proxy,
+                    &["203.0.113.9, evil.example"],
+                    unknown,
+                ),
+                (
+                    "garbage left of the client ignored",
+                    proxy,
+                    &["evil.example, 203.0.113.9"],
+                    "203.0.113.9",
+                ),
+                ("empty entry reached", proxy, &["203.0.113.9, "], unknown),
+                ("bracketed v6", proxy, &["[2001:db8::5]"], "2001:db8::5"),
+                ("bare v6", proxy, &["2001:db8::5"], "2001:db8::5"),
+                ("port suffix", proxy, &["1.2.3.4:80"], unknown),
+                ("v6 with port", proxy, &["[2001:db8::5]:443"], unknown),
+                (
+                    "two instances joined",
+                    proxy,
+                    &["203.0.113.1", "203.0.113.9"],
+                    "203.0.113.9",
+                ),
+                (
+                    "second instance trusted",
+                    proxy,
+                    &["203.0.113.1", "10.3.3.3"],
+                    "203.0.113.1",
+                ),
+                (
+                    "mapped peer is trusted",
+                    ip("::ffff:10.0.0.1"),
+                    &["203.0.113.9"],
+                    "203.0.113.9",
+                ),
+                (
+                    "mapped entry unmapped",
+                    proxy,
+                    &["::ffff:203.0.113.9"],
+                    "203.0.113.9",
+                ),
+                ("v6 proxy", ip("::1"), &["203.0.113.9"], "203.0.113.9"),
+                ("proxy names itself", proxy, &["10.0.0.1"], unknown),
+            ];
+            for (name, peer, xff, want) in cases {
+                let got = forwarded_client(*peer, xff.iter().copied(), &trusted);
+                assert_eq!(got, ip(want), "{name}");
+            }
+            // A long client-supplied prefix does not matter: only the reached entries count.
+            let padded = format!("{}, 203.0.113.9", vec!["evil"; 5000].join(","));
+            assert_eq!(
+                forwarded_client(proxy, [padded.as_str()].into_iter(), &trusted),
+                ip("203.0.113.9")
+            );
+            // Trusted hops are capped.
+            let hops = |n: usize| format!("203.0.113.9, {}", vec!["10.9.9.9"; n].join(", "));
+            let fifteen = hops(15);
+            assert_eq!(
+                forwarded_client(proxy, [fifteen.as_str()].into_iter(), &trusted),
+                ip("203.0.113.9")
+            );
+            let sixteen = hops(16);
+            assert_eq!(
+                forwarded_client(proxy, [sixteen.as_str()].into_iter(), &trusted),
+                UNKNOWN_FORWARDED
+            );
+            assert_eq!(
+                forwarded_client(proxy, ["203.0.113.9"].into_iter(), &[]),
+                proxy
+            );
         }
 
         #[test]

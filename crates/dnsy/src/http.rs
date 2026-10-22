@@ -1,5 +1,6 @@
 //! Serves the API router over plain HTTP or TLS with graceful shutdown.
 
+use std::net::IpAddr;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -10,6 +11,8 @@ use std::time::{Duration, Instant};
 use axum::Router;
 use axum::extract::ConnectInfo;
 use axum::response::IntoResponse as _;
+use dnsy_api::auth::ClientAddr;
+use dnsy_core::net::{IpNet, forwarded_client, is_trusted};
 use dnsy_server::SlotLimit;
 use hyper::StatusCode;
 use hyper::body::Incoming;
@@ -59,7 +62,7 @@ const DRAIN_BODY_TIME: Duration = Duration::from_secs(2);
 const STREAM_PATH: &str = "/api/v1/querylog/stream";
 
 /// Admission limits of the API listener.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct HttpLimits {
     /// Concurrent connections; further ones are closed at accept.
     pub max_conns: usize,
@@ -70,15 +73,21 @@ pub(crate) struct HttpLimits {
     pub header_read: Duration,
     /// Time for a handler to produce a response (headers), except on [`STREAM_PATH`].
     pub request: Duration,
+    /// Reverse proxies whose `X-Forwarded-For` names the client; their connections count against
+    /// `max_conns` only.
+    pub trusted_proxies: Arc<[IpNet]>,
 }
 
 impl HttpLimits {
     pub(crate) fn from_config(config: &dnsy_config::Config) -> Self {
         let count = |n: u32| usize::try_from(n).unwrap_or(usize::MAX);
-        Self::new(
-            count(config.api.max_conns),
-            count(config.api.max_conns_per_client),
-        )
+        Self {
+            trusted_proxies: config.api.trusted_proxies.clone().into(),
+            ..Self::new(
+                count(config.api.max_conns),
+                count(config.api.max_conns_per_client),
+            )
+        }
     }
 
     pub(crate) fn new(max_conns: usize, max_conns_per_client: usize) -> Self {
@@ -87,6 +96,7 @@ impl HttpLimits {
             max_conns_per_client,
             header_read: Duration::from_secs(30),
             request: Duration::from_secs(30),
+            trusted_proxies: Arc::from([]),
         }
     }
 }
@@ -209,37 +219,38 @@ pub(crate) async fn serve(
                 }
             },
         };
-        let Some(permit) = slots.try_acquire(peer.ip()) else {
+        let Some(permit) = admit(&slots, peer.ip(), &limits.trusted_proxies) else {
             tracing::debug!(%peer, "api connection limit reached (shared or per client); closing");
             continue;
         };
         let app = app.clone();
         let tls = tls.clone();
         let mut stop = shutdown.clone();
+        let (header_read, request) = (limits.header_read, limits.request);
+        let trusted = Arc::clone(&limits.trusted_proxies);
         conns.spawn(async move {
             let io: Box<dyn Io> = match tls {
-                Some(acceptor) => {
-                    match timeout(limits.header_read, acceptor.accept(stream)).await {
-                        Ok(Ok(tls)) => Box::new(tls),
-                        Ok(Err(e)) => {
-                            tracing::debug!(%peer, error = %e, "api tls handshake failed");
-                            return;
-                        }
-                        Err(_) => {
-                            tracing::debug!(%peer, "api tls handshake timed out");
-                            return;
-                        }
+                Some(acceptor) => match timeout(header_read, acceptor.accept(stream)).await {
+                    Ok(Ok(tls)) => Box::new(tls),
+                    Ok(Err(e)) => {
+                        tracing::debug!(%peer, error = %e, "api tls handshake failed");
+                        return;
                     }
-                }
+                    Err(_) => {
+                        tracing::debug!(%peer, "api tls handshake timed out");
+                        return;
+                    }
+                },
                 None => Box::new(stream),
             };
             let io = SharedIo(Arc::new(std::sync::Mutex::new(io)));
             let activity = Activity::new();
             let tracker = Arc::clone(&activity);
-            // Handlers read the peer address from `ConnectInfo` (login throttling is keyed on it).
+            // Handlers read the client address from `ClientAddr` (login throttling is keyed on
+            // it): the peer, or the `X-Forwarded-For` client when the peer is a trusted proxy.
             let service = service_fn(move |req: hyper::Request<Incoming>| {
                 let mut req = req.map(axum::body::Body::new);
-                req.extensions_mut().insert(ConnectInfo(peer));
+                tag_request(&mut req, peer, &trusted);
                 let exempt = req.uri().path() == STREAM_PATH;
                 let declared = declared_length(&req);
                 let call =
@@ -257,7 +268,7 @@ pub(crate) async fn serve(
                         return Ok(response);
                     }
                     let _guard = guard;
-                    match timeout(limits.request, call).await {
+                    match timeout(request, call).await {
                         Ok(response) => response,
                         Err(_) => Ok(StatusCode::REQUEST_TIMEOUT.into_response()),
                     }
@@ -267,18 +278,18 @@ pub(crate) async fn serve(
             builder
                 .http1()
                 .timer(TokioTimer::new())
-                .header_read_timeout(limits.header_read);
+                .header_read_timeout(header_read);
             builder
                 .http2()
                 .timer(TokioTimer::new())
                 .max_concurrent_streams(100)
-                .keep_alive_interval(limits.header_read)
-                .keep_alive_timeout(limits.header_read);
+                .keep_alive_interval(header_read)
+                .keep_alive_timeout(header_read);
             let conn = builder.serve_connection(TokioIo::new(io.clone()), service);
             tokio::pin!(conn);
             let result = tokio::select! {
                 r = conn.as_mut() => r,
-                () = activity.closed_when_idle(limits.header_read) => {
+                () = activity.closed_when_idle(header_read) => {
                     tracing::debug!(%peer, "api connection idle; closing");
                     Ok(())
                 }
@@ -297,6 +308,33 @@ pub(crate) async fn serve(
         });
     }
     let _ = tokio::time::timeout(DRAIN, async { while conns.join_next().await.is_some() {} }).await;
+}
+
+/// A connection slot for `peer`. A trusted proxy multiplexes many clients: it counts against
+/// `max_conns` only.
+fn admit(slots: &SlotLimit, peer: IpAddr, trusted: &[IpNet]) -> Option<dnsy_server::Slot> {
+    if is_trusted(peer, trusted) {
+        slots.try_acquire_shared()
+    } else {
+        slots.try_acquire(peer)
+    }
+}
+
+/// Records the peer and the client address (see [`forwarded_client`]) for the handlers.
+fn tag_request<B>(req: &mut hyper::Request<B>, peer: std::net::SocketAddr, trusted: &[IpNet]) {
+    let client = request_client(req, peer.ip(), trusted);
+    req.extensions_mut().insert(ConnectInfo(peer));
+    req.extensions_mut().insert(ClientAddr(client));
+}
+
+/// The request's client address (see [`forwarded_client`]).
+fn request_client<B>(req: &hyper::Request<B>, peer: IpAddr, trusted: &[IpNet]) -> IpAddr {
+    let xff = req
+        .headers()
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok());
+    forwarded_client(peer, xff, trusted)
 }
 
 /// The connection's transport, shared so the listener keeps it after hyper is done with it and
@@ -450,6 +488,11 @@ mod tests {
 
     /// Posts a login from the given loopback source address; returns status and headers text.
     async fn login(s: &Server, from: &str, password: &str) -> (u16, String) {
+        login_with(s, from, password, "").await
+    }
+
+    /// [`login`] with extra header lines (each ending in `\r\n`).
+    async fn login_with(s: &Server, from: &str, password: &str, extra: &str) -> (u16, String) {
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
         socket
             .bind(SocketAddr::new(from.parse().unwrap(), 0))
@@ -457,7 +500,7 @@ mod tests {
         let mut stream = socket.connect(s.addr).await.unwrap();
         let body = json!({"username": "admin", "password": password}).to_string();
         let request = format!(
-            "POST /api/v1/auth/login HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\
+            "POST /api/v1/auth/login HTTP/1.1\r\nhost: t\r\nconnection: close\r\n{extra}\
              content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
             body.len()
         );
@@ -486,6 +529,97 @@ mod tests {
         assert_eq!(login(&s, "127.0.0.2", "wrong-password").await.0, 401);
         let ips = recorded_ips(&s).await;
         assert_eq!(ips, vec!["127.0.0.2".to_owned()]);
+    }
+
+    /// Limits trusting `127.0.0.2` as a reverse proxy.
+    fn proxied(max_conns_per_client: usize) -> HttpLimits {
+        HttpLimits {
+            trusted_proxies: Arc::from(["127.0.0.2/32".parse::<IpNet>().unwrap()]),
+            ..HttpLimits::new(256, max_conns_per_client)
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_for_is_ignored_from_an_untrusted_peer() {
+        let s = server_with(proxied(256)).await;
+        let xff = "x-forwarded-for: 203.0.113.9\r\n";
+        assert_eq!(
+            login_with(&s, "127.0.0.3", "wrong-password", xff).await.0,
+            401
+        );
+        assert_eq!(recorded_ips(&s).await, vec!["127.0.0.3".to_owned()]);
+        // Without a trusted list the header is ignored even from 127.0.0.2.
+        let plain = server().await;
+        assert_eq!(
+            login_with(&plain, "127.0.0.2", "wrong-password", xff)
+                .await
+                .0,
+            401
+        );
+        assert_eq!(recorded_ips(&plain).await, vec!["127.0.0.2".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn forwarded_for_is_used_from_a_trusted_proxy() {
+        let s = server_with(proxied(256)).await;
+        let xff = "x-forwarded-for: 198.51.100.1, 203.0.113.9\r\n";
+        assert_eq!(
+            login_with(&s, "127.0.0.2", "wrong-password", xff).await.0,
+            401
+        );
+        assert_eq!(recorded_ips(&s).await, vec!["203.0.113.9".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_without_a_usable_header_is_not_keyed_as_the_proxy() {
+        let s = server_with(proxied(256)).await;
+        assert_eq!(login(&s, "127.0.0.2", "wrong-password").await.0, 401);
+        let bad = "x-forwarded-for: 203.0.113.9:443\r\n";
+        assert_eq!(
+            login_with(&s, "127.0.0.2", "wrong-password", bad).await.0,
+            401
+        );
+        assert_eq!(recorded_ips(&s).await, vec!["0.0.0.0".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn forwarded_lockout_is_per_forwarded_client() {
+        let s = server_with(proxied(256)).await;
+        let a = "x-forwarded-for: 203.0.113.1\r\n";
+        let b = "x-forwarded-for: 203.0.113.2\r\n";
+        for _ in 0..5 {
+            assert_eq!(
+                login_with(&s, "127.0.0.2", "wrong-password", a).await.0,
+                401
+            );
+        }
+        assert_eq!(login_with(&s, "127.0.0.2", PW, a).await.0, 429);
+        assert_eq!(login_with(&s, "127.0.0.2", PW, b).await.0, 200);
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_is_exempt_from_the_per_client_connection_cap() {
+        let s = server_with(proxied(1)).await;
+        let _held = connect_from("127.0.0.2", s.addr).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut proxy = connect_from("127.0.0.2", s.addr).await;
+        proxy
+            .write_all(b"GET /healthz HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut raw = String::new();
+        proxy.read_to_string(&mut raw).await.unwrap();
+        assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+        // An untrusted peer still gets one connection.
+        let _first = connect_from("127.0.0.3", s.addr).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut second = connect_from("127.0.0.3", s.addr).await;
+        let mut rest = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), second.read_to_end(&mut rest))
+            .await
+            .expect("the second connection from an untrusted client is closed")
+            .ok();
+        assert_eq!(rest, Vec::<u8>::new());
     }
 
     #[tokio::test]
@@ -580,6 +714,7 @@ mod tests {
             max_conns_per_client: max_conns,
             header_read: Duration::from_millis(300),
             request: Duration::from_millis(300),
+            trusted_proxies: Arc::from([]),
         }
     }
 

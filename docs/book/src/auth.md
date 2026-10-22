@@ -42,8 +42,9 @@ count as one. `dnsy user disable|enable <username>` does the same offline.
 ## Login throttling
 
 The API takes the client address from the TCP peer. Behind a reverse proxy every client shares
-the proxy's address, so the limits below apply to all of them together; trusted-proxy headers are
-not interpreted. Addresses are grouped before counting: an IPv6 client counts as its `/64`, and an
+the proxy's address, so the limits below apply to all of them together, unless the proxy is
+listed in `[api] trusted_proxies`: then the rightmost `X-Forwarded-For` entry that is not a listed
+proxy is the client (rules and spoofing risks in [Security](security.md)). Addresses are grouped before counting: an IPv6 client counts as its `/64`, and an
 IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) counts as the plain IPv4 address.
 
 Login attempts are limited in one write transaction, so concurrent requests cannot exceed the

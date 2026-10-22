@@ -697,6 +697,39 @@ async fn password_change_ends_old_sessions_and_keeps_current_client_logged_in() 
 }
 
 #[tokio::test]
+async fn password_change_consults_the_login_throttle() {
+    let f = fixture();
+    let session = session_for(&f, "ann", Role::Operator).await;
+    let wrong = json!({"current_password": "nope-nope", "new_password": "brand-new-pw"});
+    for _ in 0..5 {
+        let st = status(
+            &f,
+            Method::PUT,
+            "/api/v1/auth/me/password",
+            &session,
+            Some(wrong.clone()),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+    // Locked out now: even the right current password is refused, and nothing changed.
+    let right = json!({"current_password": PW, "new_password": "brand-new-pw"});
+    let res = call(
+        &f,
+        req(
+            Method::PUT,
+            "/api/v1/auth/me/password",
+            Some(&session),
+            Some(right),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(res.headers().contains_key(header::RETRY_AFTER));
+    assert!(f.state.auth.users.verify_password("ann", PW).await.is_ok());
+}
+
+#[tokio::test]
 async fn password_change_requires_session() {
     let f = fixture();
     let u = f

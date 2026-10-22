@@ -270,7 +270,7 @@ async fn doh_get_post_with_token() {
                 };
                 assert_eq!(resp.status, 200, "http2={http2} post={post} {token:?}");
                 assert_eq!(resp.header("content-type"), Some("application/dns-message"));
-                assert_eq!(resp.header("cache-control"), Some("max-age=300"));
+                assert_eq!(resp.header("cache-control"), Some("private, max-age=300"));
                 assert!(is_www(&resp.message()));
             }
         }

@@ -82,11 +82,17 @@ NSEC3 and NSEC3PARAM (RFC 4034, RFC 5155, RFC 8078).
 - A decoded record always has a presentation form that parses back to the same value, so wire
   decoding rejects empty keys, signatures, digests and next-hashed names, and type bitmaps with an
   empty, oversized, repeated or out-of-order window or a trailing zero octet.
+  This strict bitmap acceptance is deliberate and RFC-correct (RFC 4034 4.1.2), but stricter than
+  BIND and Unbound, which tolerate trailing zero octets: an NSEC or NSEC3 record from a
+  non-conforming signer then fails to decode, the denial proof is missing, and validation of that
+  answer ends `Bogus` rather than accepting a record whose presentation form would not round-trip.
 - `TypeBitmap` encodes and decodes the NSEC/NSEC3 window blocks. Types print by mnemonic, or as
   `TYPEnnn` when unnamed.
 - `Dnskey::key_tag` follows RFC 4034 appendix B, including the algorithm 1 special case (a key too
   short for it gives tag 0). `serial_lt` and `serial_gt` implement RFC 1982 arithmetic for RRSIG
-  validity checks; `Rrsig::is_current` uses them.
+  validity checks; `Rrsig::is_current` uses them. A distance of exactly 2^31 is undefined and
+  compares as neither; RRSIG verification treats it as valid on the expiration side only (an
+  inception exactly 2^31 ahead is not yet valid).
 - `canonical::rrset_signing_input` builds the octets an RRSIG signs (RFC 4034 3.1.8.1): the RRSIG
   fields without the signature, then the RRs ordered by canonical RDATA with duplicates removed,
   the original TTL, lowercased owner names, and wildcard owners rewritten from the RRSIG `labels`

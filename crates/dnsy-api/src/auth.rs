@@ -24,6 +24,12 @@ pub const SESSION_COOKIE: &str = "dnsy_session";
 pub const CSRF_COOKIE: &str = "dnsy_csrf";
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
+/// The client address of a request, as an `axum` extension set by the listener: the TCP peer,
+/// or the `X-Forwarded-For` client when the peer is a trusted proxy (`[api] trusted_proxies`).
+/// The login throttle and the known-client exemption are keyed on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientAddr(pub std::net::IpAddr);
+
 /// How a request proved who it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMethod {

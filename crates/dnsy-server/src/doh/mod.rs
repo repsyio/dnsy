@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dnsy_auth::{AuthError, FailureThrottle, TokenVerifier};
-use dnsy_core::net::client_key;
+use dnsy_core::net::{IpNet, client_key, forwarded_client, is_trusted};
 use dnsy_core::{Principal, Scope, Transport};
 use dnsy_engine::{Handler, RequestContext};
 use dnsy_proto::Edns;
@@ -109,6 +109,9 @@ pub struct DohConfig {
     pub auth_window: Duration,
     /// Client keys (IPv4 address, IPv6 `/64`) the throttle tracks at once (default 10 000).
     pub max_tracked_clients: usize,
+    /// Reverse proxies whose `X-Forwarded-For` names the client (default empty: header ignored).
+    /// See [`forwarded_client`].
+    pub trusted_proxies: Vec<IpNet>,
 }
 
 impl std::fmt::Debug for DohConfig {
@@ -141,6 +144,7 @@ impl DohConfig {
             max_auth_failures: 10,
             auth_window: Duration::from_secs(60),
             max_tracked_clients: dnsy_auth::DEFAULT_MAX_TRACKED,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -152,6 +156,7 @@ pub(crate) struct State<H> {
     require_token: bool,
     throttle: FailureThrottle,
     body_timeout: Duration,
+    trusted_proxies: Vec<IpNet>,
 }
 
 impl<H> State<H> {
@@ -167,6 +172,7 @@ impl<H> State<H> {
                 config.max_tracked_clients,
             ),
             body_timeout,
+            trusted_proxies: config.trusted_proxies.clone(),
         })
     }
 }
@@ -203,7 +209,13 @@ pub(crate) async fn serve<H: Handler>(
         // The slot is taken in the connection task so that recycling an idle connection never
         // stalls the accept loop.
         conns.spawn(async move {
-            let Some(permit) = slots.acquire_or_recycle(client.ip()).await else {
+            // A trusted proxy multiplexes many clients: it counts against the global cap only.
+            let permit = if is_trusted(client.ip(), &state.trusted_proxies) {
+                slots.try_acquire_shared()
+            } else {
+                slots.acquire_or_recycle(client.ip()).await
+            };
+            let Some(permit) = permit else {
                 tracing::debug!(%client, "doh connection limit reached; closing");
                 return;
             };
@@ -303,13 +315,33 @@ fn unauthorized() -> Response<Full<Bytes>> {
     response
 }
 
+/// The request's client: the TCP peer, or the `X-Forwarded-For` client when the peer is a
+/// trusted proxy. A forwarded address carries port 0 (the client's port is unknown).
+fn request_client<H, B>(state: &State<H>, peer: SocketAddr, req: &Request<B>) -> SocketAddr {
+    if state.trusted_proxies.is_empty() {
+        return peer;
+    }
+    let xff = req
+        .headers()
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok());
+    let ip = forwarded_client(peer.ip(), xff, &state.trusted_proxies);
+    if ip == peer.ip() {
+        peer
+    } else {
+        SocketAddr::new(ip, 0)
+    }
+}
+
 /// Handles one request. Nothing in here may log or echo the URI or `Authorization`.
 async fn respond<H: Handler>(
     state: &State<H>,
-    client: SocketAddr,
+    peer: SocketAddr,
     activity: &Activity,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
+    let client = request_client(state, peer, &req);
     let response = route(state, client, activity, req).await;
     tracing::debug!(%client, status = response.status().as_u16(), "doh request");
     response
@@ -335,7 +367,8 @@ async fn route<H: Handler>(
         Ok(p) => p,
         Err(rejection) => return *rejection,
     };
-    if principal.is_some() {
+    let authenticated = principal.is_some();
+    if authenticated {
         // A connection that proved an identity is never recycled for a newcomer.
         activity.mark_authenticated();
     }
@@ -372,9 +405,15 @@ async fn route<H: Handler>(
     let mut http = Response::new(Full::new(Bytes::from(body)));
     let headers = http.headers_mut();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static(MEDIA_TYPE));
+    // An answer to an authenticated request may be filtered for that principal, and behind a
+    // trusted proxy it may depend on the forwarded client (ACL, per-client policy): a shared
+    // cache must not hand it to anyone else. Without a trusted proxy a shared cache in front is
+    // itself the client of every answer it stores, so those stay cacheable.
+    let private = authenticated || !state.trusted_proxies.is_empty();
+    let scope = if private { "private, " } else { "" };
     headers.insert(
         CACHE_CONTROL,
-        HeaderValue::from_str(&format!("max-age={}", wire::min_ttl(&response)))
+        HeaderValue::from_str(&format!("{scope}max-age={}", wire::min_ttl(&response)))
             .unwrap_or_else(|_| HeaderValue::from_static("max-age=0")),
     );
     http

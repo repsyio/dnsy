@@ -128,7 +128,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Change the caller's password. Ends all sessions and starts a new one for this client. */
+        /**
+         * Change the caller's password. Ends all sessions and starts a new one for this client. The
+         *     current password is checked as a login (same throttle, 429 when locked out).
+         */
         put: operations["change_password"];
         post?: never;
         delete?: never;
@@ -1069,7 +1072,7 @@ export interface components {
         };
         /** @description Key passphrase change. */
         ChangePassphraseInput: {
-            /** @description The new key passphrase (at least 12 characters). */
+            /** @description The new key passphrase (at least 12 characters). Wiped from memory on drop. */
             new_passphrase: string;
         };
         /** @description Password change. */
@@ -1310,7 +1313,7 @@ export interface components {
         ExportKeysInput: {
             /**
              * @description Passphrase the bundle is encrypted under (at least 12 characters). It may differ from
-             *     the key passphrase; keep it apart from the bundle.
+             *     the key passphrase; keep it apart from the bundle. Wiped from memory on drop.
              */
             passphrase: string;
             /** @description Export only this zone's keys; omitted exports every zone's. */
@@ -2308,6 +2311,15 @@ export interface operations {
             };
             /** @description Not a session */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many failed attempts */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

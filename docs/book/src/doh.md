@@ -14,7 +14,8 @@ keeps the previous certificate.
 
 Responses are `200` with `Content-Type: application/dns-message` and
 `Cache-Control: max-age=<n>`, where `n` is the smallest TTL of any record in the response (0 when
-there are none). Responses are padded (RFC 8467) when the query carries an EDNS Padding option.
+there are none). It is `Cache-Control: private, max-age=<n>` when the request presented a token
+or `trusted_proxies` is set, since the answer may then depend on who asked. Responses are padded (RFC 8467) when the query carries an EDNS Padding option.
 
 | Status | Meaning |
 | --- | --- |
@@ -57,5 +58,9 @@ still be recorded by reverse proxies or browser history in front of or around dn
 ## Settings
 
 The listener is configured through `DohConfig`: listen addresses, certificate and key, the token
-authenticator, `require_token` (default `true`), `max_auth_failures` and `auth_window`. It shares
+authenticator, `require_token` (default `true`), `max_auth_failures`, `auth_window` and
+`trusted_proxies` (`[doh] trusted_proxies`, empty by default). A request from a listed proxy is
+attributed to the rightmost `X-Forwarded-For` entry that is not a listed proxy: that address keys
+the auth-failure throttle, ACL rules, per-client QPS and the query log (rules and spoofing risks
+in [Security](security.md)). It shares
 the idle timeout, connection cap and drain time of the TCP and DoT listeners.

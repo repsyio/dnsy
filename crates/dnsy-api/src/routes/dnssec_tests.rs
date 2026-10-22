@@ -1517,3 +1517,11 @@ async fn nta_expiry_through_the_api() {
     let v = admin(&fx, Method::GET, url, None).await.json();
     assert_eq!(v["negative_trust_anchors"].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn passphrase_inputs_are_zeroizing() {
+    let src = include_str!("dnssec.rs");
+    let prod = src.split("#[cfg(test)]").next().unwrap();
+    assert!(prod.contains("pub passphrase: Zeroizing<String>,"));
+    assert!(prod.contains("pub new_passphrase: Zeroizing<String>,"));
+}
