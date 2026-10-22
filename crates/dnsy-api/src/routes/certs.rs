@@ -13,11 +13,12 @@ use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use super::acl::{hex, parse_fingerprint};
+use super::acl::parse_fingerprint;
 use super::live::internal;
 use crate::auth::{AdminScope, RequireScope};
 use crate::error::{ApiError, Problem};
 use crate::state::ApiState;
+use dnsy_core::hex;
 
 const MAX_LABEL: usize = 128;
 const MAX_CERTS: usize = 10_000;
@@ -41,7 +42,7 @@ impl From<ClientCert> for ClientCertView {
     fn from(c: ClientCert) -> Self {
         ClientCertView {
             id: c.id,
-            sha256: hex(&c.sha256),
+            sha256: hex::lower(&c.sha256),
             label: c.label,
             enabled: c.enabled,
             expired: c.expires_at.is_some_and(|t| t <= SystemClock.unix_secs()),

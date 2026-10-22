@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use dnsy_core::Clock as _;
-use dnsy_dnssec::{Algorithm, DigestType, ds_for};
+use dnsy_dnssec::Algorithm;
 use dnsy_keys::{KeyLayout, KeyRecord, KeyRole, KeyState, KeyStoreError, Passphrase};
 use dnsy_proto::Name;
 use dnsy_zone::{Denial, DnssecPolicy, Zone, ZoneSigning};
@@ -25,7 +25,8 @@ use super::zones::{edit, existing, zone_name};
 use crate::auth::{AdminScope, Read, RequireScope};
 use crate::error::{ApiError, Problem};
 use crate::state::ApiState;
-use dnsy_engine::{LivePolicy, hex_upper};
+use dnsy_core::hex;
+use dnsy_engine::LivePolicy;
 
 mod dto;
 mod validation;
@@ -542,8 +543,22 @@ async fn ds_export(
         ds: Vec::new(),
         dnskey: Vec::new(),
     };
-    let sep_keys = signing
-        .keys()
+    let keys = signing.keys();
+    for (rec, ds) in keys
+        .ds_records(&zone.origin)
+        .await
+        .map_err(|e| key_error(&e))?
+    {
+        export.ds.push(DsRecordView {
+            key_id: rec.id,
+            key_tag: ds.key_tag,
+            algorithm: ds.algorithm,
+            digest_type: ds.digest_type,
+            digest: hex::upper(&ds.digest),
+            record: format!("{} IN DS {ds}", zone.origin),
+        });
+    }
+    let sep_keys = keys
         .dnskeys(&zone.origin)
         .await
         .map_err(|e| key_error(&e))?
@@ -552,18 +567,6 @@ async fn ds_export(
             rec.role.is_sep() && matches!(rec.state, KeyState::Published | KeyState::Active)
         });
     for (rec, dnskey) in sep_keys {
-        for digest in [DigestType::Sha256, DigestType::Sha384] {
-            let ds = ds_for(&zone.origin, &dnskey, digest)
-                .map_err(|e| ApiError::Internal(e.to_string()))?;
-            export.ds.push(DsRecordView {
-                key_id: rec.id,
-                key_tag: ds.key_tag,
-                algorithm: ds.algorithm,
-                digest_type: ds.digest_type,
-                digest: hex_upper(&ds.digest),
-                record: format!("{} IN DS {ds}", zone.origin),
-            });
-        }
         export.dnskey.push(DnskeyRecordView {
             key_id: rec.id,
             key_tag: dnskey.key_tag(),

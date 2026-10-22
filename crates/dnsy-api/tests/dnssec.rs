@@ -529,11 +529,11 @@ async fn golden_ds_export(fx: &Fx) -> (Value, String) {
             "record": format!("example.com. IN DNSKEY {key}"),
         }));
     }
-    let text: String = ds
-        .iter()
-        .chain(dnskey.iter())
-        .map(|v| format!("{}\n", v["record"].as_str().unwrap()))
-        .collect();
+    let mut text = String::new();
+    for v in ds.iter().chain(dnskey.iter()) {
+        text.push_str(v["record"].as_str().unwrap());
+        text.push('\n');
+    }
     (
         json!({"zone": "example.com.", "ds": ds, "dnskey": dnskey}),
         text,
