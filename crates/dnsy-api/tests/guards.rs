@@ -9,9 +9,9 @@ use axum::routing::{get, post};
 use dnsy_core::{Role, Scope};
 use tower::ServiceExt;
 
-use crate::auth::{AdminScope, Read, RequireScope, Write};
-use crate::error::PROBLEM_JSON;
-use crate::{ApiConfig, ApiState, openapi, router};
+use dnsy_api::auth::{AdminScope, Read, RequireScope, Write};
+use dnsy_api::error::PROBLEM_JSON;
+use dnsy_api::{ApiConfig, ApiState, openapi, router};
 
 struct Fixture {
     state: ApiState,
@@ -36,7 +36,7 @@ fn fixture() -> Fixture {
         )
         .route("/w", post(|_: RequireScope<Write>| ok()))
         .route("/a", get(|_: RequireScope<AdminScope>| ok()));
-    let app = crate::build(
+    let app = dnsy_api::build(
         state.clone(),
         ApiConfig {
             tls: false,
@@ -231,7 +231,7 @@ async fn bearer_post_needs_no_csrf() {
 #[tokio::test]
 async fn throttled_error_is_429_with_retry_after() {
     use axum::response::IntoResponse;
-    let res = crate::error::ApiError::from(dnsy_auth::AuthError::Throttled {
+    let res = dnsy_api::error::ApiError::from(dnsy_auth::AuthError::Throttled {
         retry_after_secs: 7,
     })
     .into_response();

@@ -24,7 +24,7 @@ use dnsy_resolver::{CacheKey, Upstream, UpstreamClient, UpstreamConfig, Upstream
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::{ApiConfig, ApiState, build};
+use dnsy_api::{ApiConfig, ApiState, build};
 
 struct Fx {
     app: Router,

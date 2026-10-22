@@ -89,7 +89,7 @@ pub fn router(state: ApiState, config: ApiConfig) -> Router {
 }
 
 /// [`router`] plus `extra` routes that share the middleware (tests add probe routes).
-fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router {
+pub fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router {
     let (router, spec) = assemble();
     let mut state = state;
     state.auth.cookie_secure = config.secure();
@@ -111,14 +111,3 @@ fn build(state: ApiState, config: ApiConfig, extra: Router<ApiState>) -> Router 
         .layer(middleware::from_fn(security::trace))
         .with_state(state)
 }
-
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod tests_auth;
-#[cfg(test)]
-mod tests_matrix;
-#[cfg(test)]
-mod tests_obs;
-#[cfg(test)]
-mod tests_policy;
