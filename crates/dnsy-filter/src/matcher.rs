@@ -264,32 +264,71 @@ fn key_of(domain: &str) -> Option<Box<[u8]>> {
 ///
 /// The keys live back to back in one arena (`len`, name, list index) and an open-addressing
 /// table of 32-bit arena offsets points at them, so a million entries cost about 30 bytes each
-/// instead of a heap allocation and a 24-byte bucket apiece. The names come from the operator's
-/// lists (queries only look entries up), so a plain multiply-rotate hash is enough.
-#[derive(Debug, Default)]
+/// instead of a heap allocation and a 24-byte bucket apiece. Only list content inserts names
+/// (queries only look entries up), but a hostile list could still ship names that collide under a
+/// fixed hash and build long probe runs. So the multiply-rotate hash is seeded per process, and
+/// when an insert leaves a probe run longer than [`MAX_PROBE`] the table is rebuilt under a new seed.
+#[derive(Debug)]
 struct KeyTable {
     /// Arena offset plus one per slot; zero is an empty slot. The length is zero or a power of two.
     slots: Vec<u32>,
     arena: Vec<u8>,
     len: usize,
+    seed: Seed,
+    /// Full rebuilds done under new seeds; stops at [`MAX_RESEEDS`] so a list whose names collide
+    /// under every seed costs a bounded number of them.
+    reseeds: usize,
+}
+
+impl Default for KeyTable {
+    fn default() -> Self {
+        Self::with_seed(process_seed())
+    }
+}
+
+/// Longest probe run an insert may leave behind before the table is rebuilt under a new seed.
+/// A well-mixed hash at the table's load factor (at most one half) stays far below this.
+const MAX_PROBE: usize = 128;
+
+/// Rebuilds under new seeds a table may do in its life. When they are used up the table keeps
+/// its last seed and accepts long runs: lookups on such a table are slower, but a hostile list
+/// cannot make loading quadratic.
+const MAX_RESEEDS: usize = 8;
+
+/// A 128-bit `SipHash` key.
+type Seed = (u64, u64);
+
+/// A fresh random seed from the standard library's per-instance random keys.
+fn random_seed() -> Seed {
+    use std::hash::BuildHasher as _;
+    let state = std::collections::hash_map::RandomState::new();
+    (state.hash_one(0_u8), state.hash_one(1_u8))
+}
+
+/// The seed every table starts from: random, fixed for the life of the process.
+fn process_seed() -> Seed {
+    static SEED: std::sync::OnceLock<Seed> = std::sync::OnceLock::new();
+    *SEED.get_or_init(random_seed)
 }
 
 /// Arena bytes per entry assumed when reserving: length byte, a typical name, list index.
 const TYPICAL_RECORD: usize = 32;
 
-fn hash_key(key: &[u8]) -> u64 {
-    const SEED: u64 = 0xf135_7aea_2e62_a9c5;
-    let mut state = key.len() as u64;
-    let (words, rest) = key.as_chunks::<8>();
-    for word in words {
-        state = (state.rotate_left(5) ^ u64::from_le_bytes(*word)).wrapping_mul(SEED);
+/// SipHash-2-4 of `key` under the 128-bit `seed`: the seed keys every round, so names cannot be
+/// chosen to collide without knowing it.
+#[expect(
+    deprecated,
+    reason = "`SipHasher` is the only std SipHash that takes explicit keys; the seed must be injectable for tests"
+)]
+fn hash_key(key: &[u8], seed: Seed) -> u64 {
+    use std::hash::{Hasher as _, SipHasher};
+    #[cfg(test)]
+    if tests::FORCE_COLLISIONS.with(std::cell::Cell::get) {
+        return 0;
     }
-    if !rest.is_empty() {
-        let mut word = [0_u8; 8];
-        word[..rest.len()].copy_from_slice(rest);
-        state = (state.rotate_left(5) ^ u64::from_le_bytes(word)).wrapping_mul(SEED);
-    }
-    state.rotate_left(26)
+    let mut hasher = SipHasher::new_with_keys(seed.0, seed.1);
+    hasher.write(key);
+    hasher.finish()
 }
 
 /// The home slot of `hash` in a table of `mask + 1` slots: its low bits.
@@ -302,6 +341,16 @@ fn slot_of(hash: u64, mask: usize) -> usize {
 }
 
 impl KeyTable {
+    fn with_seed(seed: Seed) -> Self {
+        Self {
+            slots: Vec::new(),
+            arena: Vec::new(),
+            len: 0,
+            seed,
+            reseeds: 0,
+        }
+    }
+
     fn len(&self) -> usize {
         self.len
     }
@@ -320,7 +369,7 @@ impl KeyTable {
             return None;
         }
         let mask = self.slots.len() - 1;
-        let mut i = slot_of(hash_key(key), mask);
+        let mut i = slot_of(hash_key(key, self.seed), mask);
         loop {
             let slot = self.slots[i];
             if slot == 0 {
@@ -344,28 +393,51 @@ impl KeyTable {
             .push(u8::try_from(key.len()).expect("a wire name is at most 255 bytes"));
         self.arena.extend_from_slice(key);
         self.arena.extend_from_slice(&list.to_le_bytes());
-        self.place(hash_key(key), at);
+        let probe = self.place(hash_key(key, self.seed), at);
         self.len += 1;
+        if probe > MAX_PROBE && self.reseeds < MAX_RESEEDS {
+            self.reseed();
+        }
     }
 
-    fn place(&mut self, hash: u64, at: u32) {
+    /// Stores `at` in the first free slot from the home slot of `hash` and returns how many
+    /// slots were passed over.
+    fn place(&mut self, hash: u64, at: u32) -> usize {
         let mask = self.slots.len() - 1;
         let mut i = slot_of(hash, mask);
+        let mut probe = 0;
         while self.slots[i] != 0 {
             i = (i + 1) & mask;
+            probe += 1;
         }
         self.slots[i] = at;
+        probe
     }
 
-    /// Rebuilds the slot table with `slots` slots by walking the arena.
-    fn rehash(&mut self, slots: usize) {
+    /// Rebuilds the slot table with `slots` slots by walking the arena; returns the longest probe.
+    fn rehash(&mut self, slots: usize) -> usize {
         self.slots = vec![0; slots];
+        let mut longest = 0;
         let mut at = 0;
         while at < self.arena.len() {
             let n = usize::from(self.arena[at]);
-            let hash = hash_key(&self.arena[at + 1..at + 1 + n]);
-            self.place(hash, u32::try_from(at + 1).expect("arena below 4 GiB"));
+            let hash = hash_key(&self.arena[at + 1..at + 1 + n], self.seed);
+            let probe = self.place(hash, u32::try_from(at + 1).expect("arena below 4 GiB"));
+            longest = longest.max(probe);
             at += n + 3;
+        }
+        longest
+    }
+
+    /// Rebuilds under new seeds until no probe run exceeds [`MAX_PROBE`] or the table's reseeds
+    /// run out.
+    fn reseed(&mut self) {
+        while self.reseeds < MAX_RESEEDS {
+            self.reseeds += 1;
+            self.seed = random_seed();
+            if self.rehash(self.slots.len()) <= MAX_PROBE {
+                break;
+            }
         }
     }
 
@@ -390,6 +462,11 @@ impl KeyTable {
 mod tests {
     use super::*;
 
+    thread_local! {
+        /// Makes every key hash alike: names that collide under any seed.
+        pub(super) static FORCE_COLLISIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
     fn key(i: usize) -> Vec<u8> {
         key_of(&format!("host{i}.example.com")).unwrap().into_vec()
     }
@@ -412,6 +489,71 @@ mod tests {
         assert_eq!(table.get(&key(5000)), None);
         // A suffix of a stored name is not the stored name.
         assert_eq!(table.get(&key(1)[1..]), None);
+    }
+
+    /// The longest distance between an entry and its home slot.
+    fn longest_probe(table: &KeyTable) -> usize {
+        let mask = table.slots.len() - 1;
+        table
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| **s != 0)
+            .map(|(i, s)| {
+                let (k, _) = table.record(*s as usize - 1);
+                i.wrapping_sub(slot_of(hash_key(k, table.seed), mask)) & mask
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn colliding_keys_stay_within_the_probe_cap() {
+        const SEED: Seed = (0x1234_5678_9abc_def1, 0x0fed_cba9_8765_4321);
+        let mut table = KeyTable::with_seed(SEED);
+        table.reserve(500);
+        let mask = table.slots.len() - 1;
+        // Names that all start in one home slot under the known seed: what a hostile list ships.
+        let home = slot_of(hash_key(&key(0), SEED), mask);
+        let colliding: Vec<Vec<u8>> = (0..)
+            .map(key)
+            .filter(|k| slot_of(hash_key(k, SEED), mask) == home)
+            .take(MAX_PROBE + 72)
+            .collect();
+        for k in &colliding {
+            table.insert(k, 3);
+        }
+        assert_ne!(table.seed, SEED, "the table was rebuilt under a new seed");
+        assert!(
+            longest_probe(&table) <= MAX_PROBE,
+            "{}",
+            longest_probe(&table)
+        );
+        for k in &colliding {
+            assert_eq!(table.get(k), Some(3));
+        }
+        assert_eq!(table.len(), colliding.len());
+    }
+
+    #[test]
+    fn keys_that_collide_under_every_seed_cost_a_bounded_number_of_rebuilds() {
+        FORCE_COLLISIONS.with(|f| f.set(true));
+        let mut table = KeyTable::default();
+        for i in 0..3000 {
+            table.insert(&key(i), 1);
+        }
+        assert_eq!(table.reseeds, MAX_RESEEDS);
+        assert_eq!(table.len(), 3000);
+        for i in 0..3000 {
+            assert_eq!(table.get(&key(i)), Some(1));
+        }
+        FORCE_COLLISIONS.with(|f| f.set(false));
+    }
+
+    #[test]
+    fn tables_start_from_the_process_seed_and_it_is_not_a_constant() {
+        assert_eq!(KeyTable::default().seed, process_seed());
+        assert_ne!(random_seed(), random_seed());
     }
 
     #[test]
