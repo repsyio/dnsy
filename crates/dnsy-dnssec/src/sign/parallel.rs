@@ -23,29 +23,32 @@ where
     if workers == 1 {
         return items.into_iter().map(f).collect();
     }
-    let size = items.len().div_ceil(workers);
+    let total = items.len();
+    let size = total.div_ceil(workers);
+    // Chunks are cut from the back and the input is shrunk after each cut, so the items are
+    // never held twice.
+    let mut items = items;
     let mut chunks = Vec::with_capacity(workers);
-    let mut rest = items.into_iter();
-    loop {
-        let chunk: Vec<T> = rest.by_ref().take(size).collect();
-        if chunk.is_empty() {
-            break;
-        }
-        chunks.push(chunk);
+    while !items.is_empty() {
+        let tail = items.split_off(items.len().saturating_sub(size));
+        items.shrink_to_fit();
+        chunks.push(tail);
     }
+    chunks.reverse();
     let f = &f;
     thread::scope(|scope| {
         let handles: Vec<_> = chunks
             .into_iter()
             .map(|chunk| scope.spawn(move || chunk.into_iter().map(f).collect::<Vec<R>>()))
             .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| match h.join() {
-                Ok(results) => results,
+        let mut out = Vec::with_capacity(total);
+        for handle in handles {
+            match handle.join() {
+                Ok(mut results) => out.append(&mut results),
                 Err(panic) => std::panic::resume_unwind(panic),
-            })
-            .collect()
+            }
+        }
+        out
     })
 }
 
@@ -58,6 +61,14 @@ mod tests {
         let items: Vec<u32> = (0..5000).collect();
         let out = map_with(items.clone(), 4, |i| i * 2);
         assert_eq!(out, items.iter().map(|i| i * 2).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn uneven_splits_keep_every_item_in_order() {
+        for (len, workers) in [(5001, 7), (1025, 2), (2049, 3)] {
+            let items: Vec<usize> = (0..len).collect();
+            assert_eq!(map_with(items.clone(), workers, |i| i), items);
+        }
     }
 
     #[test]

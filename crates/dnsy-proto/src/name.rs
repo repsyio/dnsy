@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use crate::NameError;
 
@@ -18,11 +19,12 @@ pub struct Name {
 /// Names up to this many wire octets (most real ones) live inline, without a heap allocation.
 const INLINE: usize = 32;
 
-/// Owned wire octets: inline up to [`INLINE`], boxed beyond.
+/// Wire octets: inline up to [`INLINE`], shared beyond, so cloning a long name (an NSEC3 owner,
+/// copied into a key, a record and a signature) costs a reference count, not an allocation.
 #[derive(Clone)]
 enum WireBuf {
     Inline { len: u8, buf: [u8; INLINE] },
-    Heap(Box<[u8]>),
+    Heap(Arc<[u8]>),
 }
 
 impl WireBuf {
@@ -220,7 +222,10 @@ impl Name {
         let mut lower = self.clone();
         match &mut lower.wire {
             WireBuf::Inline { len, buf } => buf[..usize::from(*len)].make_ascii_lowercase(),
-            WireBuf::Heap(b) => b.make_ascii_lowercase(),
+            WireBuf::Heap(b) if b.iter().any(u8::is_ascii_uppercase) => {
+                *b = b.to_ascii_lowercase().into();
+            }
+            WireBuf::Heap(_) => {}
         }
         lower
     }
