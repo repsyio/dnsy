@@ -567,7 +567,7 @@ async fn response_ip_blocklist_from_config_blocks_and_live_policy_replaces_it() 
     );
     let r = h
         .engine
-        .handle(ctx(), query("rebind.example.", RecordType::A))
+        .handle(ctx(), &query("rebind.example.", RecordType::A))
         .await;
     assert_eq!(ede_codes(&r), [ede::BLOCKED]);
     h.engine
@@ -576,7 +576,7 @@ async fn response_ip_blocklist_from_config_blocks_and_live_policy_replaces_it() 
         ]));
     let r = h
         .engine
-        .handle(ctx(), query("rebind.example.", RecordType::A))
+        .handle(ctx(), &query("rebind.example.", RecordType::A))
         .await;
     assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(198, 51, 100, 9)));
 }
