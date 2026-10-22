@@ -34,11 +34,7 @@ allow-dirty = ["ci"]
 github-build-setup = "build-setup.yml"
 # Extra jobs: run the embed-ui tests before any artifact is built
 plan-jobs = ["./release-verify"]
-# Linux x86_64 and the global jobs run on the self-hosted Hetzner runners; arm64 Linux stays on
-# GitHub-hosted native runners (no cross-compilation); macOS and Windows have no Hetzner runner.
+# Native arm64 Linux runners (no cross-compilation)
 [dist.github-custom-runners]
-global = "hetzner-sm"
-x86_64-unknown-linux-gnu = "hetzner-md"
-x86_64-unknown-linux-musl = "hetzner-md"
 aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
 aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
