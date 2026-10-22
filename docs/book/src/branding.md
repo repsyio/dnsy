@@ -96,7 +96,7 @@ The head stays the same in every pose; the eyes act.
 
 | Pose | Look | Motion | Where you see it |
 | --- | --- | --- | --- |
-| idle | as above | none | the landing page, the book header |
+| idle | as above | none | the book header |
 | loading | eyes at 25%, a 9 by 2 red point sweeps across them | 1.6s loop | while a page waits for data |
 | empty | relaxed brow, short eyes looking down, beak 6px lower | none | lists with nothing in them |
 | error | amber eyes slanted in, lowered brow, amber beak | flicker, 1.4s | failed requests, beside Retry |
@@ -109,6 +109,17 @@ the outline, brow and eyes: lines 1px, eyes 1.5px, no inner dashes and no beak.
 
 All motion stops under `prefers-reduced-motion: reduce`, and every pose has a text alternative for
 screen readers. The implementation is described under *Mascot components* in [Web UI](web-ui.md).
+
+## The landing page
+
+dnsy.dev (`docs/landing/index.html`, copied to the site root by `just docs`) is one hand-written
+page with inline CSS and script and no third-party requests; it takes its palette and fonts from
+`branding/tokens.css`. A full-height hero sets the headline over the same wireframe blob as the
+panel's login page (white hairlines, red pulses, a still frame under reduced motion), followed by
+a feature matrix of ten cells and four deep-dives (the request pipeline, DNSSEC, encrypted
+transports and the web panel) with inline SVG diagrams. The values in the DNSSEC diagram are
+examples. Keep the matrix and the diagrams in step with the features and the
+[architecture](architecture.md) when they change.
 
 ## Using the tokens
 
