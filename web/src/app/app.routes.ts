@@ -79,6 +79,12 @@ export const routes: Routes = [
         loadComponent: () => import('./features/acl/acl.page').then((m) => m.AclPage),
       },
       {
+        path: 'response-ip',
+        title: 'Response IP policy',
+        loadComponent: () =>
+          import('./features/response-ip/response-ip.page').then((m) => m.ResponseIpPage),
+      },
+      {
         path: 'client-certs',
         title: 'Client certificates',
         loadComponent: () => import('./features/certs/certs.page').then((m) => m.CertsPage),

@@ -97,11 +97,11 @@ checked in. Regenerate after an API change with `just openapi` followed by `just
 
 ## Commands
 
-| Command                | What it does                                                                                                                                                                   |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Command                | What it does                                                                                                                                                                                          |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `just web`             | `pnpm install --frozen-lockfile`, `pnpm dedupe --check`, lint (`ng lint` and Prettier), unit tests with coverage (>= 80%), production build, types drift check. Skipped when node or pnpm is missing. |
-| `just web-types`       | regenerate the API types                                                                                                                                                       |
-| `cd web && pnpm start` | dev server on `http://localhost:4200` (proxy API calls to a running dnsy yourself)                                                                                             |
+| `just web-types`       | regenerate the API types                                                                                                                                                                              |
+| `cd web && pnpm start` | dev server on `http://localhost:4200` (proxy API calls to a running dnsy yourself)                                                                                                                    |
 
 The production build enforces an initial bundle budget of 320 kB (warning) and 400 kB (error), raw,
 and an `anyComponentStyle` budget of 4 kB (warning) and 8 kB (error); `ng build` emits no budget
@@ -244,19 +244,24 @@ confirm every destructive action in a focus-trapping dialog, label every control
 through `role="alert"` and collapse to one column with horizontally scrolling tables, so they work
 at 360 px. Server rejections (409, 422) are shown next to the form that caused them.
 
-| Route           | Folder      | What it does                                                                                    |
-| --------------- | ----------- | ----------------------------------------------------------------------------------------------- |
-| `/filtering`    | `filtering` | Blocklist sources and custom block/allow rules, see [Filtering](filtering.md#web-ui)            |
-| `/acl`          | `acl`       | CIDR allow/refuse/drop rules (IP blocking) and the per-client rate limit                        |
-| `/upstreams`    | `upstreams` | Upstream groups: strategy, members, add/remove, health                                          |
-| `/client-certs` | `certs`     | DoT mutual-TLS fingerprint allowlist with labels and expiry                                     |
-| `/cache`        | `cache`     | Live cache statistics, flush by name (optionally with subdomains) and flush everything          |
-| `/settings`     | `settings`  | Block mode, per-client rate limit, query log retention, cache TTL clamp, serve-stale, prefetch |
+| Route           | Folder        | What it does                                                                                                          |
+| --------------- | ------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `/filtering`    | `filtering`   | Blocklist sources and custom block/allow rules, see [Filtering](filtering.md#web-ui)                                  |
+| `/acl`          | `acl`         | CIDR allow/refuse/drop rules (IP blocking) and the per-client rate limit                                              |
+| `/response-ip`  | `response-ip` | Response-IP policy: networks an upstream answer must not point into, see [Filtering](filtering.md#response-ip-policy) |
+| `/upstreams`    | `upstreams`   | Upstream groups: strategy, members, add/remove, health                                                                |
+| `/client-certs` | `certs`       | DoT mutual-TLS fingerprint allowlist with labels and expiry                                                           |
+| `/cache`        | `cache`       | Live cache statistics, flush by name (optionally with subdomains) and flush everything                                |
+| `/settings`     | `settings`    | Block mode, per-client rate limit, query log retention, cache TTL clamp, serve-stale, prefetch                        |
 
 - **ACL**: the address field accepts IPv4 or IPv6, with or without a prefix length, and is
-  validated in the browser (`cidr.ts`) before the request is sent; the server validates again. The
+  validated in the browser (`shared/util/cidr.ts`) before the request is sent; the server validates again. The
   default action is shown read-only. Rules that match a client certificate (created through the
   API) are listed and can be removed.
+- **Response IP policy**: one address or CIDR per line (commas and spaces also separate entries),
+  validated in the browser with the ACL rules' checker before `PUT /api/v1/response-ip` replaces the
+  whole list; a server 422 is shown under the field. Operators and admins edit; viewers see the
+  list read-only. An empty list shows the mascot and turns the policy off.
 - **Upstreams**: members show an up/down badge, latency and consecutive failures from
   `GET /upstream-groups/{name}/health`; when that endpoint is unavailable (503) the member shows
   "unknown". Changing the strategy sends the group back with its current members, weights and

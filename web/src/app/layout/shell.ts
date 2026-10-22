@@ -30,6 +30,7 @@ export const NAV_ITEMS = [
   { path: '/query-log', label: 'Query log' },
   { path: '/users', label: 'Users' },
   { path: '/acl', label: 'ACL' },
+  { path: '/response-ip', label: 'Response IPs' },
   { path: '/client-certs', label: 'Client certs' },
   { path: '/cache', label: 'Cache' },
   { path: '/dnssec', label: 'DNSSEC' },

@@ -8,6 +8,7 @@ const PAGES = [
   '/query-log',
   '/users',
   '/acl',
+  '/response-ip',
   '/client-certs',
   '/cache',
   '/dnssec',

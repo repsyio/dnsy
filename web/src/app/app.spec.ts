@@ -47,7 +47,7 @@ describe('App routing', () => {
     const el = harness.routeNativeElement as HTMLElement;
     expect(TestBed.inject(Router).url).toBe('/dashboard');
     expect(el.textContent).toContain('Dashboard');
-    expect(NAV_ITEMS.length).toBe(13);
+    expect(NAV_ITEMS.length).toBe(14);
   });
 
   it('unknown path under the shell renders the 404 page', async () => {
