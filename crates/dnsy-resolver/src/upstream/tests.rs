@@ -515,6 +515,10 @@ async fn port_recorder() -> (u16, mpsc::UnboundedReceiver<u16>) {
     (port, rx)
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "Windows hands out ephemeral source ports sequentially, so there is no OS randomisation to check"
+)]
 #[tokio::test]
 async fn pooled_sockets_use_random_ports_and_rotate() {
     let (port, mut rx) = port_recorder().await;
@@ -684,20 +688,25 @@ async fn upstream_address_is_cached() {
 #[tokio::test]
 async fn pooled_socket_never_outlives_rotation_count_age_or_idle_lifetime() {
     let (port, mut rx) = port_recorder().await;
-    let mut c = client(1000);
     let u = up(UpstreamTransport::Udp, port);
-    // Default count: no port serves more than UDP_ROTATE_QUERIES queries.
-    let mut ports = Vec::new();
-    for _ in 0..UDP_ROTATE_QUERIES * 3 {
-        c.query(&u, &query("example.com.")).await.unwrap();
-        ports.push(rx.recv().await.unwrap());
+    // Default count: no port serves more than UDP_ROTATE_QUERIES queries. Two consecutive
+    // sockets can draw the same random port, which merges their runs, so a merge is retried
+    // with a fresh client; a pool that never rotates never produces three runs of the limit.
+    let mut c = client(1000);
+    let mut runs = Vec::new();
+    for _ in 0..3 {
+        c = client(1000);
+        let mut ports = Vec::new();
+        for _ in 0..UDP_ROTATE_QUERIES * 3 {
+            c.query(&u, &query("example.com.")).await.unwrap();
+            ports.push(rx.recv().await.unwrap());
+        }
+        runs = ports.chunk_by(|a, b| a == b).map(<[u16]>::len).collect();
+        if runs == [UDP_ROTATE_QUERIES as usize; 3] {
+            break;
+        }
     }
-    let runs: Vec<usize> = ports.chunk_by(|a, b| a == b).map(<[u16]>::len).collect();
-    assert!(
-        runs.iter().all(|&n| n <= UDP_ROTATE_QUERIES as usize),
-        "{runs:?}"
-    );
-    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs, [UDP_ROTATE_QUERIES as usize; 3], "{runs:?}");
     const { assert!(UDP_ROTATE_QUERIES <= 16 && UDP_ROTATE_AGE.as_secs() <= 5) };
 
     // Idle lifetime: a socket parked longer than it is closed.

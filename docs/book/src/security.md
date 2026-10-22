@@ -158,6 +158,10 @@ finding is printed but does not fail the recipe).
   the 16-bit ID (about 1 in 65536 per forged answer instead of about 1 in 2^31). DNSSEC `strict`
   validation is the second line of defence for signed zones; see
   [Resolver](resolver.md#upstream-client) for the numbers.
+- Source ports come from the operating system. Linux and macOS draw them at random; Windows hands
+  them out one after another, so on Windows an off-path attacker guesses the port far more easily
+  and the 16-bit ID plus DNSSEC are the defences left. Run the resolver on Linux for the full
+  protection.
 
 - Live tail (`/querylog/stream`) allows 4 streams per user and 16 overall, with 2 of the 16
   reserved for admins.
