@@ -7,7 +7,6 @@
 //! [`zone_file_name`] (lowercase `[a-z0-9.-]`), so a name can never leave the zones directory.
 //! Writes honour `If-Match` against the zone's `ETag`.
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use axum::Json;
@@ -69,14 +68,7 @@ fn etagged<T>(zone: &Zone, body: T) -> Etagged<T> {
 /// Strong validator of the stored state of a zone.
 fn etag(zone: &Zone) -> String {
     let digest = Sha256::digest(zone.to_json().as_bytes());
-    format!("\"{}\"", hex(&digest[..16]))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    format!("\"{}\"", dnsy_core::hex::lower(&digest[..16]))
 }
 
 fn rtype_name(rdata: &dnsy_proto::RData) -> String {

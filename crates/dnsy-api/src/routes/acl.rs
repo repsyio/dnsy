@@ -6,6 +6,7 @@ use std::net::IpAddr;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use dnsy_core::hex;
 use dnsy_filter::{AclAction, AclMatcher, AclRule};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
@@ -73,7 +74,7 @@ impl From<AclRule> for AclRuleView {
     fn from(r: AclRule) -> Self {
         let (cidr, cert) = match r.matcher {
             AclMatcher::Cidr(n) => (Some(n.trunc().to_string()), None),
-            AclMatcher::ClientCert(fp) => (None, Some(hex(&fp))),
+            AclMatcher::ClientCert(fp) => (None, Some(hex::lower(&fp))),
         };
         AclRuleView {
             id: r.id,
@@ -83,14 +84,6 @@ impl From<AclRule> for AclRuleView {
             comment: r.comment,
         }
     }
-}
-
-pub(super) fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }
 
 /// Rules and the rate limit.
