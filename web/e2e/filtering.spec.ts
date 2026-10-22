@@ -83,7 +83,7 @@ test('a blocklist file source blocks the names it lists; it can be disabled, ena
   const row = lists.getByRole('row', { name: /file-list/ });
   await expect(row).toBeVisible();
   await lists.getByRole('button', { name: 'Refresh file-list' }).click();
-  await expect(row).toContainText(/1\b/);
+  await expect(row.getByRole('cell', { name: '1', exact: true })).toBeVisible();
   await expect
     .poll(async () => (await query(s.dnsPort, 'listed.example.test')).ips)
     .toEqual(['0.0.0.0']);
