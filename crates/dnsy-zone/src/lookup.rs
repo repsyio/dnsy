@@ -5,7 +5,7 @@
 //! RFC 5155 7.2 (see [`crate::signed`]). Without DO no DNSSEC record is added.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use dnsy_dnssec::SignedZone;
 use dnsy_proto::{Class, Name, Question, RData, Record, RecordType};
@@ -62,7 +62,7 @@ pub enum LookupResult {
 }
 
 /// Record sets of one owner name, in file order per type. Empty for an empty non-terminal.
-type Node = BTreeMap<RecordType, Vec<Record>>;
+type Node = BTreeMap<RecordType, Arc<[Record]>>;
 
 /// Lookup index of one zone, built once per snapshot.
 #[derive(Debug)]
@@ -108,7 +108,7 @@ impl ZoneIndex {
     /// tree: their hashed owner names do not exist (RFC 5155 7.2.8).
     pub(crate) fn build(zone: &Zone, signed: Option<&SignedZone>) -> Self {
         let soa = RData::Soa(zone.soa.clone());
-        let mut nodes: BTreeMap<Name, Node> = BTreeMap::new();
+        let mut nodes: BTreeMap<Name, BTreeMap<RecordType, Vec<Record>>> = BTreeMap::new();
         if let Some(signed) = signed {
             for ((owner, code), set) in &signed.rrsets {
                 let rtype = RecordType::from(*code);
@@ -143,6 +143,16 @@ impl ZoneIndex {
                 nodes.entry(n).or_default();
             }
         }
+        let nodes = nodes
+            .into_iter()
+            .map(|(owner, sets)| {
+                let node: Node = sets
+                    .into_iter()
+                    .map(|(rtype, set)| (rtype, Arc::from(set)))
+                    .collect();
+                (owner, node)
+            })
+            .collect();
         let ttl = zone.soa_ttl.min(zone.soa.minimum);
         Self {
             origin: zone.origin.clone(),
@@ -204,7 +214,7 @@ impl ZoneIndex {
             return Vec::new();
         }
         if let Some(ds) = self.nodes[cut].get(&RecordType::Ds) {
-            return ds.clone();
+            return ds.to_vec();
         }
         trace.proof(|| Proof::InsecureDelegation { cut: cut.clone() });
         Vec::new()
@@ -459,7 +469,7 @@ impl ZoneSet {
             return Some(LookupResult::ServFail);
         }
         let index = self.indexes.get(origin)?;
-        let rotation = self.rotation.fetch_add(1, Ordering::Relaxed);
+        let rotation = self.rotation.next();
         let in_zone = |n: &Name| self.find(n).is_some_and(|z| z.origin == *origin);
         Some(index.resolve(&q.name, q.qtype, rotation, in_zone, dnssec_ok))
     }

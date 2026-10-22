@@ -1,4 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 use dnsy_core::{DnssecStatus, Transport};
 use dnsy_proto::{Name, Rcode, RecordType};
@@ -10,7 +11,7 @@ pub enum AnswerSource {
     Cache,
     CacheStale,
     Upstream(SocketAddr),
-    Blocked { list: String },
+    Blocked { list: Arc<str> },
     Refused,
     Error,
 }
@@ -61,7 +62,7 @@ impl AnswerSource {
     pub(crate) fn detail(&self) -> Option<String> {
         match self {
             Self::Upstream(a) => Some(a.to_string()),
-            Self::Blocked { list } => Some(list.clone()),
+            Self::Blocked { list } => Some(list.to_string()),
             _ => None,
         }
     }

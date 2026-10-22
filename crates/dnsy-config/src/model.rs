@@ -55,6 +55,10 @@ pub struct Server {
     /// UDP sockets per listen address, each with its own receive loop (`SO_REUSEPORT`). Defaults
     /// to the available parallelism on Linux; other platforms always use one socket.
     pub udp_sockets_per_address: usize,
+    /// Threads of the async runtime that runs the listeners and the pipeline. Defaults to the
+    /// available parallelism, which honours a CPU affinity mask; the blocking pool (argon2,
+    /// signing) and the `SQLite` writer thread come on top.
+    pub worker_threads: usize,
 }
 
 impl Default for Server {
@@ -66,6 +70,7 @@ impl Default for Server {
             } else {
                 1
             },
+            worker_threads: std::thread::available_parallelism().map_or(1, usize::from),
         }
     }
 }

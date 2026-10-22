@@ -1,9 +1,11 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, oneshot};
 
 use crate::migrate::{self, MIGRATIONS, Migration, MigrationStatus};
 
@@ -39,8 +41,13 @@ pub enum StoreError {
     Task(String),
 }
 
+/// A write transaction queued for the writer thread.
+type WriteJob = Box<dyn FnOnce() + Send>;
+
 struct Inner {
     writer: Mutex<Connection>,
+    /// Feeds the dedicated writer thread, which ends when the last handle is dropped.
+    jobs: mpsc::Sender<WriteJob>,
     /// Idle read-only connections; a permit of `permits` guarantees one is present.
     readers: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
@@ -139,8 +146,21 @@ impl Store {
                 Ok(c)
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
+        // Writes run on one named thread of their own, in order, instead of on the shared
+        // blocking pool where argon2 and zone signing compete for the same threads.
+        let (jobs, queue) = mpsc::channel::<WriteJob>();
+        std::thread::Builder::new()
+            .name("dnsy-sqlite-writer".to_owned())
+            .spawn(move || {
+                for job in queue {
+                    // A panicking closure drops its reply channel, which the caller sees as a
+                    // task failure; the thread keeps serving the next write.
+                    let _ = catch_unwind(AssertUnwindSafe(job));
+                }
+            })?;
         Ok(Store {
             inner: Arc::new(Inner {
+                jobs,
                 writer: Mutex::new(writer),
                 permits: Arc::new(Semaphore::new(readers.len())),
                 readers: Mutex::new(readers),
@@ -189,18 +209,34 @@ impl Store {
         &self,
         f: impl FnOnce(&mut Transaction) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<T, StoreError> {
+        let (reply, result) = oneshot::channel();
         let inner = Arc::clone(&self.inner);
-        join(tokio::task::spawn_blocking(move || {
-            let mut conn = lock(&inner.writer);
-            // Immediate: take the write lock first, so a writer in another process (the CLI
-            // beside a running server) waits instead of failing on a stale read snapshot.
-            let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let out = f(&mut tx)?;
-            tx.commit()?;
-            inner.commits.fetch_add(1, Ordering::Relaxed);
-            Ok(out)
-        }))
-        .await
+        let job: WriteJob = Box::new(move || {
+            let done = {
+                let mut conn = lock(&inner.writer);
+                // Immediate: take the write lock first, so a writer in another process (the CLI
+                // beside a running server) waits instead of failing on a stale read snapshot.
+                (|| {
+                    let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    let out = f(&mut tx)?;
+                    tx.commit()?;
+                    inner.commits.fetch_add(1, Ordering::Relaxed);
+                    Ok(out)
+                })()
+            };
+            // Release the handle before replying: when the caller dropped its own, this was the
+            // last one and the database closes (and checkpoints) before the caller resumes.
+            drop(inner);
+            // The caller may have gone away; the transaction is complete either way.
+            let _ = reply.send(done);
+        });
+        self.inner
+            .jobs
+            .send(job)
+            .map_err(|_| StoreError::Task("the writer thread has stopped".to_owned()))?;
+        result
+            .await
+            .map_err(|_| StoreError::Task("the write task panicked".to_owned()))?
     }
 
     /// Number of write transactions committed through this handle (for tests and diagnostics).
@@ -1053,5 +1089,28 @@ mod tests {
         let saved = 100 - after * 100 / before;
         eprintln!("query_log 200k rows: {before} -> {after} bytes, {saved} percent smaller");
         assert!(after * 100 <= before * 80, "{before} -> {after}");
+    }
+
+    #[tokio::test]
+    async fn writes_run_on_the_dedicated_writer_thread() {
+        let dir = TempDir::new().unwrap();
+        let s = Store::open(&dir.path().join("w.db")).unwrap();
+        let name = s
+            .write(|_| Ok(std::thread::current().name().map(str::to_owned)))
+            .await
+            .unwrap();
+        assert_eq!(name.as_deref(), Some("dnsy-sqlite-writer"));
+    }
+
+    #[tokio::test]
+    async fn a_panicking_write_fails_and_the_writer_keeps_serving() {
+        let dir = TempDir::new().unwrap();
+        let s = Store::open(&dir.path().join("w.db")).unwrap();
+        let err = s
+            .write::<()>(|_| panic!("boom"))
+            .await
+            .expect_err("a panic is a task failure");
+        assert!(matches!(err, StoreError::Task(_)));
+        assert_eq!(s.write(|_| Ok(7)).await.unwrap(), 7);
     }
 }

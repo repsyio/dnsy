@@ -550,7 +550,7 @@ async fn tokens_never_leak_through_log_or_stats() {
     let mut e = event("a.example.", now_ms());
     e.principal = Some(format!("doh:{secret}"));
     e.source = AnswerSource::Blocked {
-        list: format!("list-{secret}"),
+        list: format!("list-{secret}").into(),
     };
     let mut leaky = event(&format!("{secret}.example."), now_ms());
     leaky.client = "192.0.2.78".parse().unwrap();

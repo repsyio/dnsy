@@ -108,6 +108,15 @@ TCP and DoT listeners set `TCP_NODELAY` and write each length-prefixed answer in
 so a client reusing a connection no longer waits for a delayed ACK (about 41 ms per answer
 before). `just bench-micro` runs the criterion micro-benchmarks (codec, cache lookup).
 
+## Threads
+
+`[server] worker_threads` (default: available parallelism, which honours a CPU affinity mask)
+sizes the async runtime that runs the listeners and the pipeline. Argon2 and zone signing run on
+tokio's blocking pool on top of that, and every SQLite write runs on one dedicated thread,
+`dnsy-sqlite-writer`, so the query-log writer queues behind nothing but other writes. A UDP
+datagram that the pipeline can answer without waiting (cache hit, blocked name, local zone) is
+answered in the receive loop of its socket; only one that waits for an upstream becomes a task.
+
 ## Listener limits and UDP sockets
 
 Admission caps are documented in [Security](security.md). UDP sockets are created with a 4 MiB

@@ -85,6 +85,7 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     }
     let l = &c.limits;
     if c.server.udp_sockets_per_address == 0
+        || c.server.worker_threads == 0
         || c.api.max_conns == 0
         || c.api.max_conns_per_client == 0
         || l.max_tcp_conns == 0
@@ -93,7 +94,7 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
         || l.udp_in_flight_per_client == 0
     {
         return Err(invalid(
-            "server.udp_sockets_per_address, api.max_conns, api.max_conns_per_client, limits.max_tcp_conns, \
+            "server.udp_sockets_per_address, server.worker_threads, api.max_conns, api.max_conns_per_client, limits.max_tcp_conns, \
              limits.max_conns_per_client, limits.udp_in_flight and \
              limits.udp_in_flight_per_client must be at least 1",
         ));

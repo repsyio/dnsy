@@ -8,7 +8,7 @@ as TOML (numbers, booleans, arrays) and fall back to plain strings.
 
 | Section | Keys (defaults) |
 | --- | --- |
-| `server` | `data_dir` (`/var/lib/dnsy`), `udp_sockets_per_address` (available parallelism on Linux, 1 elsewhere; see [Operations](operations.md)) |
+| `server` | `data_dir` (`/var/lib/dnsy`), `udp_sockets_per_address` (available parallelism on Linux, 1 elsewhere; see [Operations](operations.md)), `worker_threads` (available parallelism; at least 1) |
 | `dns` | `udp`, `tcp` listen lists (`0.0.0.0:53`; empty disables) |
 | `dot` | `listen` (off), `cert`, `key`, `client_ca`, `client_crl`, `mtls` = `off`/`optional`/`required` |
 | `doh` | `listen` (off), `cert`, `key`, `path` (`/dns-query`), `require_token` (true), `trusted_proxies` (empty; CIDRs whose `X-Forwarded-For` is honoured, see [Security](security.md)) |

@@ -322,6 +322,18 @@ mod tests {
             0
         );
         assert!(d.server.udp_sockets_per_address >= 1);
+        assert_eq!(
+            d.server.worker_threads,
+            std::thread::available_parallelism().map_or(1, usize::from)
+        );
+        assert_eq!(
+            Config::from_toml("[server]\nworker_threads = 3")
+                .unwrap()
+                .server
+                .worker_threads,
+            3
+        );
+        assert!(Config::from_toml("[server]\nworker_threads = 0").is_err());
         let c = Config::from_toml(
             "[server]\nudp_sockets_per_address = 2\n[limits]\nudp_in_flight = 8\n[api]\nmax_conns = 9",
         )
