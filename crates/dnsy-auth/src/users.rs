@@ -158,9 +158,12 @@ impl UserService {
         check_input(username, password)?;
         let hash = hash_off_thread(&self.gate, password).await?;
         let username = username.trim().to_owned();
-        self.store
+        let out = self
+            .store
             .write(move |tx| insert(tx, &username, role, &hash))
-            .await?
+            .await?;
+        self.store.epoch().bump();
+        out
     }
 
     /// Fetch a user by id.
@@ -202,7 +205,8 @@ impl UserService {
     /// # Errors
     /// [`UserError::NotFound`], [`UserError::LastAdmin`], or a store failure.
     pub async fn update_role(&self, id: UserId, role: Role) -> Result<User, UserError> {
-        self.store
+        let out = self
+            .store
             .write(move |tx| {
                 let Some(user) = find(tx, id)? else {
                     return Ok(Err(UserError::NotFound));
@@ -223,7 +227,9 @@ impl UserService {
                 }
                 Ok(Ok(User { role, ..user }))
             })
-            .await?
+            .await?;
+        self.store.epoch().bump();
+        out
     }
 
     /// Replace a user's password.
@@ -233,7 +239,8 @@ impl UserService {
     pub async fn set_password(&self, id: UserId, password: &str) -> Result<(), UserError> {
         check_input("x", password)?;
         let hash = hash_off_thread(&self.gate, password).await?;
-        self.store
+        let out = self
+            .store
             .write(move |tx| {
                 let n = tx.execute(
                     "UPDATE users SET password_hash = ?1, updated_at = unixepoch() WHERE id = ?2",
@@ -246,7 +253,9 @@ impl UserService {
                     Ok(())
                 })
             })
-            .await?
+            .await?;
+        self.store.epoch().bump();
+        out
     }
 
     /// Disable or re-enable an account. Disabling ends the user's sessions at once, and
@@ -256,7 +265,8 @@ impl UserService {
     /// # Errors
     /// [`UserError::NotFound`], [`UserError::LastAdmin`], or a store failure.
     pub async fn set_disabled(&self, id: UserId, disabled: bool) -> Result<User, UserError> {
-        self.store
+        let out = self
+            .store
             .write(move |tx| {
                 let Some(user) = find(tx, id)? else {
                     return Ok(Err(UserError::NotFound));
@@ -281,7 +291,9 @@ impl UserService {
                     row_to_user,
                 )?))
             })
-            .await?
+            .await?;
+        self.store.epoch().bump();
+        out
     }
 
     /// Delete a user. The last active admin cannot be deleted.
@@ -289,7 +301,8 @@ impl UserService {
     /// # Errors
     /// [`UserError::NotFound`], [`UserError::LastAdmin`], or a store failure.
     pub async fn delete(&self, id: UserId) -> Result<(), UserError> {
-        self.store
+        let out = self
+            .store
             .write(move |tx| {
                 let Some(user) = find(tx, id)? else {
                     return Ok(Err(UserError::NotFound));
@@ -303,7 +316,9 @@ impl UserService {
                 tx.execute("DELETE FROM users WHERE id = ?1", [id.0])?;
                 Ok(Ok(()))
             })
-            .await?
+            .await?;
+        self.store.epoch().bump();
+        out
     }
 
     /// Check a username and password. Unknown users and wrong passwords are
@@ -425,7 +440,9 @@ impl UserService {
                 }
                 insert(tx, &username, Role::Admin, &hash)
             })
-            .await??;
+            .await?;
+        self.store.epoch().bump();
+        let user = user?;
         bootstrap.consume();
         Ok(user)
     }

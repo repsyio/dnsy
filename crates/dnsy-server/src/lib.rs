@@ -31,7 +31,10 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 pub use admission::{Activity, Busy, Slot, SlotLimit};
-pub use doh::{DohAuthenticator, DohConfig, DohDenied, TokenAuth};
+pub use doh::{
+    DOH_TOKEN_CACHE_CAPACITY, DOH_TOKEN_CACHE_TTL, DohAuthenticator, DohConfig, DohDenied,
+    TokenAuth,
+};
 pub use dot::DotConfig;
 pub use dot::mtls::{AllowedCert, Allowlist, Clock as MtlsClock, MtlsMode, MtlsVerifier};
 pub use query::{MAX_UDP_PAYLOAD, MIN_UDP_PAYLOAD};

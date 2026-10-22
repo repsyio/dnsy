@@ -11,7 +11,8 @@ use dnsy_auth::{ClientCertService, TokenService, UserService};
 use dnsy_config::{Config, Mtls};
 use dnsy_engine::{Engine, EngineBuilder, Services};
 use dnsy_server::{
-    Allowlist, DohConfig, DotConfig, MtlsMode, MtlsVerifier, Server, ServerConfig, TokenAuth,
+    Allowlist, DOH_TOKEN_CACHE_CAPACITY, DOH_TOKEN_CACHE_TTL, DohConfig, DotConfig, MtlsMode,
+    MtlsVerifier, Server, ServerConfig, TokenAuth,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -259,7 +260,10 @@ fn server_config(
     }
     if !config.doh.listen.is_empty() {
         let (cert, key) = tls_files(config.doh.cert.as_ref(), config.doh.key.as_ref(), "doh")?;
-        let auth = Arc::new(TokenAuth(TokenService::new(store.clone())));
+        let auth = Arc::new(TokenAuth(
+            TokenService::new(store.clone())
+                .with_cache(DOH_TOKEN_CACHE_TTL, DOH_TOKEN_CACHE_CAPACITY),
+        ));
         let mut doh = DohConfig::new(config.doh.listen.clone(), cert, key, auth);
         doh.require_token = config.doh.require_token;
         doh.path.clone_from(&config.doh.path);
