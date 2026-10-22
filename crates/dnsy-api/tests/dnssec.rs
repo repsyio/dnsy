@@ -493,6 +493,94 @@ async fn ds_endpoint_matches_dnskey() {
     assert_eq!(ds["ds"], json!([]));
 }
 
+/// The DS export document, rebuilt from the raw key rows with the DNSSEC primitives only, in
+/// the exact field order and formats the endpoint has always used.
+async fn golden_ds_export(fx: &Fx) -> (Value, String) {
+    let signing = fx.state.zones.signing.as_ref().unwrap();
+    let mut ds = Vec::new();
+    let mut dnskey = Vec::new();
+    for (rec, key) in signing.keys().dnskeys(&origin()).await.unwrap() {
+        if !rec.role.is_sep()
+            || !matches!(
+                rec.state,
+                dnsy_keys::KeyState::Published | dnsy_keys::KeyState::Active
+            )
+        {
+            continue;
+        }
+        for digest in [DigestType::Sha256, DigestType::Sha384] {
+            let d = ds_for(&origin(), &key, digest).unwrap();
+            ds.push(json!({
+                "key_id": rec.id,
+                "key_tag": d.key_tag,
+                "algorithm": d.algorithm,
+                "digest_type": d.digest_type,
+                "digest": hex_upper(&d.digest),
+                "record": format!("example.com. IN DS {d}"),
+            }));
+        }
+        dnskey.push(json!({
+            "key_id": rec.id,
+            "key_tag": key.key_tag(),
+            "flags": key.flags,
+            "protocol": key.protocol,
+            "algorithm": key.algorithm,
+            "public_key": STANDARD.encode(&key.public_key),
+            "record": format!("example.com. IN DNSKEY {key}"),
+        }));
+    }
+    let text: String = ds
+        .iter()
+        .chain(dnskey.iter())
+        .map(|v| format!("{}\n", v["record"].as_str().unwrap()))
+        .collect();
+    (
+        json!({"zone": "example.com.", "ds": ds, "dnskey": dnskey}),
+        text,
+    )
+}
+
+async fn assert_ds_export_is_golden(fx: &Fx, expected_ds: usize) {
+    let (golden, golden_text) = golden_ds_export(fx).await;
+    assert_eq!(golden["ds"].as_array().unwrap().len(), expected_ds);
+    let json_body = admin(fx, Method::GET, &format!("{Z}/ds"), None).await;
+    assert_eq!(json_body.status, StatusCode::OK, "{}", json_body.body);
+    assert_eq!(json_body.json(), golden);
+    // Field order on the wire is part of the contract (the Value above sorts keys).
+    assert!(
+        json_body
+            .body
+            .starts_with(r#"{"zone":"example.com.","ds":[{"key_id":"#)
+            && json_body.body.contains(r#""record":"example.com. IN DS "#)
+            && json_body.body.contains(r#""dnskey":[{"key_id":"#),
+        "{}",
+        json_body.body
+    );
+    let text = call_with(
+        fx,
+        &fx.admin,
+        Method::GET,
+        &format!("{Z}/ds"),
+        &[("accept", "text/plain")],
+        None,
+    )
+    .await;
+    assert_eq!(text.body, golden_text, "text bytes");
+}
+
+#[tokio::test]
+async fn ds_export_output_is_byte_identical_to_the_golden_document() {
+    let fx = fx().await;
+    let view = signed_zone(&fx).await;
+    assert_ds_export_is_golden(&fx, 2).await;
+
+    // Mid rollover: two entry keys, four DS records, oldest key first.
+    let old = view["keys"][0]["id"].as_i64().unwrap();
+    let res = admin(&fx, Method::POST, &format!("{Z}/keys/{old}/rollover"), None).await;
+    assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.body);
+    assert_ds_export_is_golden(&fx, 4).await;
+}
+
 #[tokio::test]
 async fn rollover_endpoint_starts_state_machine() {
     let fx = fx().await;
