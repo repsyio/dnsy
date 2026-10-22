@@ -22,7 +22,7 @@ env:
 jobs:
   rust:
     name: e2e (rust)
-    runs-on: ubuntu-latest
+    runs-on: hetzner-lg
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,7 +41,7 @@ jobs:
   # `just e2e-ui`, with system dependencies for Chromium and the report kept on failure.
   browser:
     name: e2e (browser)
-    runs-on: ubuntu-latest
+    runs-on: hetzner-lg
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,7 +88,7 @@ jobs:
     name: e2e
     if: always()
     needs: [rust, browser]
-    runs-on: ubuntu-latest
+    runs-on: hetzner-md
     timeout-minutes: 5
     steps:
       - name: Require every job to have succeeded
