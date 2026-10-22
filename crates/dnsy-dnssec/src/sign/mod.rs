@@ -95,13 +95,47 @@ impl ZoneKey {
 
     /// True when a key in this role and state makes signatures, so its private key is
     /// needed: active zone-signing keys (ZSK, CSK), and active, published or retired key-signing
-    /// keys (KSK, CSK), which double-sign the DNSKEY `RRset` during a rollover.
+    /// keys (KSK, CSK), which double-sign the DNSKEY `RRset` during a rollover. An algorithm
+    /// rollover also needs the published and retired zone-signing keys: see [`ZoneKey::signing_flags`].
     pub fn signs(role: KeyRole, state: KeyState) -> bool {
         Self::signs_zone_data(role, state) || Self::signs_dnskeys(role, state)
     }
 
     fn signs_zone_data(role: KeyRole, state: KeyState) -> bool {
         state == KeyState::Active && role != KeyRole::Ksk
+    }
+
+    /// True when a zone-signing key (ZSK, CSK) in `state` and `algorithm` must also sign
+    /// the zone data, given the algorithms of the active zone-signing keys: during an
+    /// algorithm rollover the zone is double-signed (RFC 6781 4.1.4, RFC 4035 2.2), so a
+    /// published or retired key whose algorithm no active key covers signs too, and every
+    /// algorithm in the DNSKEY `RRset` has a complete set of signatures.
+    fn double_signs(role: KeyRole, state: KeyState, algorithm: u8, active: &[u8]) -> bool {
+        role != KeyRole::Ksk
+            && matches!(state, KeyState::Published | KeyState::Retired)
+            && !active.contains(&algorithm)
+    }
+
+    /// For each `(role, state, algorithm number)` of a zone's keys, whether the key makes any
+    /// signature, so its private key is needed. Unlike [`ZoneKey::signs`] this includes the
+    /// published and retired zone-signing keys of an algorithm rollover.
+    pub fn signing_flags(keys: &[(KeyRole, KeyState, u8)]) -> Vec<bool> {
+        let active = Self::active_algorithms(keys.iter().copied());
+        keys.iter()
+            .map(|&(role, state, algorithm)| {
+                Self::signs(role, state) || Self::double_signs(role, state, algorithm, &active)
+            })
+            .collect()
+    }
+
+    fn active_algorithms(keys: impl Iterator<Item = (KeyRole, KeyState, u8)>) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (role, state, algorithm) in keys {
+            if Self::signs_zone_data(role, state) && !out.contains(&algorithm) {
+                out.push(algorithm);
+            }
+        }
+        out
     }
 
     fn signs_dnskeys(role: KeyRole, state: KeyState) -> bool {
@@ -340,8 +374,16 @@ fn sign_zone(
     };
     let denial_ttl = soa_data.minimum.min(soa.ttl);
 
-    let zone_signers: Vec<&SigningKey> = signers(keys, ZoneKey::signs_zone_data)?;
-    let key_signers: Vec<&SigningKey> = signers(keys, ZoneKey::signs_dnskeys)?;
+    let active = ZoneKey::active_algorithms(
+        keys.keys
+            .iter()
+            .map(|k| (k.role, k.state, k.dnskey.algorithm)),
+    );
+    let zone_signers: Vec<&SigningKey> = signers(keys, |k| {
+        ZoneKey::signs_zone_data(k.role, k.state)
+            || ZoneKey::double_signs(k.role, k.state, k.dnskey.algorithm, &active)
+    })?;
+    let key_signers: Vec<&SigningKey> = signers(keys, |k| ZoneKey::signs_dnskeys(k.role, k.state))?;
     if zone_signers.is_empty() {
         return Err(DnssecError::NoSigningKey("zone data"));
     }
@@ -638,11 +680,11 @@ fn group(zone: &ZoneData) -> Result<Owners, DnssecError> {
 
 fn signers(
     keys: &ActiveKeys,
-    duty: fn(KeyRole, KeyState) -> bool,
+    duty: impl Fn(&ZoneKey) -> bool,
 ) -> Result<Vec<&SigningKey>, DnssecError> {
     keys.keys
         .iter()
-        .filter(|k| duty(k.role, k.state))
+        .filter(|k| duty(k))
         .map(|k| k.key.as_ref().ok_or(DnssecError::InvalidKey))
         .collect()
 }
