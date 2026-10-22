@@ -87,7 +87,9 @@ Rules, all enforced on write:
 - **Duplicates** (same name, type, value) are 409.
 - **SOA serial** goes up by one on every successful write (creation uses `soa.serial`, default 1).
 - **Limits**: request bodies up to 1 MiB (413), 10000 records per zone, 1000 zones, values up to
-  4096 characters.
+  4096 characters. After answering 413 the listener keeps reading and discarding up to 4 MiB of the
+  rest of the body (or the declared `Content-Length` if smaller) for at most 2 seconds, holding the
+  connection slot meanwhile, so a client that is still uploading can read the 413; then it closes.
 
 **Concurrency.** Zone reads return an `ETag`. Writes (`PUT`, `DELETE`, record `POST`/`PUT`/`DELETE`)
 accept `If-Match`; a stale tag is 412 and nothing is written. `If-Match: *` always matches. Without

@@ -48,6 +48,13 @@ pub(crate) fn acceptor(cert: &Path, key: &Path) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+/// After answering 413 the listener keeps reading and discarding at most this many request bytes
+/// (or the declared `Content-Length` when smaller) so that the client can still read the answer.
+const DRAIN_BODY_BYTES: u64 = 4 << 20;
+
+/// Longest the discard of a rejected body may take, counted from the end of the connection.
+const DRAIN_BODY_TIME: Duration = Duration::from_secs(2);
+
 /// Path of the live-tail stream; it is open-ended by design and exempt from the request timeout.
 const STREAM_PATH: &str = "/api/v1/querylog/stream";
 
@@ -87,6 +94,9 @@ impl HttpLimits {
 /// Requests in progress on one connection and when the connection last had one.
 #[derive(Debug)]
 struct Activity {
+    /// Bytes of an oversized request body worth discarding once the connection is done; 0 when
+    /// no request was rejected with 413.
+    drain: AtomicU64,
     started: Instant,
     active: AtomicUsize,
     last_ms: AtomicU64,
@@ -95,6 +105,7 @@ struct Activity {
 impl Activity {
     fn new() -> Arc<Self> {
         Arc::new(Self {
+            drain: AtomicU64::new(0),
             started: Instant::now(),
             active: AtomicUsize::new(0),
             last_ms: AtomicU64::new(0),
@@ -104,6 +115,14 @@ impl Activity {
     fn touch(&self) {
         let ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.last_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// Remembers how much of a rejected body is worth discarding when the answer is a 413.
+    fn note_status(&self, status: StatusCode, declared: Option<u64>) {
+        if status == StatusCode::PAYLOAD_TOO_LARGE {
+            let bound = declared.map_or(DRAIN_BODY_BYTES, |n| n.min(DRAIN_BODY_BYTES));
+            self.drain.store(bound, Ordering::Relaxed);
+        }
     }
 
     /// Marks a request as started; it ends when the guard drops.
@@ -214,6 +233,7 @@ pub(crate) async fn serve(
                 }
                 None => Box::new(stream),
             };
+            let io = SharedIo(Arc::new(std::sync::Mutex::new(io)));
             let activity = Activity::new();
             let tracker = Arc::clone(&activity);
             // Handlers read the peer address from `ConnectInfo` (login throttling is keyed on it).
@@ -221,7 +241,9 @@ pub(crate) async fn serve(
                 let mut req = req.map(axum::body::Body::new);
                 req.extensions_mut().insert(ConnectInfo(peer));
                 let exempt = req.uri().path() == STREAM_PATH;
-                let call = app.clone().oneshot(req);
+                let declared = declared_length(&req);
+                let call =
+                    noting_rejection(app.clone().oneshot(req), Arc::clone(&tracker), declared);
                 let guard = tracker.begin();
                 async move {
                     if exempt {
@@ -252,7 +274,7 @@ pub(crate) async fn serve(
                 .max_concurrent_streams(100)
                 .keep_alive_interval(limits.header_read)
                 .keep_alive_timeout(limits.header_read);
-            let conn = builder.serve_connection(TokioIo::new(io), service);
+            let conn = builder.serve_connection(TokioIo::new(io.clone()), service);
             tokio::pin!(conn);
             let result = tokio::select! {
                 r = conn.as_mut() => r,
@@ -268,10 +290,95 @@ pub(crate) async fn serve(
             if let Err(e) = result {
                 tracing::debug!(%peer, error = %e, "api connection ended");
             }
+            // The 413 is out; let the client finish (a bounded part of) its upload so it can
+            // read it. The slot is held until then.
+            discard(io, activity.drain.load(Ordering::Relaxed)).await;
             drop(permit);
         });
     }
     let _ = tokio::time::timeout(DRAIN, async { while conns.join_next().await.is_some() {} }).await;
+}
+
+/// The connection's transport, shared so the listener keeps it after hyper is done with it and
+/// can discard the unread rest of a rejected body (closing with unread data resets the peer).
+#[derive(Clone)]
+struct SharedIo(Arc<std::sync::Mutex<Box<dyn Io>>>);
+
+impl SharedIo {
+    fn with<R>(&self, f: impl FnOnce(Pin<&mut Box<dyn Io>>) -> R) -> R {
+        let mut io = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(Pin::new(&mut *io))
+    }
+}
+
+impl tokio::io::AsyncRead for SharedIo {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        self.with(|io| io.poll_read(cx, buf))
+    }
+}
+
+impl tokio::io::AsyncWrite for SharedIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.with(|io| io.poll_write(cx, buf))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.with(|io| io.poll_flush(cx))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.with(|io| io.poll_shutdown(cx))
+    }
+}
+
+/// Awaits the handler and records a 413 answer so the connection can discard the rest of the body.
+async fn noting_rejection<F>(
+    call: F,
+    activity: Arc<Activity>,
+    declared: Option<u64>,
+) -> std::result::Result<axum::response::Response, std::convert::Infallible>
+where
+    F: Future<Output = std::result::Result<axum::response::Response, std::convert::Infallible>>,
+{
+    let response = call.await;
+    if let Ok(r) = &response {
+        activity.note_status(r.status(), declared);
+    }
+    response
+}
+
+fn declared_length<B>(req: &hyper::Request<B>) -> Option<u64> {
+    let value = req.headers().get(hyper::header::CONTENT_LENGTH)?;
+    value.to_str().ok()?.parse().ok()
+}
+
+/// Reads and discards up to `max` bytes (nothing when 0), for at most [`DRAIN_BODY_TIME`].
+async fn discard(mut io: SharedIo, max: u64) {
+    use tokio::io::AsyncReadExt as _;
+    let mut left = max;
+    let mut buf = vec![0_u8; 16 * 1024];
+    let work = Box::pin(async {
+        while left > 0 {
+            match io.read(&mut buf).await {
+                Ok(n) if n > 0 => left = left.saturating_sub(n as u64),
+                _ => break,
+            }
+        }
+    });
+    if max > 0 {
+        let _ = timeout(DRAIN_BODY_TIME, work).await;
+    }
 }
 
 trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
@@ -296,6 +403,7 @@ mod tests {
     struct Server {
         addr: SocketAddr,
         store: dnsy_store::Store,
+        token: String,
         _stop: watch::Sender<bool>,
         _dir: tempfile::TempDir,
     }
@@ -308,10 +416,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dnsy_store::Store::open(&dir.path().join("t.db")).unwrap();
         let state = ApiState::new(store.clone());
-        state
+        let admin = state
             .auth
             .users
             .create("admin", PW, Role::Admin)
+            .await
+            .unwrap();
+        let (token, _) = state
+            .auth
+            .tokens
+            .create(admin.id, "t", &[dnsy_core::Scope::ApiWrite], None)
             .await
             .unwrap();
         let app = router(
@@ -328,6 +442,7 @@ mod tests {
         Server {
             addr,
             store,
+            token,
             _stop: stop,
             _dir: dir,
         }
@@ -385,6 +500,60 @@ mod tests {
         // The attacker's address is locked; the administrator elsewhere is not.
         assert_eq!(login(&s, "127.0.0.3", PW).await.0, 200);
         assert!(!recorded_ips(&s).await.contains(&"0.0.0.0".to_owned()));
+    }
+
+    /// Sends a zone create whose declared body is far over the 1 MiB limit, then keeps writing
+    /// `total` bytes of it (or until the server stops reading). Returns the response text and the
+    /// bytes written.
+    async fn upload_oversized(s: &Server, declared: usize, total: usize) -> (String, usize) {
+        let mut stream = tokio::net::TcpStream::connect(s.addr).await.unwrap();
+        let head = format!(
+            "POST /api/v1/zones HTTP/1.1\r\nhost: t\r\nauthorization: Bearer {}\r\n\
+             content-type: application/json\r\ncontent-length: {declared}\r\n\r\n",
+            s.token
+        );
+        stream.write_all(head.as_bytes()).await.unwrap();
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut written = 0;
+        while written < total {
+            let n = chunk.len().min(total - written);
+            if stream.write_all(&chunk[..n]).await.is_err() {
+                break;
+            }
+            written += n;
+            // A real client takes time to produce its body; the server answers meanwhile.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let mut raw = String::new();
+        // A reset after the answer may cut the read short; whatever arrived is kept.
+        let _ = stream.read_to_string(&mut raw).await;
+        (raw, written)
+    }
+
+    #[tokio::test]
+    async fn client_sending_four_times_the_limit_reads_the_413() {
+        let s = server().await;
+        let four = 4 << 20;
+        let (raw, written) = upload_oversized(&s, four, four).await;
+        // The whole body went out (no broken pipe) and the answer was readable.
+        assert_eq!(written, four);
+        assert!(raw.starts_with("HTTP/1.1 413"), "got {raw:?}");
+    }
+
+    #[tokio::test]
+    async fn endless_oversized_upload_is_cut_off_within_the_bound() {
+        let s = server().await;
+        // Declares far more than it sends: the server drains at most its bound (4 MiB), then closes.
+        let started = Instant::now();
+        let (_, written) = tokio::time::timeout(
+            Duration::from_secs(20),
+            upload_oversized(&s, usize::MAX >> 1, usize::MAX >> 1),
+        )
+        .await
+        .expect("the server stops reading and closes");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // Drain bound (4 MiB) plus what the request layers read and the socket buffers hold.
+        assert!(written < 64 << 20, "wrote {written} bytes");
     }
 
     /// Opens a connection and sends `head` without ending the request.
