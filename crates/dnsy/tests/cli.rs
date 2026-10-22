@@ -450,7 +450,9 @@ fn user_disable_and_enable() {
         !env.run(&["user", "disable", "root"]).status.success(),
         "the last active admin stays enabled"
     );
-    assert!(env.ok(&["user", "disable", "bob"]).contains("bob disabled"));
+    let disabled = env.ok(&["user", "disable", "bob"]);
+    assert!(disabled.contains("bob disabled"));
+    assert!(disabled.contains("applies this to DoH tokens within 5 s"));
     assert!(env.ok(&["user", "list"]).contains("(disabled)"));
     assert!(!env.run(&["user", "disable", "nobody"]).status.success());
     assert!(env.ok(&["user", "enable", "bob"]).contains("bob enabled"));

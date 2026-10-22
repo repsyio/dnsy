@@ -23,7 +23,9 @@ Format: `dnsy_<base32 id>_<base64url secret>` (8-byte id, 32-byte secret). The s
 once, when the token is created. Only `sha256(secret)` is stored, compared in constant time.
 A token can have an expiry and can be revoked at any time. Expired, revoked, unknown and
 tampered tokens all fail with the same error. `last_used_at` is refreshed at most once per
-minute.
+minute. DoH caches verified tokens for 5 s and refreshes `last_used_at` only when it looks a token
+up again, so for DoH traffic the recorded value lags by at most 65 s (see
+[DoH and tokens](doh.md#tokens)).
 
 ## Sessions
 
@@ -37,7 +39,9 @@ discards the presented session and issues a new id.
 password, the user's sessions are deleted at once and their API and DoH tokens are refused (401)
 until `{"disabled": false}`; old sessions stay gone. The last active admin cannot be disabled,
 demoted or deleted (409), so an installation cannot lock itself out; a disabled admin does not
-count as one. `dnsy user disable|enable <username>` does the same offline.
+count as one. `dnsy user disable|enable <username>` does the same offline; run against a live
+server, its DoH tokens stop working within 5 s (the DoH verified-token cache, see
+[DoH and tokens](doh.md#tokens)), API tokens at once.
 
 ## Login throttling
 

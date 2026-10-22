@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use dnsy_e2e::clients::{Framed, query_edns, wire};
 use dnsy_e2e::zones::example_zone;
-use dnsy_e2e::{Harness, MtlsPolicy, Opts, Token, eventually, query};
+use dnsy_e2e::{Auth, Harness, MtlsPolicy, Opts, Token, eventually, query};
 use dnsy_proto::{Message, RData, Rcode, RecordType};
 use reqwest::Method;
 use serde_json::json;
@@ -313,6 +313,66 @@ async fn doh_token_without_dns_scope_is_forbidden() {
         .post(&www(), &Token::Bearer(read_only))
         .await;
     assert_eq!(r.status, 403);
+}
+
+/// Creates `username` (operator) through the API and mints a `dns:query` token for it;
+/// returns the user id, the token id and the secret.
+async fn api_dns_token(h: &Harness, username: &str) -> (i64, i64, String) {
+    let api = h.rest();
+    let pw = format!("{username}-password-1234");
+    let uid = api
+        .create_user(&h.api_token, username, &pw, "operator")
+        .await;
+    let session = api.login(username, &pw).await;
+    let made = api
+        .post(
+            "/tokens",
+            Auth::Session(&session),
+            &json!({"name": "doh", "scopes": ["dns:query"]}),
+        )
+        .await
+        .ok(201);
+    (
+        uid,
+        made["meta"]["id"].as_i64().expect("token id"),
+        made["token"].as_str().expect("secret").to_owned(),
+    )
+}
+
+// The DoH verifier caches successful verifications; the API's writes share the store's epoch,
+// so these take effect on the very next query, with no sleep.
+#[tokio::test]
+async fn doh_token_revoked_via_api_is_rejected_on_the_next_query() {
+    let h = doh_h().await;
+    let (_, id, token) = api_dns_token(&h, "rita").await;
+    let doh = h.doh_client(true);
+    let token = Token::Bearer(token);
+    assert_eq!(doh.post(&www(), &token).await.status, 200);
+    assert_eq!(doh.post(&www(), &token).await.status, 200);
+    let r = h
+        .rest()
+        .delete(&format!("/tokens/{id}"), Auth::Bearer(&h.api_token))
+        .await;
+    assert!(r.status / 100 == 2, "revoke answered {}", r.status);
+    assert_eq!(doh.post(&www(), &token).await.status, 401);
+}
+
+#[tokio::test]
+async fn doh_token_of_a_disabled_user_is_rejected_on_the_next_query() {
+    let h = doh_h().await;
+    let (uid, _, token) = api_dns_token(&h, "dana").await;
+    let doh = h.doh_client(true);
+    let token = Token::Bearer(token);
+    assert_eq!(doh.post(&www(), &token).await.status, 200);
+    h.rest()
+        .patch(
+            &format!("/users/{uid}"),
+            Auth::Bearer(&h.api_token),
+            &json!({"disabled": true}),
+        )
+        .await
+        .ok(200);
+    assert_eq!(doh.post(&www(), &token).await.status, 401);
 }
 
 #[tokio::test]

@@ -68,6 +68,14 @@ pub trait DohAuthenticator: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = Result<Principal, DohDenied>> + Send + 'a>>;
 }
 
+/// How long the server's `DoH` token verifier reuses a successful verification
+/// (`TokenService::with_cache`). Changes through the API or web UI invalidate it at once;
+/// changes made with `dnsy admin` while the server runs are seen within this time.
+pub const DOH_TOKEN_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Most tokens the `DoH` verifier cache holds before it is cleared.
+pub const DOH_TOKEN_CACHE_CAPACITY: usize = 4096;
+
 /// [`DohAuthenticator`] backed by a [`TokenVerifier`] (comparison is constant time there).
 #[derive(Debug, Clone)]
 pub struct TokenAuth<V>(pub V);

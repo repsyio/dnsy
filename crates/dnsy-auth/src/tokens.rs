@@ -1,4 +1,7 @@
+use std::collections::HashMap;
 use std::future::Future;
+use std::sync::{Arc, PoisonError, RwLock};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -120,16 +123,56 @@ fn sha256(bytes: &[u8]) -> Vec<u8> {
     Sha256::digest(bytes).to_vec()
 }
 
+/// A successful verification, reused until `ttl` passes or the store's auth epoch moves.
+struct Cached {
+    principal: Principal,
+    scopes: Vec<Scope>,
+    role: Role,
+    expires_at: Option<i64>,
+    inserted: Instant,
+    epoch: u64,
+}
+
+impl Cached {
+    fn usable(&self, at: Instant, ttl: Duration, epoch: u64, now: i64) -> bool {
+        at < self.inserted + ttl && self.epoch == epoch && self.expires_at.is_none_or(|e| e > now)
+    }
+}
+
+/// Verified-token cache, keyed by the SHA-256 of the presented string. Only successes are
+/// stored; a full map is cleared rather than grown.
+struct TokenCache {
+    ttl: Duration,
+    capacity: usize,
+    entries: RwLock<HashMap<[u8; 32], Cached>>,
+}
+
 /// Issues, lists, revokes and verifies API tokens.
 #[derive(Clone)]
 pub struct TokenService {
     store: Store,
+    cache: Option<Arc<TokenCache>>,
 }
 
 impl TokenService {
     #[must_use]
     pub fn new(store: Store) -> TokenService {
-        TokenService { store }
+        TokenService { store, cache: None }
+    }
+
+    /// Cache successful verifications for `ttl`, holding at most `capacity` tokens (the map is
+    /// cleared when full). Revocations, role changes, disabling and deleting through this
+    /// process's `dnsy-auth` services invalidate the cache at once through the store's
+    /// [`dnsy_store::Epoch`]; writes from another process (the `dnsy admin` CLI) are seen only
+    /// when an entry expires, so within `ttl`. `last_used_at` is refreshed on cache misses only.
+    #[must_use]
+    pub fn with_cache(mut self, ttl: Duration, capacity: usize) -> TokenService {
+        self.cache = Some(Arc::new(TokenCache {
+            ttl,
+            capacity,
+            entries: RwLock::new(HashMap::new()),
+        }));
+        self
     }
 
     /// Create a token for `user`. The returned string is the only time the secret
@@ -188,7 +231,8 @@ impl TokenService {
             .map(|s| scope_str(*s))
             .collect::<Vec<_>>()
             .join(",");
-        self.store
+        let res = self
+            .store
             .write(move |tx| {
                 let role: Option<String> = tx
                     .query_row("SELECT role FROM users WHERE id = ?1", [user.0], |r| r.get(0))
@@ -207,7 +251,9 @@ impl TokenService {
                 )?;
                 Ok(Ok(()))
             })
-            .await??;
+            .await?;
+        self.store.epoch().bump();
+        res?;
         Ok((token, meta))
     }
 
@@ -255,6 +301,7 @@ impl TokenService {
                 )?)
             })
             .await?;
+        self.store.epoch().bump();
         if n == 0 {
             Err(AuthError::TokenNotFound)
         } else {
@@ -268,6 +315,74 @@ impl TokenService {
         needed: Scope,
         now: i64,
     ) -> Result<Principal, AuthError> {
+        self.verify_cached_at(presented, needed, now, Instant::now())
+            .await
+    }
+
+    /// [`Self::verify_at`] with the cache clock passed in (`at`), so tests control the TTL.
+    async fn verify_cached_at(
+        &self,
+        presented: &str,
+        needed: Scope,
+        now: i64,
+        at: Instant,
+    ) -> Result<Principal, AuthError> {
+        let Some(cache) = &self.cache else {
+            return self.verify_db(presented, needed, now).await.map(|v| v.0);
+        };
+        let key: [u8; 32] = Sha256::digest(presented.as_bytes()).into();
+        let epoch = self.store.epoch().current();
+        let hit = {
+            let entries = cache.entries.read().unwrap_or_else(PoisonError::into_inner);
+            entries.get(&key).map(|c| {
+                c.usable(at, cache.ttl, epoch, now).then(|| {
+                    (
+                        c.principal.clone(),
+                        c.scopes.contains(&needed) && c.role.allows(needed),
+                    )
+                })
+            })
+        };
+        match hit {
+            Some(Some((principal, true))) => return Ok(principal),
+            Some(Some((_, false))) => return Err(AuthError::MissingScope),
+            Some(None) => {
+                cache
+                    .entries
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&key);
+            }
+            None => {}
+        }
+        let (principal, cached) = self.verify_db(presented, needed, now).await?;
+        let mut entries = cache
+            .entries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if entries.len() >= cache.capacity {
+            entries.clear();
+        }
+        // The epoch read before the database lookup: a change committed meanwhile makes
+        // this entry stale at once.
+        entries.insert(
+            key,
+            Cached {
+                inserted: at,
+                epoch,
+                ..cached
+            },
+        );
+        Ok(principal)
+    }
+
+    /// The database path: one read, constant-time secret comparison, `last_used_at` refresh.
+    async fn verify_db(
+        &self,
+        presented: &str,
+        needed: Scope,
+        now: i64,
+    ) -> Result<(Principal, Cached), AuthError> {
         let (id, secret) = parse_token(presented).ok_or(AuthError::InvalidToken)?;
         let row: Option<Row> = self
             .store
@@ -304,8 +419,10 @@ impl TokenService {
         if revoked_at.is_some() || disabled_at.is_some() || expires_at.is_some_and(|e| e <= now) {
             return Err(AuthError::InvalidToken);
         }
+        let scopes = parse_scopes(&scopes);
+        let role = parse_role(&role);
         // Scope check also honours a role that was demoted after issuing.
-        if !parse_scopes(&scopes).contains(&needed) || !parse_role(&role).allows(needed) {
+        if !scopes.contains(&needed) || !role.allows(needed) {
             return Err(AuthError::MissingScope);
         }
         if last_used.is_none_or(|t| now - t >= LAST_USED_GRANULARITY_SECS) {
@@ -319,10 +436,19 @@ impl TokenService {
                 })
                 .await?;
         }
-        Ok(Principal::Token {
+        let principal = Principal::Token {
             token: TokenId(id),
             user: UserId(user),
-        })
+        };
+        let cached = Cached {
+            principal: principal.clone(),
+            scopes,
+            role,
+            expires_at,
+            inserted: Instant::now(),
+            epoch: 0,
+        };
+        Ok((principal, cached))
     }
 }
 
@@ -519,6 +645,209 @@ mod tests {
         ));
         users.set_disabled(user, false).await.unwrap();
         svc.verify(&token, Scope::ApiRead).await.unwrap();
+    }
+
+    const TTL: Duration = Duration::from_secs(5);
+
+    async fn cached(role: Role, capacity: usize) -> (TokenService, UserId, tempfile::TempDir) {
+        let (svc, user, dir) = setup(role).await;
+        (svc.with_cache(TTL, capacity), user, dir)
+    }
+
+    fn entries(svc: &TokenService) -> usize {
+        svc.cache.as_ref().unwrap().entries.read().unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn cached_token_survives_a_direct_db_revoke_until_ttl() {
+        let (svc, user, _d) = cached(Role::Operator, 16).await;
+        let (token, _) = svc
+            .create_at(user, "t", &[Scope::DnsQuery], None, 900)
+            .await
+            .unwrap();
+        let t0 = Instant::now();
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_000, t0)
+            .await
+            .unwrap();
+        // An out-of-process writer (the CLI) does not bump the in-process epoch.
+        svc.store
+            .write(|tx| Ok(tx.execute("UPDATE api_tokens SET revoked_at = 1", [])?))
+            .await
+            .unwrap();
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_004, t0 + Duration::from_secs(4))
+            .await
+            .unwrap();
+        assert!(matches!(
+            svc.verify_cached_at(&token, Scope::DnsQuery, 1_005, t0 + TTL)
+                .await,
+            Err(AuthError::InvalidToken)
+        ));
+    }
+
+    #[tokio::test]
+    async fn revoke_invalidates_the_cache_immediately() {
+        let (svc, user, _d) = cached(Role::Operator, 16).await;
+        let (token, meta) = svc
+            .create(user, "t", &[Scope::DnsQuery], None)
+            .await
+            .unwrap();
+        let t0 = Instant::now();
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_000, t0)
+            .await
+            .unwrap();
+        svc.revoke(meta.id).await.unwrap();
+        assert!(matches!(
+            svc.verify_cached_at(&token, Scope::DnsQuery, 1_000, t0)
+                .await,
+            Err(AuthError::InvalidToken)
+        ));
+    }
+
+    #[tokio::test]
+    async fn role_change_disable_and_delete_invalidate_immediately() {
+        let (svc, user, _d) = cached(Role::Admin, 16).await;
+        let users = UserService::new(svc.store.clone());
+        users.create("bob", "pw", Role::Admin).await.unwrap();
+        let (token, _) = svc
+            .create(user, "t", &[Scope::ApiWrite], None)
+            .await
+            .unwrap();
+        let t0 = Instant::now();
+        let check = |svc: &TokenService| {
+            let (svc, token) = (svc.clone(), token.clone());
+            async move {
+                svc.verify_cached_at(&token, Scope::ApiWrite, 1_000, t0)
+                    .await
+            }
+        };
+        check(&svc).await.unwrap();
+        users.update_role(user, Role::Viewer).await.unwrap();
+        assert!(matches!(check(&svc).await, Err(AuthError::MissingScope)));
+        users.update_role(user, Role::Operator).await.unwrap();
+        check(&svc).await.unwrap();
+        users.set_disabled(user, true).await.unwrap();
+        assert!(matches!(check(&svc).await, Err(AuthError::InvalidToken)));
+        users.set_disabled(user, false).await.unwrap();
+        check(&svc).await.unwrap();
+        users.delete(user).await.unwrap();
+        assert!(matches!(check(&svc).await, Err(AuthError::InvalidToken)));
+    }
+
+    #[tokio::test]
+    async fn cached_entry_honours_expires_at() {
+        let (svc, user, _d) = cached(Role::Operator, 16).await;
+        let (token, _) = svc
+            .create_at(user, "t", &[Scope::DnsQuery], Some(1_100), 1_000)
+            .await
+            .unwrap();
+        let t0 = Instant::now();
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_099, t0)
+            .await
+            .unwrap();
+        assert_eq!(entries(&svc), 1);
+        assert!(matches!(
+            svc.verify_cached_at(&token, Scope::DnsQuery, 1_100, t0)
+                .await,
+            Err(AuthError::InvalidToken)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cached_hit_still_checks_the_needed_scope() {
+        let (svc, user, _d) = cached(Role::Operator, 16).await;
+        let (token, _) = svc
+            .create(user, "t", &[Scope::DnsQuery], None)
+            .await
+            .unwrap();
+        let t0 = Instant::now();
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_000, t0)
+            .await
+            .unwrap();
+        assert!(matches!(
+            svc.verify_cached_at(&token, Scope::ApiRead, 1_000, t0)
+                .await,
+            Err(AuthError::MissingScope)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejected_tokens_are_never_cached() {
+        let (svc, user, _d) = cached(Role::Operator, 16).await;
+        let (token, _) = svc
+            .create(user, "t", &[Scope::DnsQuery], None)
+            .await
+            .unwrap();
+        let mid = token.len() - 10;
+        let flipped = if &token[mid..=mid] == "A" { "B" } else { "A" };
+        let bad = format!("{}{flipped}{}", &token[..mid], &token[mid + 1..]);
+        let t0 = Instant::now();
+        for _ in 0..2 {
+            assert!(matches!(
+                svc.verify_cached_at(&bad, Scope::DnsQuery, 1_000, t0).await,
+                Err(AuthError::InvalidToken)
+            ));
+        }
+        assert!(matches!(
+            svc.verify_cached_at(&token, Scope::ApiRead, 1_000, t0)
+                .await,
+            Err(AuthError::MissingScope)
+        ));
+        assert_eq!(entries(&svc), 0);
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_000, t0)
+            .await
+            .unwrap();
+        assert_eq!(entries(&svc), 1);
+    }
+
+    #[tokio::test]
+    async fn cache_capacity_clears_not_grows() {
+        let (svc, user, _d) = cached(Role::Operator, 2).await;
+        let mut tokens = Vec::new();
+        for i in 0..3 {
+            let (token, _) = svc
+                .create(user, &format!("t{i}"), &[Scope::DnsQuery], None)
+                .await
+                .unwrap();
+            tokens.push(token);
+        }
+        let t0 = Instant::now();
+        for token in &tokens {
+            svc.verify_cached_at(token, Scope::DnsQuery, 1_000, t0)
+                .await
+                .unwrap();
+            assert!(entries(&svc) <= 2);
+        }
+        for token in &tokens {
+            svc.verify_cached_at(token, Scope::DnsQuery, 1_000, t0)
+                .await
+                .unwrap();
+            assert!(entries(&svc) <= 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn last_used_refresh_still_happens_through_the_cache() {
+        let (svc, user, _d) = cached(Role::Operator, 16).await;
+        let (token, _) = svc
+            .create_at(user, "t", &[Scope::DnsQuery], None, 100)
+            .await
+            .unwrap();
+        let last = |svc: &TokenService| {
+            let svc = svc.clone();
+            async move { svc.list(user).await.unwrap()[0].last_used_at }
+        };
+        let t0 = Instant::now();
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_000, t0)
+            .await
+            .unwrap();
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_003, t0 + Duration::from_secs(3))
+            .await
+            .unwrap();
+        assert_eq!(last(&svc).await, Some(1_000));
+        svc.verify_cached_at(&token, Scope::DnsQuery, 1_065, t0 + Duration::from_secs(65))
+            .await
+            .unwrap();
+        assert_eq!(last(&svc).await, Some(1_065));
     }
 
     #[test]

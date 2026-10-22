@@ -215,6 +215,11 @@ pub(crate) async fn user(config: &Config, cmd: UserCommand, out: &mut impl Write
             let id = find_user(&users, &username).await?.id;
             users.set_disabled(id, true).await?;
             writeln!(out, "{username} disabled")?;
+            writeln!(
+                out,
+                "a running server applies this to DoH tokens within {} s",
+                dnsy_server::DOH_TOKEN_CACHE_TTL.as_secs()
+            )?;
         }
         UserCommand::Enable { username } => {
             let id = find_user(&users, &username).await?.id;

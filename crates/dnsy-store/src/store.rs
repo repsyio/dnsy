@@ -41,6 +41,26 @@ pub enum StoreError {
     Task(String),
 }
 
+/// In-process change counter for auth rows; bumped by every `dnsy-auth` writer except the
+/// `last_used_at` refresh. Caches of auth lookups must drop entries whose epoch differs.
+///
+/// Clones share the counter. It is not persisted and not seen by other processes.
+#[derive(Debug, Clone, Default)]
+pub struct Epoch(Arc<AtomicU64>);
+
+impl Epoch {
+    /// The current value.
+    #[must_use]
+    pub fn current(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Advance the counter; call after the change is committed.
+    pub fn bump(&self) {
+        self.0.fetch_add(1, Ordering::Release);
+    }
+}
+
 /// A write transaction queued for the writer thread.
 type WriteJob = Box<dyn FnOnce() + Send>;
 
@@ -52,6 +72,7 @@ struct Inner {
     readers: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
     commits: AtomicU64,
+    epoch: Epoch,
     known: &'static [Migration],
 }
 
@@ -165,6 +186,7 @@ impl Store {
                 permits: Arc::new(Semaphore::new(readers.len())),
                 readers: Mutex::new(readers),
                 commits: AtomicU64::new(0),
+                epoch: Epoch::default(),
                 known,
             }),
         })
@@ -243,6 +265,12 @@ impl Store {
     #[must_use]
     pub fn write_count(&self) -> u64 {
         self.inner.commits.load(Ordering::Relaxed)
+    }
+
+    /// The auth change counter shared by every clone of this handle (see [`Epoch`]).
+    #[must_use]
+    pub fn epoch(&self) -> Epoch {
+        self.inner.epoch.clone()
     }
 
     /// Run `PRAGMA optimize` on the writer: `ANALYZE` only where the planner statistics are
@@ -664,6 +692,18 @@ mod tests {
         s.write(|_| Ok(())).await.unwrap();
         let _ = s.write::<()>(|_| Err(StoreError::Task("x".into()))).await;
         assert_eq!(s.write_count(), before + 1, "only committed writes count");
+    }
+
+    #[test]
+    fn epoch_is_shared_by_clones() {
+        let (_d, p) = db();
+        let s = Store::open_with(&p, &[M1]).unwrap();
+        let other = s.clone();
+        let e = s.epoch();
+        assert_eq!(e.current(), 0);
+        other.epoch().bump();
+        assert_eq!(e.current(), 1);
+        assert_eq!(s.epoch().current(), 1);
     }
 
     #[cfg(unix)]

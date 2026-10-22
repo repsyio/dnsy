@@ -11,4 +11,4 @@ mod store;
 
 pub use maintenance::{Vacuumed, backup, check, vacuum};
 pub use migrate::{MIGRATIONS, Migration, MigrationStatus};
-pub use store::{Store, StoreError, migration_status_at};
+pub use store::{Epoch, Store, StoreError, migration_status_at};

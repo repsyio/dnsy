@@ -1,5 +1,5 @@
 //! Scenario runner behind `just bench`: starts the real `dnsy` binary (`DNSY_BIN`) with a fast
-//! fake upstream and prints UDP cache-hit, UDP cache-miss, TCP and `DoH` numbers.
+//! fake upstream and prints UDP cache-hit, UDP cache-miss, TCP and `DoH` (with and without a token) numbers.
 
 use std::time::Duration;
 
@@ -101,11 +101,18 @@ async fn main() {
         );
     }
 
-    for (name, http2) in [("doh http/1.1 POST", false), ("doh h2 POST", true)] {
+    // `doh1_token`: one token for all 64 clients; a presented token is verified even when
+    // tokens are not required, so this measures the verifier (cached for 5 s).
+    let token = Token::Bearer(h.doh_token.clone());
+    for (name, http2, token) in [
+        ("doh http/1.1 POST", false, Token::None),
+        ("doh1_token http/1.1 POST", false, token),
+        ("doh h2 POST", true, Token::None),
+    ] {
         let client = std::sync::Arc::new(h.doh_client(http2));
         let r = closed_loop(64, WARMUP, RUN, |c| DohWorker {
             client: client.clone(),
-            token: Token::None,
+            token: token.clone(),
             client_id: c,
         })
         .await;

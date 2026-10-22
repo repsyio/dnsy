@@ -40,6 +40,14 @@ A presented token is always verified, even when tokens are not required. Verific
 comparison are constant time and done by the token verifier in `dnsy-auth`. The authenticated
 principal is attached to the request, so the query log shows which token asked.
 
+A successful verification is cached for 5 s (`DOH_TOKEN_CACHE_TTL`, at most 4096 tokens,
+`DOH_TOKEN_CACHE_CAPACITY`), so a busy client costs one database read per token every 5 s instead
+of one per query. Rejected tokens are never cached. A revoked token, a disabled or deleted owner or
+a role change takes effect on the next request when done through the API or the web UI. Changes
+made with the offline CLI (`dnsy user disable`, `dnsy token create` and friends) while the server
+is running apply to DoH within 5 s (verified tokens are cached for 5 s); `dnsy user disable` says
+so when it runs.
+
 Rejected tokens are counted per client (an IPv4 address or an IPv6 `/64`; default 10 per 60 s). Past that limit the client gets
 429 before any token is looked at, so the response never reveals whether a token exists. Malformed,
 unknown, revoked, expired and wrong-secret tokens all give the same 401.
