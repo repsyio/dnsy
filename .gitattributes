@@ -1,0 +1,2 @@
+# Tests compare generated files byte for byte (openapi/dnsy.json, zone exports), so checkouts keep LF on Windows too.
+* text=auto eol=lf

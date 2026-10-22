@@ -51,6 +51,10 @@ async fn concurrent_identical_misses_reach_the_upstream_once() {
     assert_eq!(up(&h).count("co.test.", RecordType::A), 1);
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn slow_name_flood_does_not_starve_other_names() {
     let h = Harness::start(opts()).await;

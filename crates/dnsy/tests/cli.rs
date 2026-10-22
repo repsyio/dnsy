@@ -120,6 +120,7 @@ struct Running {
 }
 
 impl Running {
+    #[cfg(unix)]
     fn signal(&self, name: &str) {
         let status = Command::new("kill")
             .args([name, &self.child.id().to_string()])
@@ -829,6 +830,7 @@ fn cache_flush_through_the_api() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn sigterm_graceful() {
     let env = Env::new(false);
@@ -840,6 +842,7 @@ fn sigterm_graceful() {
     assert!(TcpStream::connect_timeout(&server.api, Duration::from_millis(500)).is_err());
 }
 
+#[cfg(unix)]
 #[test]
 fn sigint_graceful() {
     let env = Env::new(false);
@@ -848,6 +851,7 @@ fn sigint_graceful() {
     assert!(server.wait_exit().success());
 }
 
+#[cfg(unix)]
 #[test]
 fn sighup_reloads_zones_and_keeps_serving() {
     let env = Env::new(false);
@@ -880,6 +884,7 @@ fn sighup_reloads_zones_and_keeps_serving() {
     assert!(server.wait_exit().success());
 }
 
+#[cfg(unix)]
 #[test]
 fn serve_starts_dot_with_mtls_and_doh() {
     let env = Env::new(false);
@@ -1121,6 +1126,7 @@ fn api(
     (status, body)
 }
 
+#[cfg(unix)]
 #[test]
 #[expect(
     clippy::too_many_lines,

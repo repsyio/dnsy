@@ -313,6 +313,10 @@ async fn repeated_failed_logins_are_throttled_with_retry_after() {
     api.get("/zones", Auth::Bearer(&h.api_token)).await.ok(200);
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn a_locked_out_address_does_not_lock_the_administrator_out() {
     let h = start().await;

@@ -29,7 +29,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Install the pinned toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          # The Hetzner runners have no rustup; the GitHub-hosted macOS and Windows runners do.
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: e2e
@@ -47,22 +54,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          package_json_file: web/package.json
+      # Node first: the Hetzner runners ship an old system node that pnpm's installer cannot run
+      # under, so Node 24 must be on the PATH before the pnpm action.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+          cache: true
+          cache_dependency_path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
       - run: pnpm build
         working-directory: web
-      - run: pnpm exec playwright install --with-deps chromium
-        working-directory: web
+      # The Hetzner runners are an Ubuntu release that Playwright cannot install Chromium for, so
+      # a Chrome binary is installed instead and Playwright is pointed at it through CHROME_BIN
+      # (see web/playwright.config.ts).
+      - name: Set up Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4 # v2.2.0
+        with:
+          install-dependencies: true
+          no-sudo: true
+      - name: Point Playwright at Chrome
+        run: echo "CHROME_BIN=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
       - name: Install the pinned toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          # The Hetzner runners have no rustup; the GitHub-hosted macOS and Windows runners do.
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: e2e-ui

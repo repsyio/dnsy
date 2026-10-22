@@ -369,6 +369,10 @@ async fn tcp_cap_recycles_oldest_idle_connection() {
     server.shutdown().await;
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn per_client_tcp_cap_leaves_room_for_other_clients() {
     let mut c = config();
@@ -392,6 +396,10 @@ async fn per_client_tcp_cap_leaves_room_for_other_clients() {
     server.shutdown().await;
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn udp_per_client_in_flight_cap_keeps_other_clients_served() {
     let mut c = config();

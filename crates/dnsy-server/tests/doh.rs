@@ -370,6 +370,10 @@ async fn doh_cache_control_min_ttl() {
     assert_eq!(r.headers[header::CACHE_CONTROL], "max-age=60");
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn doh_response_with_token_is_private() {
     let f = fixture(false, 10).await;
@@ -395,6 +399,10 @@ async fn proxied_fixture(max_failures: u32) -> Fixture {
     .await
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn doh_throttle_keys_on_forwarded_client_from_trusted_proxy_only() {
     let f = proxied_fixture(2).await;
@@ -434,6 +442,10 @@ async fn doh_throttle_keys_on_forwarded_client_from_trusted_proxy_only() {
     assert_eq!(r.status, 429);
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn doh_response_from_a_proxied_listener_is_private() {
     let f = fixture_with(false, 10, |doh| {
@@ -454,6 +466,10 @@ async fn doh_response_from_a_proxied_listener_is_private() {
     }
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn doh_trusted_proxy_without_a_usable_header_is_not_the_proxy() {
     let f = proxied_fixture(10).await;
@@ -473,6 +489,10 @@ async fn doh_trusted_proxy_without_a_usable_header_is_not_the_proxy() {
     }
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn doh_request_context_carries_the_forwarded_client() {
     let f = proxied_fixture(10).await;
@@ -561,6 +581,10 @@ async fn doh_auth_failures_throttled_without_leaking_token_existence() {
     assert!(f.recorder.seen.lock().unwrap().is_empty());
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn doh_throttle_is_per_client_address() {
     let f = fixture(true, 2).await;
@@ -583,6 +607,10 @@ async fn doh_throttle_is_per_client_address() {
     );
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS has no loopback address besides 127.0.0.1"
+)]
 #[tokio::test]
 async fn doh_throttle_saturation_keeps_blocked_ip_blocked() {
     // Room for 16 keys; 120 other clients fail once each and fill every shard.
