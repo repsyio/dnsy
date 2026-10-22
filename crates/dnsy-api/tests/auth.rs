@@ -11,7 +11,7 @@ use dnsy_core::{Role, Scope};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::{ApiConfig, ApiState, router};
+use dnsy_api::{ApiConfig, ApiState, router};
 
 const PW: &str = "correct-horse";
 

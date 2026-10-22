@@ -15,7 +15,7 @@ use dnsy_resolver::{Cache, CacheKey};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use crate::{ApiConfig, ApiState, router};
+use dnsy_api::{ApiConfig, ApiState, router};
 
 struct Fx {
     state: ApiState,

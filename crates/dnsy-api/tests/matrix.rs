@@ -10,7 +10,7 @@ use axum::http::{Method, Request, StatusCode};
 use dnsy_core::{Role, Scope};
 use tower::ServiceExt;
 
-use crate::{ApiConfig, ApiState, router};
+use dnsy_api::{ApiConfig, ApiState, router};
 
 /// Who may call an operation. Scopes are flat: a role holds the scopes of the roles below it
 /// only because the test mints the token that way.
@@ -181,7 +181,7 @@ async fn call(app: &Router, method: &str, path: &str, token: Option<&str>) -> St
 
 #[test]
 fn every_openapi_operation_has_exactly_one_expectation() {
-    let spec = serde_json::to_value(crate::openapi()).unwrap();
+    let spec = serde_json::to_value(dnsy_api::openapi()).unwrap();
     let mut actual = BTreeSet::new();
     for (path, item) in spec["paths"].as_object().unwrap() {
         for method in item.as_object().unwrap().keys() {

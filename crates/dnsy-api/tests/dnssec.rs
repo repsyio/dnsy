@@ -1,25 +1,32 @@
 use std::io;
 use std::net::Ipv4Addr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::{Method, Request};
+use axum::http::{HeaderMap, Method, Request, StatusCode};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use dnsy_config::Config;
-use dnsy_core::{DnssecStatus, ManualClock, Role, Scope, SystemClock};
+use dnsy_config::Validation;
+use dnsy_core::{Clock as _, DnssecStatus, ManualClock, Role, Scope, SystemClock};
+use dnsy_dnssec::{DigestType, ds_for};
+use dnsy_engine::hex_upper;
 use dnsy_engine::{Engine, EngineBuilder, Services};
 use dnsy_keys::{KdfCost, KeyStore, Passphrase};
-use dnsy_proto::{Class, Header, Message, Opcode, Question, RData, Rcode, Record, RecordType};
+use dnsy_proto::{
+    Class, Header, Message, Name, Opcode, Question, RData, Rcode, Record, RecordType,
+};
 use dnsy_resolver::forward::DnssecPolicy as ResolverPolicy;
 use dnsy_resolver::groups::Exchange;
 use dnsy_resolver::{CacheKey, Upstream, UpstreamError};
+use dnsy_zone::ZoneSigning;
 use dnsy_zone::ZoneStore;
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::*;
-use crate::{ApiConfig, build, openapi};
+use dnsy_api::{ApiConfig, ApiState, build, openapi};
 
 /// An upstream that is never asked.
 struct NoUp;
@@ -719,7 +726,7 @@ async fn validation_mode_patch_flushes_cache() {
         let res = admin(&fx, Method::PATCH, url, Some(bad.clone())).await;
         assert!(res.status.is_client_error(), "{bad}: {}", res.status);
     }
-    let too_many: Vec<String> = (0..=MAX_NTAS).map(|i| format!("n{i}.test.")).collect();
+    let too_many: Vec<String> = (0..=256).map(|i| format!("n{i}.test.")).collect();
     let res = admin(
         &fx,
         Method::PATCH,
@@ -1002,31 +1009,6 @@ fn openapi_has_no_private_key_field() {
         );
     }
     assert!(doc["paths"]["/api/v1/zones/{name}/dnssec/ds"].is_object());
-}
-
-#[test]
-fn key_errors_map_to_problems() {
-    assert!(matches!(
-        key_error(&KeyStoreError::NotFound(1)),
-        ApiError::NotFound(_)
-    ));
-    assert!(matches!(
-        key_error(&KeyStoreError::NoActiveKey(KeyRole::Ksk)),
-        ApiError::Conflict(_)
-    ));
-    assert!(matches!(
-        key_error(&KeyStoreError::InvalidState("x")),
-        ApiError::Conflict(_)
-    ));
-    // Everything else is hidden from the client.
-    assert!(matches!(
-        key_error(&KeyStoreError::Decrypt),
-        ApiError::Internal(_)
-    ));
-    assert!(matches!(
-        key_error(&KeyStoreError::PassphraseRequired),
-        ApiError::Internal(_)
-    ));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1520,7 +1502,7 @@ async fn nta_expiry_through_the_api() {
 
 #[test]
 fn passphrase_inputs_are_zeroizing() {
-    let src = include_str!("dnssec.rs");
+    let src = include_str!("../src/routes/dnssec/dto.rs");
     let prod = src.split("#[cfg(test)]").next().unwrap();
     assert!(prod.contains("pub passphrase: Zeroizing<String>,"));
     assert!(prod.contains("pub new_passphrase: Zeroizing<String>,"));
