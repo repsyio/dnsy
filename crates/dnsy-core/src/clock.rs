@@ -123,7 +123,10 @@ impl Clock for ManualClock {
         if elapsed >= 0 {
             self.0.base + Duration::from_nanos(elapsed.unsigned_abs())
         } else {
-            self.0.base - Duration::from_nanos(elapsed.unsigned_abs())
+            self.0
+                .base
+                .checked_sub(Duration::from_nanos(elapsed.unsigned_abs()))
+                .unwrap_or(self.0.base)
         }
     }
 
