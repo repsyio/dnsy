@@ -62,7 +62,7 @@ Configuration lives in `dist-workspace.toml`; the workflow is `.github/workflows
 2. `custom-release-verify` (`release-verify.yml`) builds the web UI and runs the embedded-UI test
    `ui_serves_brotli_when_accepted` with `--features embed-ui` in release mode. No artifact is built
    when it fails.
-3. `build-local-artifacts` runs once per target. Its prerequisite steps (`.github/workflows/build-setup.yml`)
+3. `build-local-artifacts` runs once per target. Its prerequisite steps (`.github/build-setup.yml`)
    install pnpm and Node 24, run `pnpm install --frozen-lockfile && pnpm build` in `web/` (producing
    `web/dist/dnsy/browser`) and install `musl-tools`; then `dist build` compiles
    `dnsy --features embed-ui` with the `dist` profile, which inherits `[profile.release]` unchanged

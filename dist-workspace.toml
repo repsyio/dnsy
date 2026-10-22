@@ -31,7 +31,7 @@ install-path = "CARGO_HOME"
 pr-run-mode = "skip"
 allow-dirty = ["ci"]
 # Build prerequisites for every build job: node, pnpm, the web UI, musl-tools
-github-build-setup = "build-setup.yml"
+github-build-setup = "../build-setup.yml"
 # Extra jobs: run the embed-ui tests before any artifact is built
 plan-jobs = ["./release-verify"]
 # Native arm64 Linux runners (no cross-compilation)
