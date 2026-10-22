@@ -24,10 +24,10 @@ interface WorkerFixtures {
   /** The shared server. */
   server: ServerInfo;
   /**
-   * A REST client signed in as admin on the shared server. It logs in once per worker, not once
-   * per test: every login attempt counts against the server's login throttle (per username and
-   * per client address, in flight included), and the product limits must stay as they are, so the
-   * suite keeps its share of attempts on the shared server small instead of bursting 20+ at once.
+   * A REST client signed in as admin on the shared server, reusing the session the global setup
+   * saved. It never logs in itself: every login attempt counts against the server's login
+   * throttle (per username and client address, in flight included, 5 at a time), so one login per
+   * worker, all at once, would lock the admin out. The product limits must stay as they are.
    */
   api: Api;
 }
@@ -51,7 +51,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
   ],
   api: [
     async ({ server }, use) => {
-      const api = await Api.login(server.baseURL, 'admin');
+      const api = await Api.fromState(server.baseURL, statePath('admin'));
       await use(api);
       await api.dispose();
     },
