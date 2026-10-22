@@ -52,6 +52,7 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+dnsy-core = { version = "0.1.0", path = "../dnsy-core", features = ["test-util"] }
 http-body-util = { workspace = true }
 dnsy-proto = { version = "0.1.0", path = "../dnsy-proto" }
 rcgen = { workspace = true }

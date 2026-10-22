@@ -1,7 +1,5 @@
-use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
-use std::pin::Pin;
-use std::sync::atomic::{AtomicI64, AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,12 +8,13 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use dnsy_core::ManualClock;
 use dnsy_proto::Name;
 use dnsy_store::Store;
 
 use crate::{
-    BlockMode, Clock, FetchError, Fetcher, FilterError, FilterLimits, ListFormat, ListManager,
-    NewSource, RefreshError, RefreshOutcome, RuleKind, SourceStore, Verdict, is_public,
+    BlockMode, FetchError, Fetcher, FilterError, FilterLimits, ListFormat, ListManager, NewSource,
+    RefreshError, RefreshOutcome, RuleKind, SourceStore, Verdict, is_public,
 };
 
 #[derive(Clone)]
@@ -138,17 +137,6 @@ async fn server() -> Server {
     Server { fx, addr }
 }
 
-struct ManualClock(AtomicI64);
-
-impl Clock for ManualClock {
-    fn now(&self) -> i64 {
-        self.0.load(Ordering::SeqCst)
-    }
-    fn sleep(&self, _: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(std::future::ready(()))
-    }
-}
-
 struct Env {
     sources: SourceStore,
     manager: ListManager,
@@ -159,7 +147,7 @@ struct Env {
 fn env_with(fetcher: Fetcher) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let sources = SourceStore::new(Store::open(&dir.path().join("t.db")).unwrap());
-    let clock = Arc::new(ManualClock(AtomicI64::new(1_000_000)));
+    let clock = Arc::new(ManualClock::new(1_000_000));
     let manager = ListManager::new(
         sources.clone(),
         BlockMode::NullIp,
@@ -448,13 +436,13 @@ async fn schedule_refreshes() {
     assert!((1..=60).contains(&wait.as_secs()), "{wait:?}");
 
     // Not due yet: no request.
-    e.clock.0.fetch_add(50, Ordering::SeqCst);
+    e.clock.advance(50);
     e.manager.tick().await;
     assert_eq!(srv.fx.hits.load(Ordering::SeqCst), 1);
 
     // Past interval plus the maximum jitter (10%): refreshed and picks up the new content.
     srv.set_body("0.0.0.0 new.example\n0.0.0.0 x.example\n");
-    e.clock.0.fetch_add(61, Ordering::SeqCst);
+    e.clock.advance(61);
     e.manager.tick().await;
     assert_eq!(srv.fx.hits.load(Ordering::SeqCst), 2);
     assert!(blocked(&e.manager, "new.example"));
@@ -473,7 +461,7 @@ async fn failed_refresh_retries_sooner_than_interval() {
     e.manager.tick().await;
     assert_eq!(srv.fx.hits.load(Ordering::SeqCst), 1);
     srv.fx.status.store(200, Ordering::SeqCst);
-    e.clock.0.fetch_add(331, Ordering::SeqCst);
+    e.clock.advance(331);
     e.manager.tick().await;
     assert_eq!(srv.fx.hits.load(Ordering::SeqCst), 2);
     assert!(blocked(&e.manager, "ads.example"));

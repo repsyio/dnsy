@@ -1,17 +1,18 @@
 //! [`EngineBuilder`]: the one place that assembles the pipeline's components.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use dnsy_config::Config;
+use dnsy_core::{Clock, SystemClock};
 use dnsy_filter::{
     Acl, AclAction, BlockMode, FilterError, FilterLimits, FilterSet, FilterSetBuilder, ListManager,
     RateLimiter, RefreshError, RuleStore,
 };
 use dnsy_observe::QueryEventSink;
 use dnsy_resolver::forward::{
-    DnssecConfigError, DnssecOptions, DnssecPolicy, MAX_CONCURRENT_FETCHES, unix_now,
+    DnssecConfigError, DnssecOptions, DnssecPolicy, MAX_CONCURRENT_FETCHES,
 };
 use dnsy_resolver::groups::{Exchange, GroupError, GroupSet, GroupStoreError};
 use dnsy_resolver::{
@@ -24,7 +25,7 @@ use std::sync::atomic::AtomicBool;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use crate::engine::{Engine, Filters, Now, PREFETCH_QUEUE, RATE_LIMIT_KEYS};
+use crate::engine::{Engine, Filters, PREFETCH_QUEUE, RATE_LIMIT_KEYS};
 use crate::response::ResponseIpPolicy;
 use crate::services::{GroupsHandle, Services};
 
@@ -106,7 +107,7 @@ pub struct EngineBuilder<E = UpstreamClient> {
     dnssec: DnssecPolicy,
     querylog_task: Option<JoinHandle<()>>,
     stale_wait: Duration,
-    now: Now,
+    clock: Arc<dyn Clock>,
 }
 
 impl EngineBuilder<UpstreamClient> {
@@ -212,7 +213,7 @@ impl<E: Exchange> EngineBuilder<E> {
             dnssec: DnssecPolicy::off(),
             querylog_task: None,
             stale_wait: Duration::from_millis(config.cache.serve_stale.client_timeout_ms),
-            now: Arc::new(Instant::now),
+            clock: Arc::new(SystemClock),
         }
     }
 
@@ -307,8 +308,8 @@ impl<E: Exchange> EngineBuilder<E> {
 
     /// Replaces the clock the cache is driven by (tests move it by hand).
     #[must_use]
-    pub fn clock(mut self, now: impl Fn() -> Instant + Send + Sync + 'static) -> Self {
-        self.now = Arc::new(now);
+    pub fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -322,13 +323,15 @@ impl<E: Exchange> EngineBuilder<E> {
     pub fn build(self) -> Engine<E> {
         let (prefetch_tx, prefetch_rx) = tokio::sync::mpsc::channel(PREFETCH_QUEUE);
         let clock_untrusted = self.dnssec.mode != dnsy_config::Validation::Off
-            && !self.dnssec.clock_trusted(unix_now());
+            && !self
+                .dnssec
+                .clock_trusted(u64::try_from(self.clock.unix_secs()).unwrap_or(0));
         if clock_untrusted {
             // The first validation would find the flag already set and stay silent.
             tracing::warn!("{}", crate::engine::CLOCK_UNTRUSTED_WARNING);
         }
         Engine {
-            now: self.now,
+            clock: self.clock,
             stale_wait: self.stale_wait,
             refreshes: Refreshes::new(),
             prefetch_workers: std::sync::atomic::AtomicUsize::new(0),

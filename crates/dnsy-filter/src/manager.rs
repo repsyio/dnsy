@@ -6,47 +6,25 @@
 //! see a half-built or emptier filter.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::io::Cursor;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use dnsy_core::Clock;
 use tokio::sync::Mutex;
 
 use crate::BlockMode;
 use crate::fetch::{FetchError, Fetched, Fetcher, Validators};
 use crate::matcher::{BlocklistError, FilterLimits, FilterSet, FilterSetBuilder};
 use crate::parse::{ListFormat, ParseStats};
-use crate::rules::{FilterError, unix_now};
+use crate::rules::FilterError;
 use crate::sources::{FetchRecord, ListSource, LoadedMeta, RuleKind, SourceStore};
 
 /// Retry delay cap after a failed refresh, seconds.
 const MAX_RETRY_SECS: u64 = 300;
 /// Longest the scheduler sleeps, so added or enabled sources are noticed.
 const MAX_IDLE: Duration = Duration::from_secs(60);
-
-/// Time source for the scheduler.
-pub trait Clock: Send + Sync + 'static {
-    /// Unix seconds.
-    fn now(&self) -> i64;
-    fn sleep(&self, d: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>>;
-}
-
-/// The wall clock.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> i64 {
-        unix_now()
-    }
-
-    fn sleep(&self, d: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(tokio::time::sleep(d))
-    }
-}
 
 /// What a successful refresh did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +167,7 @@ impl ListManager {
                 }
             }
         }
-        let now = self.inner.clock.now();
+        let now = self.inner.clock.unix_secs();
         for src in sources.iter().filter(|s| s.enabled) {
             if state.next_due.get(&src.id).is_none_or(|d| *d <= now) {
                 match self.refresh_locked(&mut state, &sources, src).await {
@@ -200,7 +178,7 @@ impl ListManager {
                 }
             }
         }
-        let now = self.inner.clock.now();
+        let now = self.inner.clock.unix_secs();
         let next = sources
             .iter()
             .filter(|s| s.enabled)
@@ -290,7 +268,7 @@ impl ListManager {
         src: &ListSource,
     ) -> Result<RefreshOutcome, RefreshError> {
         let result = self.try_refresh(state, sources, src).await;
-        let now = self.inner.clock.now();
+        let now = self.inner.clock.unix_secs();
         let (status, loaded) = match &result {
             Ok(RefreshOutcome::Updated { entries }) => {
                 let v = state.loaded.get(&src.id).map(|l| l.validators.clone());

@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, Response, StatusCode};
-use dnsy_core::{DnssecStatus, Role, Scope, Transport};
+use dnsy_core::{Clock as _, DnssecStatus, Role, Scope, SystemClock, Transport};
 use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink, QueryLogWriter, WriterConfig};
 use dnsy_proto::{
     Class, Header, Message, Name, Opcode, Question, RData, Rcode, Record, RecordType,
@@ -107,13 +107,7 @@ async fn json(res: Response<Body>) -> serde_json::Value {
 }
 
 fn now_ms() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis(),
-    )
-    .unwrap()
+    SystemClock.unix_millis()
 }
 
 fn event(qname: &str, ts_ms: i64) -> QueryEvent {

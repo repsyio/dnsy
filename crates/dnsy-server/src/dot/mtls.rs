@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use dnsy_auth::ClientCertService;
 use dnsy_core::Principal;
+use dnsy_core::{Clock, SystemClock};
 use rustls::client::danger::HandshakeSignatureValid;
 use rustls::crypto::ring::default_provider;
 use rustls::server::WebPkiClientVerifier;
@@ -103,22 +103,9 @@ impl Allowlist {
     }
 }
 
-/// Source of the current time for re-verifying open connections; tests inject their own.
-pub type Clock = Arc<dyn Fn() -> UnixTime + Send + Sync>;
-
 /// How often an open connection's certificate is re-verified against the clock even when
 /// nothing was reloaded, so a certificate that merely expires stops working.
 const RECHECK_INTERVAL_SECS: u64 = 30;
-
-fn system_clock() -> Clock {
-    Arc::new(|| {
-        UnixTime::since_unix_epoch(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default(),
-        )
-    })
-}
 
 /// Client certificate verifier: client CA chain validation, optional CRL, optional allowlist.
 pub struct MtlsVerifier {
@@ -129,7 +116,7 @@ pub struct MtlsVerifier {
     inner: ArcSwap<Arc<dyn ClientCertVerifier>>,
     /// Bumped when the CA bundle or CRL is reloaded.
     generation: AtomicU64,
-    clock: Clock,
+    clock: Arc<dyn Clock>,
 }
 
 impl std::fmt::Debug for MtlsVerifier {
@@ -155,7 +142,7 @@ impl MtlsVerifier {
         crl: Option<&Path>,
         allowlist: Option<Allowlist>,
     ) -> io::Result<Arc<Self>> {
-        Self::with_clock(mode, ca, crl, allowlist, system_clock())
+        Self::with_clock(mode, ca, crl, allowlist, Arc::new(SystemClock))
     }
 
     /// [`Self::new`] with the time used to re-verify open connections supplied by `clock`.
@@ -167,7 +154,7 @@ impl MtlsVerifier {
         ca: &Path,
         crl: Option<&Path>,
         allowlist: Option<Allowlist>,
-        clock: Clock,
+        clock: Arc<dyn Clock>,
     ) -> io::Result<Arc<Self>> {
         let inner = build(mode, ca, crl)?;
         Ok(Arc::new(Self {
@@ -487,7 +474,9 @@ impl ClientSession {
             return true;
         };
         let generation = check.verifier.generation();
-        let now = (check.verifier.clock)();
+        let now = UnixTime::since_unix_epoch(Duration::from_secs(
+            u64::try_from(check.verifier.clock.unix_secs()).unwrap_or(0),
+        ));
         if generation == check.seen && now.as_secs() < check.next_at {
             return true;
         }

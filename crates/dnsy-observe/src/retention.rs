@@ -1,6 +1,7 @@
 use std::future::Future;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
+use dnsy_core::{Clock, SystemClock};
 use dnsy_store::Store;
 use rusqlite::params;
 use tokio::task::JoinHandle;
@@ -22,12 +23,6 @@ const SESSION_IDLE_SECS: i64 = 30 * 60;
 const SESSION_ABSOLUTE_SECS: i64 = 12 * 60 * 60;
 /// `PRAGMA optimize` runs at most this often from the retention task.
 const OPTIMIZE_EVERY: Duration = Duration::from_hours(24);
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
 
 /// Delete in transactions of at most `batch` rows until fewer are found. `sql` takes the cutoff
 /// as `?1` and the batch size as `?2`; `between` runs after every full batch.
@@ -60,7 +55,14 @@ where
 /// minute and daily counter rollups older than the longer of the retention and 400 days, and expired sessions. Deletes
 /// run in batches of at most 50 000 rows per transaction. Returns the query-log rows removed.
 pub async fn purge_before(store: &Store, cutoff_ms: i64) -> Result<usize, ObserveError> {
-    purge_at(store, cutoff_ms, now_ms(), PURGE_BATCH, || async {}).await
+    purge_at(
+        store,
+        cutoff_ms,
+        SystemClock.unix_millis(),
+        PURGE_BATCH,
+        || async {},
+    )
+    .await
 }
 
 async fn purge_at<F, Fut>(
@@ -299,7 +301,7 @@ where
 }
 
 async fn pass(store: &Store, keep: Duration, optimizer: &mut Optimizer) {
-    let now = now_ms();
+    let now = SystemClock.unix_millis();
     let cutoff = now.saturating_sub(i64::try_from(keep.as_millis()).unwrap_or(i64::MAX));
     match fold_rollups(store, now).await {
         Ok(0) => {}

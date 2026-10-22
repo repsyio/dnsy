@@ -6,8 +6,9 @@ use std::time::Duration;
 use dnsy_proto::{Class, Dnskey, Ds, RData, Record, RecordType};
 
 use super::*;
-use crate::groups::{GroupMember, GroupSpec, Strategy, SystemClock, ThreadRng};
+use crate::groups::{GroupMember, GroupSpec, Strategy, ThreadRng};
 use crate::{CacheOptions, Upstream, UpstreamError};
+use dnsy_core::{Clock, SystemClock};
 
 const ROOT_DS: &str = "20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D";
 
@@ -102,7 +103,7 @@ fn groups() -> GroupSet {
                 weight: 1,
             }],
         }],
-        Arc::new(SystemClock::new()),
+        Arc::new(SystemClock),
         Arc::new(ThreadRng),
     )
     .unwrap()
@@ -316,7 +317,7 @@ async fn untrusted_clock_is_indeterminate_without_fetching() {
     assert_eq!(policy.mode, Validation::Strict);
     assert!(policy.clock_trusted(RELEASE_FLOOR_UNIX));
     assert!(!policy.clock_trusted(0));
-    assert!(policy.clock_trusted(unix_now()));
+    assert!(policy.clock_trusted(u64::try_from(SystemClock.unix_secs()).unwrap()));
     let question = q("www.example.", RecordType::A);
     let resp = Message::response_to(&dnssec_query(&question));
     let out = policy

@@ -26,10 +26,7 @@ pub use algorithm::{Algorithm, DigestType};
 pub use anchors::{TrustAnchor, TrustAnchorError};
 pub use ds::ds_for;
 pub use error::{DnssecError, VerifyError};
-pub use keys::{
-    Clock, KeyRecord, KeyRole, KeyState, ManualClock, RolloverTimings, SystemClock, Transition,
-    plan,
-};
+pub use keys::{KeyRecord, KeyRole, KeyState, RolloverTimings, Transition, plan};
 pub use nsec3::{MAX_NSEC3_ITERATIONS, checked_nsec3_hash, nsec3_hash};
 pub use sign::{
     ActiveKeys, Denial, SignedRrset, SignedZone, SigningPolicy, ZoneData, ZoneKey, ZoneSigner,

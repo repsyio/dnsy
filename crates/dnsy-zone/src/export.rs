@@ -285,6 +285,7 @@ pub fn export_bind(zone: &Zone, signed: Option<&SignedZone>) -> String {
 mod tests {
     use super::*;
     use crate::model::Record;
+    use dnsy_core::{Clock, SystemClock};
 
     const EXAMPLE: &str = include_str!("../tests/fixtures/example.com.json");
 
@@ -597,13 +598,7 @@ mod tests {
             eprintln!("dnssec-verify and ldns-verify-zone not installed, skipping");
             return;
         };
-        let now = u32::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
+        let now = u32::try_from(SystemClock.unix_secs()).unwrap();
         for denial in ["nsec", "nsec3"] {
             let mut z = zone(EXAMPLE);
             z.dnssec.as_mut().unwrap().denial =

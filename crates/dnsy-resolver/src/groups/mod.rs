@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use dnsy_core::{Clock, SystemClock};
+
 use dnsy_proto::{Class, Header, Message, Name, Opcode, Question, Rcode, RecordType};
 
 use crate::upstream::{Upstream, UpstreamClient, UpstreamError};
@@ -27,38 +29,9 @@ use health::Health;
 pub use health::{EJECT_AFTER_FAILURES, MAX_BACKOFF, MIN_BACKOFF};
 pub use store::{DEFAULT_GROUP, GroupStore, GroupStoreError};
 
-/// Monotonic time source.
-pub trait Clock: Send + Sync {
-    /// Time elapsed since an arbitrary fixed origin.
-    fn now(&self) -> Duration;
-}
-
 /// Source of random numbers.
 pub trait Rng: Send + Sync {
     fn next_u64(&self) -> u64;
-}
-
-/// Wall-clock [`Clock`].
-#[derive(Debug)]
-pub struct SystemClock(Instant);
-
-impl SystemClock {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Instant::now())
-    }
-}
-
-impl Default for SystemClock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Clock for SystemClock {
-    fn now(&self) -> Duration {
-        self.0.elapsed()
-    }
 }
 
 /// [`Rng`] backed by the thread-local generator.
@@ -188,6 +161,8 @@ pub struct GroupSet {
     routes: Vec<(Name, usize)>,
     default: usize,
     clock: Arc<dyn Clock>,
+    /// The clock's instant at construction; health times are measured from it.
+    origin: Instant,
     rng: Arc<dyn Rng>,
 }
 
@@ -250,6 +225,7 @@ impl GroupSet {
             groups,
             routes,
             default,
+            origin: clock.instant(),
             clock,
             rng,
         })
@@ -260,7 +236,12 @@ impl GroupSet {
     /// # Errors
     /// As [`GroupSet::new`].
     pub fn from_specs(specs: Vec<GroupSpec>) -> Result<Self, GroupError> {
-        Self::new(specs, Arc::new(SystemClock::new()), Arc::new(ThreadRng))
+        Self::new(specs, Arc::new(SystemClock), Arc::new(ThreadRng))
+    }
+
+    /// Time elapsed on the clock since this set was built.
+    fn elapsed(&self) -> Duration {
+        self.clock.instant().saturating_duration_since(self.origin)
     }
 
     /// Name of the group that serves `qname`.
@@ -366,15 +347,15 @@ impl GroupSet {
         }
         let mut last = None;
         for i in order {
-            let started = self.clock.now();
+            let started = self.elapsed();
             match exchange.exchange(&g.spec.members[i].upstream, query).await {
                 Ok(resp) => {
-                    let latency = self.clock.now().saturating_sub(started);
+                    let latency = self.elapsed().saturating_sub(started);
                     g.health()[i].record_success(latency);
                     return Ok(resp);
                 }
                 Err(e) => {
-                    g.health()[i].record_failure(self.clock.now());
+                    g.health()[i].record_failure(self.elapsed());
                     last = Some(e);
                 }
             }
@@ -389,14 +370,14 @@ impl GroupSet {
         let probe = probe_query();
         for g in &self.groups {
             let due: Vec<usize> = {
-                let now = self.clock.now();
+                let now = self.elapsed();
                 let mut h = g.health();
                 (0..h.len()).filter(|&i| h[i].begin_probe(now)).collect()
             };
             for i in due {
-                let started = self.clock.now();
+                let started = self.elapsed();
                 let res = exchange.exchange(&g.spec.members[i].upstream, &probe).await;
-                let now = self.clock.now();
+                let now = self.elapsed();
                 let mut h = g.health();
                 match res {
                     Ok(_) => h[i].record_success(now.saturating_sub(started)),

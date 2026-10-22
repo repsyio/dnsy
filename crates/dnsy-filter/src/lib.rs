@@ -18,7 +18,7 @@ pub use fetch::{
     FETCH_TIMEOUT, FetchError, Fetched, Fetcher, Location, MAX_LIST_BYTES, MAX_REDIRECTS,
     Validators, is_public,
 };
-pub use manager::{Clock, ListManager, RefreshError, RefreshOutcome, SystemClock};
+pub use manager::{ListManager, RefreshError, RefreshOutcome};
 pub use matcher::{
     BlockMode, BlocklistError, CUSTOM_LIST, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_INPUT_BYTES,
     FilterLimits, FilterSet, FilterSetBuilder, Verdict,

@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Algorithm, Clock, ManualClock, nsec3_hash, verify_rrsig};
+use crate::{Algorithm, nsec3_hash, verify_rrsig};
+use dnsy_core::{Clock, ManualClock};
 use dnsy_proto::{Ds, Nsec3, Rrsig, Soa, base32hex_encode};
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
@@ -511,7 +512,7 @@ fn glue_not_signed() {
 #[test]
 fn resign_only_near_expiry() {
     let clock = ManualClock::new(i64::from(NOW));
-    let now = |c: &ManualClock| u32::try_from(c.now()).unwrap();
+    let now = |c: &ManualClock| u32::try_from(c.unix_secs()).unwrap();
     let keys = csk(Algorithm::EcdsaP256Sha256);
     let p = policy(nsec3(false));
     let mut data = zone();

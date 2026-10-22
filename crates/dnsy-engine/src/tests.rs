@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dnsy_config::Config;
+use dnsy_core::SystemClock;
 use dnsy_core::{DnssecStatus, Principal, TokenId, Transport, UserId};
 use dnsy_filter::{Acl, AclAction, AclMatcher, BlockMode, FilterLimits, FilterSetBuilder};
 use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink};
@@ -12,9 +13,7 @@ use dnsy_proto::{
     Class, Edns, EdnsOption, Header, Message, Name, Opcode, Question, RData, Rcode, Record,
     RecordType, Soa, ede,
 };
-use dnsy_resolver::groups::{
-    Exchange, GroupMember, GroupSet, GroupSpec, Strategy, SystemClock, ThreadRng,
-};
+use dnsy_resolver::groups::{Exchange, GroupMember, GroupSet, GroupSpec, Strategy, ThreadRng};
 use dnsy_resolver::{CacheKey, Upstream, UpstreamError};
 use dnsy_store::Store;
 use dnsy_zone::ZoneStore;
@@ -174,7 +173,7 @@ fn groups() -> GroupSet {
                 weight: 1,
             }],
         }],
-        Arc::new(SystemClock::new()),
+        Arc::new(SystemClock),
         Arc::new(ThreadRng),
     )
     .unwrap()

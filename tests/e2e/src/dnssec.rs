@@ -13,6 +13,7 @@
 //! contained). Tests forge a response by taking [`Tree::answer`], editing it and scripting it
 //! with [`FakeUpstream::on`](crate::FakeUpstream::on).
 
+use dnsy_core::{Clock as _, SystemClock};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -302,13 +303,7 @@ pub struct Tree {
 }
 
 fn now_unix() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_secs(),
-    )
-    .expect("unix time fits")
+    SystemClock.unix_secs()
 }
 
 fn soa_record(origin: &Name) -> Record {

@@ -25,9 +25,3 @@ pub use sessions::{
 pub use throttle::{DEFAULT_MAX_TRACKED, FailureThrottle};
 pub use tokens::{TokenMeta, TokenService, TokenVerifier};
 pub use users::{User, UserService};
-
-pub(crate) fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}

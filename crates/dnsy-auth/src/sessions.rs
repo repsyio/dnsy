@@ -11,7 +11,8 @@ use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 use crate::users::check_password_len;
-use crate::{AuthError, User, UserService, unix_now};
+use crate::{AuthError, User, UserService};
+use dnsy_core::{Clock, SystemClock};
 
 /// A session expires after this long without use. `dnsy-observe` retention deletes expired
 /// rows with copies of both lifetimes; keep them in sync.
@@ -82,8 +83,15 @@ impl SessionService {
         ip: IpAddr,
         previous: Option<&str>,
     ) -> Result<(String, User), AuthError> {
-        self.login_at(users, username, password, ip, previous, unix_now())
-            .await
+        self.login_at(
+            users,
+            username,
+            password,
+            ip,
+            previous,
+            SystemClock.unix_secs(),
+        )
+        .await
     }
 
     pub(crate) async fn login_at(
@@ -274,7 +282,7 @@ impl SessionService {
     /// # Errors
     /// [`AuthError::InvalidSession`] when unknown or expired (expired ones are deleted).
     pub async fn validate(&self, id: &str) -> Result<Session, AuthError> {
-        self.validate_at(id, unix_now()).await
+        self.validate_at(id, SystemClock.unix_secs()).await
     }
 
     pub(crate) async fn validate_at(&self, id: &str, now: i64) -> Result<Session, AuthError> {
@@ -382,9 +390,9 @@ mod tests {
     async fn destroy_all_for_user_only_hits_that_user() {
         let (s, users, alice, _d) = setup().await;
         let bob = users.create("bob", "pw", Role::Viewer).await.unwrap().id;
-        let a1 = s.create_at(alice, unix_now()).await.unwrap();
-        let a2 = s.create_at(alice, unix_now()).await.unwrap();
-        let b1 = s.create_at(bob, unix_now()).await.unwrap();
+        let a1 = s.create_at(alice, SystemClock.unix_secs()).await.unwrap();
+        let a2 = s.create_at(alice, SystemClock.unix_secs()).await.unwrap();
+        let b1 = s.create_at(bob, SystemClock.unix_secs()).await.unwrap();
         s.destroy_all_for_user(alice).await.unwrap();
         assert!(s.validate(&a1).await.is_err());
         assert!(s.validate(&a2).await.is_err());
@@ -395,8 +403,8 @@ mod tests {
     async fn disabling_a_user_ends_sessions_and_blocks_login() {
         let (s, users, alice, _d) = setup().await;
         let bob = users.create("bob", "pw", Role::Admin).await.unwrap().id;
-        let a1 = s.create_at(alice, unix_now()).await.unwrap();
-        let b1 = s.create_at(bob, unix_now()).await.unwrap();
+        let a1 = s.create_at(alice, SystemClock.unix_secs()).await.unwrap();
+        let b1 = s.create_at(bob, SystemClock.unix_secs()).await.unwrap();
         users.set_disabled(alice, true).await.unwrap();
         assert!(matches!(
             s.validate(&a1).await,
@@ -416,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn password_change_destroys_sessions() {
         let (s, users, alice, _d) = setup().await;
-        let id = s.create_at(alice, unix_now()).await.unwrap();
+        let id = s.create_at(alice, SystemClock.unix_secs()).await.unwrap();
         users.set_password(alice, "new-password").await.unwrap();
         assert!(matches!(
             s.validate(&id).await,
@@ -428,7 +436,7 @@ mod tests {
     async fn role_change_destroys_sessions_but_noop_keeps_them() {
         let (s, users, alice, _d) = setup().await;
         users.create("root", "pw", Role::Admin).await.unwrap();
-        let id = s.create_at(alice, unix_now()).await.unwrap();
+        let id = s.create_at(alice, SystemClock.unix_secs()).await.unwrap();
         users.update_role(alice, Role::Admin).await.unwrap();
         s.validate(&id).await.unwrap();
         users.update_role(alice, Role::Viewer).await.unwrap();

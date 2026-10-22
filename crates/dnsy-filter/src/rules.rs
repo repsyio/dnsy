@@ -1,5 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use dnsy_core::{Clock, SystemClock};
 use dnsy_store::{Store, StoreError};
 use ipnet::IpNet;
 use rusqlite::{ErrorCode, params};
@@ -36,12 +35,6 @@ pub struct RuleStore {
     store: Store,
 }
 
-pub(crate) fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
-
 impl RuleStore {
     #[must_use]
     pub fn new(store: Store) -> RuleStore {
@@ -59,7 +52,7 @@ impl RuleStore {
         comment: &str,
     ) -> Result<i64, FilterError> {
         let comment = comment.to_owned();
-        let now = unix_now();
+        let now = SystemClock.unix_secs();
         let res = self
             .store
             .write(move |tx| {
@@ -163,7 +156,7 @@ impl RuleStore {
     /// # Errors
     /// Store failure.
     pub async fn set_rate_limit_qps(&self, qps: u32) -> Result<(), FilterError> {
-        let now = unix_now();
+        let now = SystemClock.unix_secs();
         self.store
             .write(move |tx| {
                 tx.execute(
@@ -205,7 +198,7 @@ impl RuleStore {
     /// # Errors
     /// Store failure.
     pub async fn set_response_ip_cidrs(&self, cidrs: &[String]) -> Result<(), FilterError> {
-        let now = unix_now();
+        let now = SystemClock.unix_secs();
         let joined = cidrs.join("\n");
         self.store
             .write(move |tx| {

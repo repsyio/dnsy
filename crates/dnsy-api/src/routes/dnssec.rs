@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -15,6 +14,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use dnsy_config::Validation;
+use dnsy_core::{Clock as _, SystemClock};
 use dnsy_dnssec::{Algorithm, DigestType, KeyRecord, KeyRole, KeyState, ds_for};
 use dnsy_observe::{StatsService, TimeRange};
 use dnsy_proto::Name;
@@ -1054,7 +1054,7 @@ async fn get_validation(
 ) -> Result<Json<ValidationSettings>, ApiError> {
     Ok(Json(settings_of(
         validation(&state)?.as_ref(),
-        state.clock.now(),
+        state.clock.unix_secs(),
     )))
 }
 
@@ -1081,7 +1081,7 @@ async fn patch_validation(
     let ntas = patch
         .negative_trust_anchors
         .as_deref()
-        .map(|n| parse_ntas(n, state.clock.now()))
+        .map(|n| parse_ntas(n, state.clock.unix_secs()))
         .transpose()?;
     if let Some(mode) = patch.validation {
         control.set_dnssec_mode(mode.into());
@@ -1089,19 +1089,11 @@ async fn patch_validation(
     if let Some(ntas) = ntas {
         control.set_negative_trust_anchors(ntas);
     }
-    Ok(Json(settings_of(control.as_ref(), state.clock.now())))
+    Ok(Json(settings_of(control.as_ref(), state.clock.unix_secs())))
 }
 
 // ---------------------------------------------------------------------------------------
 // status
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .unwrap_or(0)
-}
 
 /// Validation counters of the last 24 hours and whether the clock is trusted.
 #[utoipa::path(get, path = "/dnssec/status", tag = "dnssec", security(("bearer" = []), ("session" = [])),
@@ -1110,7 +1102,7 @@ async fn dnssec_status(
     _scope: RequireScope<Read>,
     State(state): State<ApiState>,
 ) -> Result<Json<DnssecStatus>, ApiError> {
-    let to_ms = now_ms();
+    let to_ms = SystemClock.unix_millis();
     let summary = StatsService::new(state.observe.store.clone())
         .summary(TimeRange {
             from_ms: to_ms.saturating_sub(STATUS_WINDOW_MS).max(0),

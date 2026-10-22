@@ -1,7 +1,7 @@
 //! Key roles, key lifecycle states and the rollover planner (RFC 6781, RFC 7583).
 //!
 //! The planner is a pure function of the key set, the timing parameters and the current
-//! time, so rollovers are driven by an injectable [`Clock`] and tested without sleeping.
+//! time, so rollovers are driven by an injectable [`dnsy_core::Clock`] and tested without sleeping.
 //!
 //! * ZSK **pre-publish**: the new key is published (DNSKEY only), and after the DNSKEY TTL
 //!   plus propagation delay it becomes active while the old key is retired.
@@ -14,49 +14,6 @@
 
 use crate::Algorithm;
 use std::fmt;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
-
-/// Source of the current time as Unix seconds.
-pub trait Clock: Send + Sync {
-    fn now(&self) -> i64;
-}
-
-/// The system clock.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-    }
-}
-
-/// A clock that only moves when told to; clones share the same time.
-#[derive(Debug, Clone, Default)]
-pub struct ManualClock(Arc<AtomicI64>);
-
-impl ManualClock {
-    pub fn new(now: i64) -> ManualClock {
-        ManualClock(Arc::new(AtomicI64::new(now)))
-    }
-
-    pub fn set(&self, now: i64) {
-        self.0.store(now, Ordering::SeqCst);
-    }
-
-    pub fn advance(&self, secs: i64) {
-        self.0.fetch_add(secs, Ordering::SeqCst);
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> i64 {
-        self.0.load(Ordering::SeqCst)
-    }
-}
 
 /// What a key signs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -298,17 +255,6 @@ mod tests {
         assert!(KeyRole::Ksk.is_sep() && KeyRole::Csk.is_sep() && !KeyRole::Zsk.is_sep());
         assert!(KeyState::Retired.is_published() && !KeyState::Generated.is_published());
         assert!(!KeyState::Removed.is_published());
-    }
-
-    #[test]
-    fn manual_clock_is_shared() {
-        let c = ManualClock::new(5);
-        let d = c.clone();
-        d.advance(10);
-        assert_eq!(c.now(), 15);
-        c.set(1);
-        assert_eq!(d.now(), 1);
-        assert!(SystemClock.now() > 1_700_000_000);
     }
 
     #[test]

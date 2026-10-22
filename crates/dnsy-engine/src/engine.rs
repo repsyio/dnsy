@@ -20,17 +20,17 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use dnsy_core::{DnssecStatus, Principal, Transport, Validation};
+use dnsy_core::{Clock, DnssecStatus, Principal, Transport, Validation};
 use dnsy_filter::{
     Acl, AclAction, BlockMode, FilterSet, ListManager, RateLimiter, RateVerdict, Verdict,
     block_response,
 };
 use dnsy_observe::{AnswerSource, QueryEvent, QueryEventSink};
 use dnsy_proto::{EDNS_VERSION, Edns, Message, Name, Opcode, Question, Rcode, RecordType, ede};
-use dnsy_resolver::forward::{DnssecPolicy, UpstreamFetcher, cap_ttls, dnssec_query, unix_now};
+use dnsy_resolver::forward::{DnssecPolicy, UpstreamFetcher, cap_ttls, dnssec_query};
 use dnsy_resolver::groups::{Exchange, GroupError, GroupSet};
 use dnsy_resolver::{
     Cache, CacheKey, CacheLookup, Joined, RefreshGuard, Refreshes, Upstream, UpstreamClient,
@@ -68,9 +68,6 @@ const IXFR: u16 = 251;
 /// What a forwarded (and validated) query resolved to: the message to serve, the upstream that
 /// answered and the validation status. Shared with every request coalesced onto it.
 pub(crate) type Resolved = Result<(Message, SocketAddr, DnssecStatus), UpstreamFailure>;
-
-/// The time source the cache is driven by.
-pub(crate) type Now = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// A queued job older than this is dropped unrun: the entry it meant to renew is long gone.
 const PREFETCH_MAX_WAIT: Duration = Duration::from_secs(30);
@@ -118,7 +115,7 @@ pub struct Engine<E = UpstreamClient> {
     pub(crate) fetch_permits: Semaphore,
     /// Set while the system clock is before the policy's floor (shown by `/readyz`).
     pub(crate) clock_untrusted: Arc<AtomicBool>,
-    pub(crate) now: Now,
+    pub(crate) clock: Arc<dyn Clock>,
     /// How long a client waits for a refresh before it is answered from a stale entry.
     pub(crate) stale_wait: Duration,
     /// Upstream work in flight, per key (cache misses, serve-stale and prefetch share it).
@@ -492,29 +489,30 @@ impl<E: Exchange> Engine<E> {
         let policy = self.dnssec.load_full();
         let validating = policy.mode != Validation::Off && !query.header.cd;
         let serve_bogus = policy.mode == Validation::Permissive;
-        let (msg, source, dnssec) = match self.cache.get_for(&key, (self.now)(), serve_bogus) {
-            CacheLookup::Fresh { msg, dnssec } => {
-                self.queue_prefetch(&key);
-                (msg, AnswerSource::Cache, dnssec)
-            }
-            CacheLookup::Stale { msg, dnssec, .. } => {
-                if let Some((fresh, from, status)) = self
-                    .refresh_stale(ctx, query, question, &key, &policy, validating)
-                    .await
-                {
-                    (fresh, AnswerSource::Upstream(from), status)
-                } else {
-                    self.cache.note_stale_served();
-                    (stale_answer(msg), AnswerSource::CacheStale, dnssec)
+        let (msg, source, dnssec) =
+            match self.cache.get_for(&key, self.clock.instant(), serve_bogus) {
+                CacheLookup::Fresh { msg, dnssec } => {
+                    self.queue_prefetch(&key);
+                    (msg, AnswerSource::Cache, dnssec)
                 }
-            }
-            CacheLookup::Miss => {
-                let (msg, from, dnssec) = self
-                    .coalesced_miss(ctx, query, question, &key, &policy, validating)
-                    .await?;
-                (msg, AnswerSource::Upstream(from), dnssec)
-            }
-        };
+                CacheLookup::Stale { msg, dnssec, .. } => {
+                    if let Some((fresh, from, status)) = self
+                        .refresh_stale(ctx, query, question, &key, &policy, validating)
+                        .await
+                    {
+                        (fresh, AnswerSource::Upstream(from), status)
+                    } else {
+                        self.cache.note_stale_served();
+                        (stale_answer(msg), AnswerSource::CacheStale, dnssec)
+                    }
+                }
+                CacheLookup::Miss => {
+                    let (msg, from, dnssec) = self
+                        .coalesced_miss(ctx, query, question, &key, &policy, validating)
+                        .await?;
+                    (msg, AnswerSource::Upstream(from), dnssec)
+                }
+            };
         if dnssec == DnssecStatus::Bogus
             && validating
             && policy.mode == Validation::Strict
@@ -558,7 +556,7 @@ impl<E: Exchange> Engine<E> {
     fn store_refresh(&self, key: &CacheKey, resolved: Resolved) -> Resolved {
         match resolved {
             Ok((msg, from, dnssec)) if msg.header.rcode != Rcode::ServFail => Ok((
-                self.cache.store(key, msg, dnssec, (self.now)()),
+                self.cache.store(key, msg, dnssec, self.clock.instant()),
                 from,
                 dnssec,
             )),
@@ -588,7 +586,7 @@ impl<E: Exchange> Engine<E> {
                         .resolve(ctx.received_at, query, question, policy, validating)
                         .await
                         .map(|(msg, from, dnssec)| {
-                            let served = self.cache.store(key, msg, dnssec, (self.now)());
+                            let served = self.cache.store(key, msg, dnssec, self.clock.instant());
                             (served, from, dnssec)
                         });
                     slot.finish(|| resolved.clone());
@@ -610,7 +608,7 @@ impl<E: Exchange> Engine<E> {
 
     /// Queues a background refresh when the live entry for `key` is popular and close to expiry.
     fn queue_prefetch(&self, key: &CacheKey) {
-        if !self.prefetch_running() || !self.cache.prefetch_due(key, (self.now)()) {
+        if !self.prefetch_running() || !self.cache.prefetch_due(key, self.clock.instant()) {
             return;
         }
         // A full queue drops the job: the entry simply expires. No slot is held meanwhile.
@@ -755,7 +753,7 @@ impl<E: Exchange> Engine<E> {
         question: &Question,
         raw: &Message,
     ) -> dnsy_dnssec::ValidationOutcome {
-        let now = unix_now();
+        let now = u64::try_from(self.clock.unix_secs()).unwrap_or(0);
         self.note_clock(policy.clock_trusted(now));
         let fetcher = UpstreamFetcher {
             groups,
@@ -857,9 +855,7 @@ impl<E: Exchange> Engine<E> {
             .map_or((Name::root(), RecordType::Unknown(0)), |q| {
                 (q.name.clone(), q.qtype)
             });
-        let ts_unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        let ts_unix_ms = self.clock.unix_millis();
         sink.record(QueryEvent {
             ts_unix_ms,
             client: ctx.client.ip(),

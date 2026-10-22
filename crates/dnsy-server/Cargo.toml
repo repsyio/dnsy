@@ -32,7 +32,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 base64 = { workspace = true }
-dnsy-core = { version = "0.1.0", path = "../dnsy-core" }
+dnsy-core = { version = "0.1.0", path = "../dnsy-core", features = ["test-util"] }
 http-body-util = { workspace = true }
 hyper-util = { workspace = true }
 dnsy-auth = { version = "0.1.0", path = "../dnsy-auth" }

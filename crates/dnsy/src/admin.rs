@@ -8,8 +8,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dnsy_auth::{TokenService, UserService};
 use dnsy_config::Config;
-use dnsy_core::{Role, Scope};
-use dnsy_dnssec::{Algorithm, DigestType, KeyRole, KeyState, SystemClock, ds_for};
+use dnsy_core::{Clock as _, Role, Scope, SystemClock};
+use dnsy_dnssec::{Algorithm, DigestType, KeyRole, KeyState, ds_for};
 use dnsy_proto::Name;
 use dnsy_zone::{
     KeyStore, Passphrase, ZoneSigning, ZoneStore, export_bind, passphrase_from_environment,
@@ -259,9 +259,7 @@ pub(crate) async fn token(config: &Config, cmd: TokenCommand, out: &mut impl Wri
         .map(|s| parse_scope(s))
         .collect::<Result<Vec<_>>>()?;
     let expires_at = expires_days.map(|d| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |t| i64::try_from(t.as_secs()).unwrap_or(i64::MAX));
+        let now = SystemClock.unix_secs();
         now.saturating_add(i64::from(d) * 86_400)
     });
     let (secret, meta) = TokenService::new(store)

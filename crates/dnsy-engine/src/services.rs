@@ -8,12 +8,13 @@ use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
 use dnsy_config::Config;
+use dnsy_core::SystemClock;
 use dnsy_dnssec::RolloverTimings;
 use dnsy_filter::{FETCH_TIMEOUT, Fetcher, FilterLimits, ListManager, MAX_LIST_BYTES, SourceStore};
 use dnsy_observe::{QueryEventSink, QueryLogWriter, WriterConfig};
 use dnsy_proto::Name;
 use dnsy_resolver::Cache;
-use dnsy_resolver::groups::{GroupSet, GroupStore, SystemClock, ThreadRng};
+use dnsy_resolver::groups::{GroupSet, GroupStore, ThreadRng};
 use dnsy_store::Store;
 use dnsy_zone::{
     KeyStore, ZoneError, ZoneSigning, ZoneStore, ZoneWatcher, passphrase_from_environment,
@@ -92,7 +93,7 @@ impl Services {
             config.filter.block_mode,
             FilterLimits::default(),
             Fetcher::new(MAX_LIST_BYTES, FETCH_TIMEOUT),
-            Arc::new(dnsy_filter::SystemClock),
+            Arc::new(SystemClock),
         );
         lists.reload().await?;
         services.lists = Some(lists);
@@ -102,11 +103,7 @@ impl Services {
             dnsy_config::PASSPHRASE_ENV,
             config.dnssec.key_passphrase_file.as_deref(),
         )?;
-        let keys = KeyStore::open(
-            store.clone(),
-            passphrase,
-            Arc::new(dnsy_dnssec::SystemClock),
-        );
+        let keys = KeyStore::open(store.clone(), passphrase, Arc::new(SystemClock));
         let signing = ZoneSigning::new(Arc::clone(&zones), keys);
         signing.sign_due().await;
         services.zones = Some(zones);
@@ -116,7 +113,7 @@ impl Services {
         groups.seed_default(&config.resolver.upstreams).await?;
         let specs = groups.list().await?;
         if !specs.is_empty() {
-            let set = GroupSet::new(specs, Arc::new(SystemClock::new()), Arc::new(ThreadRng))?;
+            let set = GroupSet::new(specs, Arc::new(SystemClock), Arc::new(ThreadRng))?;
             services.groups.store(Some(Arc::new(set)));
         }
 

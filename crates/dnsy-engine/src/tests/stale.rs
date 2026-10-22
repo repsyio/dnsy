@@ -3,6 +3,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use dnsy_core::{Clock, ManualClock, SystemClock};
+
 use super::*;
 
 /// Upstream that can be switched off, slowed down and made to answer NXDOMAIN; it tracks the
@@ -76,18 +78,16 @@ impl Exchange for Sw {
 pub(super) struct Rig {
     pub(super) engine: Arc<Engine<Sw>>,
     pub(super) up: Arc<Switch>,
-    skew: Arc<AtomicUsize>,
+    skew: ManualClock,
 }
 
 impl Rig {
     pub(super) fn new(config: &Config, delay: Duration) -> Self {
         let up = Switch::new(delay);
-        let base = Instant::now();
-        let skew = Arc::new(AtomicUsize::new(0));
-        let clock = Arc::clone(&skew);
+        let skew = ManualClock::new(SystemClock.unix_secs());
         let engine = EngineBuilder::new(config, Sw(Arc::clone(&up)))
             .groups(groups())
-            .clock(move || base + Duration::from_secs(clock.load(Ordering::SeqCst) as u64))
+            .clock(Arc::new(skew.clone()))
             .build();
         Self {
             engine: Arc::new(engine),
@@ -107,7 +107,7 @@ impl Rig {
     }
 
     fn advance(&self, secs: usize) {
-        self.skew.fetch_add(secs, Ordering::SeqCst);
+        self.skew.advance(i64::try_from(secs).unwrap());
     }
 
     pub(super) async fn ask(&self, qname: &str) -> Message {
@@ -146,18 +146,16 @@ async fn upstream_down_serves_stale_with_ede3() {
 async fn stale_answer_is_logged_as_cache_stale() {
     let events = Arc::new(Events::default());
     let up = Switch::new(Duration::ZERO);
-    let base = Instant::now();
-    let skew = Arc::new(AtomicUsize::new(0));
-    let clock = Arc::clone(&skew);
+    let skew = ManualClock::new(SystemClock.unix_secs());
     let engine = EngineBuilder::new(&config(), Sw(Arc::clone(&up)))
         .groups(groups())
         .sink(Arc::clone(&events) as Arc<dyn QueryEventSink>)
-        .clock(move || base + Duration::from_secs(clock.load(Ordering::SeqCst) as u64))
+        .clock(Arc::new(skew.clone()))
         .build();
     engine
         .handle(ctx(), &query("a.example.", RecordType::A))
         .await;
-    skew.store(400, Ordering::SeqCst);
+    skew.advance(400);
     up.up.store(false, Ordering::SeqCst);
     engine
         .handle(ctx(), &query("a.example.", RecordType::A))

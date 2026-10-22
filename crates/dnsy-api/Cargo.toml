@@ -49,6 +49,7 @@ base64 = { workspace = true }
 ipnet = { workspace = true }
 
 [dev-dependencies]
+dnsy-core = { version = "0.1.0", path = "../dnsy-core", features = ["test-util"] }
 http-body-util = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }
