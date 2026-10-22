@@ -16,12 +16,12 @@ struct Stub {
 }
 
 impl Handler for Stub {
-    async fn handle(&self, _ctx: RequestContext, query: Message) -> Message {
+    async fn handle(&self, _ctx: RequestContext, query: &Message) -> Message {
         let q = &query.questions[0];
         if q.name.to_string().starts_with("slow") {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        let mut r = Message::response_to(&query);
+        let mut r = Message::response_to(query);
         for i in 0..self.answers {
             r.answers.push(Record {
                 name: q.name.clone(),
@@ -256,11 +256,15 @@ async fn shutdown_drains() {
 struct Dropper;
 
 impl Handler for Dropper {
-    fn handle(&self, _ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send {
-        std::future::ready(Message::response_to(&query))
+    fn handle(
+        &self,
+        _ctx: RequestContext,
+        query: &Message,
+    ) -> impl Future<Output = Message> + Send {
+        std::future::ready(Message::response_to(query))
     }
 
-    async fn respond(&self, ctx: RequestContext, query: Message) -> Option<Message> {
+    async fn respond(&self, ctx: RequestContext, query: &Message) -> Option<Message> {
         if query.questions[0].name.to_string().starts_with("drop") {
             None
         } else {

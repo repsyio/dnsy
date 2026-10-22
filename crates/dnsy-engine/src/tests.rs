@@ -234,7 +234,7 @@ async fn local_zone_answers_aa() {
     let h = harness(Fake::a_record(Ipv4Addr::LOCALHOST));
     let r = h
         .engine
-        .handle(ctx(), query("NAS.home.test.", RecordType::A))
+        .handle(ctx(), &query("NAS.home.test.", RecordType::A))
         .await;
     assert!(r.header.aa && r.header.qr && r.header.ra);
     assert_eq!(r.header.id, 0xbeef);
@@ -246,7 +246,7 @@ async fn local_zone_answers_aa() {
 
     let nx = h
         .engine
-        .handle(ctx(), query("nope.home.test.", RecordType::A))
+        .handle(ctx(), &query("nope.home.test.", RecordType::A))
         .await;
     assert_eq!(nx.header.rcode, Rcode::NxDomain);
     assert!(nx.header.aa);
@@ -258,7 +258,7 @@ async fn cname_to_missing_name_is_nxdomain_rfc6604() {
     let h = harness(Fake::a_record(Ipv4Addr::LOCALHOST));
     let r = h
         .engine
-        .handle(ctx(), query("dangling.home.test.", RecordType::A))
+        .handle(ctx(), &query("dangling.home.test.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::NxDomain);
     assert_eq!(r.answers[0].rtype, RecordType::Cname);
@@ -266,7 +266,7 @@ async fn cname_to_missing_name_is_nxdomain_rfc6604() {
 
     let r = h
         .engine
-        .handle(ctx(), query("to-nodata.home.test.", RecordType::Aaaa))
+        .handle(ctx(), &query("to-nodata.home.test.", RecordType::Aaaa))
         .await;
     assert_eq!(r.header.rcode, Rcode::NoError);
     assert_eq!(r.answers[0].rtype, RecordType::Cname);
@@ -297,12 +297,12 @@ async fn authoritative_answers_not_cached() {
     let inserts = h.engine.cache().stats().inserts;
     let r = h
         .engine
-        .handle(ctx(), query("nas.home.test.", RecordType::A))
+        .handle(ctx(), &query("nas.home.test.", RecordType::A))
         .await;
     assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 10)));
     // ...and authoritative answers are never inserted.
     h.engine
-        .handle(ctx(), query("nope.home.test.", RecordType::A))
+        .handle(ctx(), &query("nope.home.test.", RecordType::A))
         .await;
     let stats = h.engine.cache().stats();
     assert_eq!(stats.inserts, inserts);
@@ -328,7 +328,7 @@ async fn blocked_returns_nxdomain_with_ede() {
     );
     let r = h
         .engine
-        .handle(ctx(), query("x.tracker.example.", RecordType::A))
+        .handle(ctx(), &query("x.tracker.example.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::NxDomain);
     assert_eq!(ede_codes(&r), [ede::BLOCKED]);
@@ -348,7 +348,7 @@ async fn blocked_returns_nxdomain_with_ede() {
     );
     let r = h
         .engine
-        .handle(ctx(), query("ads.example.", RecordType::A))
+        .handle(ctx(), &query("ads.example.", RecordType::A))
         .await;
     assert_eq!(ede_codes(&r), [ede::FILTERED]);
 }
@@ -364,7 +364,7 @@ async fn blocked_not_cached() {
     );
     let r = h
         .engine
-        .handle(ctx(), query("ads.example.", RecordType::A))
+        .handle(ctx(), &query("ads.example.", RecordType::A))
         .await;
     assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::UNSPECIFIED));
     let stats = h.engine.cache().stats();
@@ -379,13 +379,13 @@ async fn cache_hit_skips_upstream() {
     let h = harness(Fake::a_record(Ipv4Addr::new(192, 0, 2, 7)));
     let first = h
         .engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     assert_eq!(first.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 7)));
     assert!(!first.header.aa);
     let mut q = query("WWW.example.", RecordType::A);
     q.header.id = 7;
-    let second = h.engine.handle(ctx(), q).await;
+    let second = h.engine.handle(ctx(), &q).await;
     assert_eq!(second.header.id, 7);
     assert_eq!(second.questions[0].name.to_string(), "WWW.example.");
     assert_eq!(second.answers, first.answers);
@@ -399,10 +399,10 @@ async fn cache_hit_skips_upstream() {
     // The DO and CD bits select separate cache entries.
     let mut cd = query("www.example.", RecordType::A);
     cd.header.cd = true;
-    h.engine.handle(ctx(), cd).await;
+    h.engine.handle(ctx(), &cd).await;
     let mut d = query("www.example.", RecordType::A);
     d.edns.as_mut().unwrap().dnssec_ok = true;
-    let r = h.engine.handle(ctx(), d).await;
+    let r = h.engine.handle(ctx(), &d).await;
     assert!(r.edns.unwrap().dnssec_ok);
     assert_eq!(h.fake.calls(), 3);
 }
@@ -416,7 +416,7 @@ async fn all_upstreams_down_servfail_with_ede_within_deadline() {
     let started = Instant::now();
     let r = h
         .engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     let took = started.elapsed();
     assert_eq!(r.header.rcode, Rcode::ServFail);
@@ -434,7 +434,7 @@ async fn upstream_network_error_servfail_ede23() {
     let h = harness(Fake::answering(|_| Err(UpstreamError::Mismatch)));
     let r = h
         .engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::ServFail);
     assert_eq!(ede_codes(&r), [ede::NETWORK_ERROR]);
@@ -447,17 +447,17 @@ async fn no_upstreams_servfail_ede22() {
     let fake = Arc::new(Fake::a_record(Ipv4Addr::LOCALHOST));
     let engine = EngineBuilder::new(&Config::default(), Up(Arc::clone(&fake))).build();
     let r = engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     assert_eq!(ede_codes(&r), [ede::NO_REACHABLE_AUTHORITY]);
     let mut plain = query("www.example.", RecordType::A);
     plain.edns = None;
-    let r = engine.handle(ctx(), plain).await;
+    let r = engine.handle(ctx(), &plain).await;
     assert_eq!(r.header.rcode, Rcode::ServFail);
     assert!(r.edns.is_none(), "no OPT for a client that sent none");
     engine.set_groups(Some(groups()));
     let r = engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::NoError);
 }
@@ -473,7 +473,7 @@ async fn mismatching_upstream_answer_not_cached() {
     }));
     let r = h
         .engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::ServFail);
     assert_eq!(ede_codes(&r), [ede::NETWORK_ERROR]);
@@ -512,7 +512,7 @@ async fn upstream_answer_scrubbed_and_negative_cached() {
     }));
     let r = h
         .engine
-        .handle(ctx(), query("nope.example.", RecordType::A))
+        .handle(ctx(), &query("nope.example.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::NxDomain);
     assert!(!r.header.aa && !r.header.ad);
@@ -520,7 +520,7 @@ async fn upstream_answer_scrubbed_and_negative_cached() {
     assert_eq!(r.authority.len(), 1);
     assert_eq!(r.edns.unwrap().options.len(), 0);
     h.engine
-        .handle(ctx(), query("nope.example.", RecordType::A))
+        .handle(ctx(), &query("nope.example.", RecordType::A))
         .await;
     assert_eq!(h.fake.calls(), 1);
 }
@@ -535,7 +535,7 @@ async fn response_ip_blocked() {
     );
     let r = h
         .engine
-        .handle(ctx(), query("rebind.example.", RecordType::A))
+        .handle(ctx(), &query("rebind.example.", RecordType::A))
         .await;
     assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::UNSPECIFIED));
     assert_eq!(ede_codes(&r), [ede::BLOCKED]);
@@ -550,7 +550,7 @@ async fn response_ip_blocked() {
     h.engine.set_response_ip_policy(ResponseIpPolicy::default());
     let r = h
         .engine
-        .handle(ctx(), query("rebind.example.", RecordType::A))
+        .handle(ctx(), &query("rebind.example.", RecordType::A))
         .await;
     assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(198, 51, 100, 9)));
     assert_eq!(h.fake.calls(), 1);
@@ -597,7 +597,7 @@ async fn acl_refused_logged() {
     );
     let r = h
         .engine
-        .handle(ctx(), query("nas.home.test.", RecordType::A))
+        .handle(ctx(), &query("nas.home.test.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::Refused);
     assert_eq!(r.answers.len(), 0);
@@ -618,7 +618,7 @@ async fn acl_refused_logged() {
     );
     let r = h
         .engine
-        .handle(ctx(), query("a.example.", RecordType::A))
+        .handle(ctx(), &query("a.example.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::Refused);
     assert_eq!(h.events.take().len(), 2);
@@ -652,29 +652,32 @@ async fn rd_clear_for_non_local_refused_and_opcodes() {
     let h = harness(Fake::a_record(Ipv4Addr::LOCALHOST));
     let mut q = query("www.example.", RecordType::A);
     q.header.rd = false;
-    assert_eq!(h.engine.handle(ctx(), q).await.header.rcode, Rcode::Refused);
+    assert_eq!(
+        h.engine.handle(ctx(), &q).await.header.rcode,
+        Rcode::Refused
+    );
     let mut local = query("nas.home.test.", RecordType::A);
     local.header.rd = false;
     assert_eq!(
-        h.engine.handle(ctx(), local).await.header.rcode,
+        h.engine.handle(ctx(), &local).await.header.rcode,
         Rcode::NoError
     );
     let mut notify = query("home.test.", RecordType::Soa);
     notify.header.opcode = Opcode::Notify;
     assert_eq!(
-        h.engine.handle(ctx(), notify).await.header.rcode,
+        h.engine.handle(ctx(), &notify).await.header.rcode,
         Rcode::NotImp
     );
     let mut v1 = query("www.example.", RecordType::A);
     v1.edns.as_mut().unwrap().version = 1;
     assert_eq!(
-        h.engine.handle(ctx(), v1).await.header.rcode,
+        h.engine.handle(ctx(), &v1).await.header.rcode,
         Rcode::BadVers
     );
     let mut empty = query("www.example.", RecordType::A);
     empty.questions.clear();
     assert_eq!(
-        h.engine.handle(ctx(), empty).await.header.rcode,
+        h.engine.handle(ctx(), &empty).await.header.rcode,
         Rcode::FormErr
     );
     assert_eq!(h.fake.calls(), 0);
@@ -693,13 +696,13 @@ async fn one_event_per_query() {
         ..ctx()
     };
     h.engine
-        .handle(with_principal, query("nas.home.test.", RecordType::A))
+        .handle(with_principal, &query("nas.home.test.", RecordType::A))
         .await;
     h.engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     h.engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     let ev = h.events.take();
     assert_eq!(ev.len(), 3);
@@ -792,7 +795,7 @@ async fn from_config_shim_takes_its_handles_from_services() {
     assert!(builder.take_querylog_task().is_some());
     let engine = builder.build();
     let local = engine
-        .handle(ctx(), query("nas.home.test.", RecordType::A))
+        .handle(ctx(), &query("nas.home.test.", RecordType::A))
         .await;
     assert!(local.header.aa);
 }
@@ -802,11 +805,11 @@ async fn from_config_assembles_pipeline() {
     let upstream = udp_upstream(false).await;
     let (_dir, engine, services) = assembled(upstream, 2000).await;
     let local = engine
-        .handle(ctx(), query("nas.home.test.", RecordType::A))
+        .handle(ctx(), &query("nas.home.test.", RecordType::A))
         .await;
     assert!(local.header.aa);
     let r = engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(192, 0, 2, 99)));
     // Validation is wired from `[dnssec]` with the root anchors: the unsigned answer is Bogus,
@@ -815,7 +818,7 @@ async fn from_config_assembles_pipeline() {
     assert!(!r.header.ad && !ede_codes(&r).is_empty());
     engine.set_dnssec_mode(dnsy_config::Validation::Strict);
     let strict = engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     assert_eq!(strict.header.rcode, Rcode::ServFail);
     assert!(
@@ -826,7 +829,7 @@ async fn from_config_assembles_pipeline() {
     assert!(services.zones.is_some());
     assert!(services.lists.is_some());
     let blocked = engine
-        .handle(ctx(), query("ads.example.", RecordType::A))
+        .handle(ctx(), &query("ads.example.", RecordType::A))
         .await;
     assert_eq!(ede_codes(&blocked), [ede::FILTERED]);
     let health = services
@@ -844,7 +847,7 @@ async fn from_config_silent_upstream_servfails_within_deadline() {
     let (_dir, engine, _services) = assembled(upstream, 100).await;
     let started = Instant::now();
     let r = engine
-        .handle(ctx(), query("www.example.", RecordType::A))
+        .handle(ctx(), &query("www.example.", RecordType::A))
         .await;
     assert_eq!(r.header.rcode, Rcode::ServFail);
     assert_eq!(ede_codes(&r), [ede::NO_REACHABLE_AUTHORITY]);
@@ -867,7 +870,7 @@ async fn from_config_serves_signed_zone_with_aa_never_ad() {
     let mut q = query("nas.home.test.", RecordType::A);
     q.header.ad = true;
     q.edns.as_mut().unwrap().dnssec_ok = true;
-    let r = engine.handle(ctx(), q).await;
+    let r = engine.handle(ctx(), &q).await;
     assert!(r.header.aa);
     assert!(!r.header.ad, "AD is never set on authoritative answers");
     assert!(r.edns.unwrap().dnssec_ok);
@@ -875,13 +878,13 @@ async fn from_config_serves_signed_zone_with_aa_never_ad() {
 
     let mut q = query("missing.home.test.", RecordType::A);
     q.edns.as_mut().unwrap().dnssec_ok = true;
-    let r = engine.handle(ctx(), q).await;
+    let r = engine.handle(ctx(), &q).await;
     assert_eq!(r.header.rcode, Rcode::NxDomain);
     assert!(r.authority.iter().any(|a| a.rtype == RecordType::Nsec));
 
     // Without DO: no DNSSEC records.
     let r = engine
-        .handle(ctx(), query("missing.home.test.", RecordType::A))
+        .handle(ctx(), &query("missing.home.test.", RecordType::A))
         .await;
     assert!(
         r.authority
@@ -1041,7 +1044,7 @@ mod live_policy {
         )]);
         let reply = h
             .engine
-            .handle(ctx(), query("nas.home.test.", RecordType::A))
+            .handle(ctx(), &query("nas.home.test.", RecordType::A))
             .await;
         assert_eq!(reply.header.rcode, Rcode::Refused);
     }

@@ -111,7 +111,9 @@ impl Rig {
     }
 
     pub(super) async fn ask(&self, qname: &str) -> Message {
-        self.engine.handle(ctx(), query(qname, RecordType::A)).await
+        self.engine
+            .handle(ctx(), &query(qname, RecordType::A))
+            .await
     }
 
     pub(super) fn calls(&self) -> usize {
@@ -153,12 +155,12 @@ async fn stale_answer_is_logged_as_cache_stale() {
         .clock(move || base + Duration::from_secs(clock.load(Ordering::SeqCst) as u64))
         .build();
     engine
-        .handle(ctx(), query("a.example.", RecordType::A))
+        .handle(ctx(), &query("a.example.", RecordType::A))
         .await;
     skew.store(400, Ordering::SeqCst);
     up.up.store(false, Ordering::SeqCst);
     engine
-        .handle(ctx(), query("a.example.", RecordType::A))
+        .handle(ctx(), &query("a.example.", RecordType::A))
         .await;
     let sources: Vec<_> = events.take().into_iter().map(|e| e.source).collect();
     assert_eq!(sources[1], AnswerSource::CacheStale);

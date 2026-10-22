@@ -114,7 +114,7 @@ async fn admit_follows_acl_drop_and_rate_limit() {
 async fn any_on_local_zone_answers_minimal_hinfo() {
     let h = harness(Fake::a_record(Ipv4Addr::LOCALHOST));
     for qname in ["nas.home.test.", "home.test."] {
-        let r = h.engine.handle(ctx(), query(qname, RecordType::Any)).await;
+        let r = h.engine.handle(ctx(), &query(qname, RecordType::Any)).await;
         assert_eq!(r.header.rcode, Rcode::NoError);
         assert!(r.header.aa);
         assert_eq!(r.answers.len(), 1, "{qname}: {:?}", r.answers);
@@ -132,7 +132,7 @@ async fn any_on_local_zone_answers_minimal_hinfo() {
     // A name that does not exist is still NXDOMAIN.
     let r = h
         .engine
-        .handle(ctx(), query("ghost.home.test.", RecordType::Any))
+        .handle(ctx(), &query("ghost.home.test.", RecordType::Any))
         .await;
     assert_eq!(r.header.rcode, Rcode::NxDomain);
     assert_eq!(h.fake.calls(), 0);
@@ -143,7 +143,7 @@ async fn any_for_forwarded_name_refused_without_upstream() {
     let h = harness(Fake::a_record(Ipv4Addr::LOCALHOST));
     let r = h
         .engine
-        .handle(ctx(), query("www.example.", RecordType::Any))
+        .handle(ctx(), &query("www.example.", RecordType::Any))
         .await;
     assert_eq!(r.header.rcode, Rcode::Refused);
     assert_eq!(r.answers, []);
@@ -156,14 +156,14 @@ async fn axfr_refused_without_upstream_call() {
     let h = harness(Fake::a_record(Ipv4Addr::LOCALHOST));
     for qtype in [AXFR, IXFR] {
         for qname in ["home.test.", "www.example."] {
-            let r = h.engine.handle(ctx(), query(qname, qtype)).await;
+            let r = h.engine.handle(ctx(), &query(qname, qtype)).await;
             assert_eq!(r.header.rcode, Rcode::Refused, "{qname} {qtype:?}");
             assert!(r.answers.is_empty() && r.authority.is_empty());
             let tcp = RequestContext {
                 transport: Transport::Tcp,
                 ..ctx()
             };
-            let r = h.engine.handle(tcp, query(qname, qtype)).await;
+            let r = h.engine.handle(tcp, &query(qname, qtype)).await;
             assert_eq!(r.header.rcode, Rcode::Refused, "TCP {qname} {qtype:?}");
         }
     }
@@ -184,7 +184,7 @@ async fn ask_many(rig: &Rig, n: usize, qname: &str, do_bit: bool, cd: bool) -> V
         let mut q = query(qname, RecordType::A);
         q.edns.as_mut().unwrap().dnssec_ok = do_bit;
         q.header.cd = cd;
-        tasks.spawn(async move { engine.handle(ctx(), q).await });
+        tasks.spawn(async move { engine.handle(ctx(), &q).await });
     }
     tasks.join_all().await
 }
@@ -261,7 +261,7 @@ async fn cancelled_leader_does_not_hang_followers() {
     let engine = Arc::clone(&rig.engine);
     let leader = tokio::spawn(async move {
         engine
-            .handle(ctx(), query("www.example.", RecordType::A))
+            .handle(ctx(), &query("www.example.", RecordType::A))
             .await
     });
     while rig.calls() == 0 {
@@ -270,7 +270,7 @@ async fn cancelled_leader_does_not_hang_followers() {
     let engine = Arc::clone(&rig.engine);
     let follower = tokio::spawn(async move {
         engine
-            .handle(ctx(), query("www.example.", RecordType::A))
+            .handle(ctx(), &query("www.example.", RecordType::A))
             .await
     });
     tokio::time::sleep(Duration::from_millis(50)).await;

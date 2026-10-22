@@ -440,3 +440,29 @@ fn error_display() {
         assert_ne!(e.to_string(), "");
     }
 }
+
+#[test]
+fn name_hash_is_case_insensitive_and_covers_long_names() {
+    use std::hash::{BuildHasher, RandomState};
+    let state = RandomState::new();
+    let hash = |n: &Name| state.hash_one(n);
+    let a = Name::from_ascii("WwW.Example.COM.").unwrap();
+    let b = Name::from_ascii("www.example.com.").unwrap();
+    assert_eq!(hash(&a), hash(&b));
+    assert_ne!(
+        hash(&a),
+        hash(&Name::from_ascii("www.example.org.").unwrap())
+    );
+    let long = format!(
+        "{}.{}.{}.{}.",
+        "a".repeat(63),
+        "B".repeat(63),
+        "c".repeat(63),
+        "d".repeat(61)
+    );
+    let upper = Name::from_ascii(&long.to_ascii_uppercase()).unwrap();
+    let lower = Name::from_ascii(&long.to_ascii_lowercase()).unwrap();
+    assert_eq!(lower.wire_len(), 255);
+    assert_eq!(hash(&upper), hash(&lower));
+    assert_eq!(hash(&Name::root()), hash(&Name::root()));
+}

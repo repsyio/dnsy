@@ -101,7 +101,7 @@ pub(crate) async fn serve<H: Handler>(
                         principal: None,
                         received_at,
                     };
-                    let Some(response) = handler.respond(ctx, query.clone()).await else {
+                    let Some(response) = handler.respond(ctx, &query).await else {
                         return;
                     };
                     match encode_response(&query, &response, limit) {

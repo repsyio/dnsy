@@ -146,7 +146,7 @@ gate like `dnsy-e2e`) holds the performance tools:
 - `loadgen`: a closed-loop load generator for any server over UDP or TCP (`--clients`,
   `--pipeline`, `--count` names cycled for cache hits, `--unique` for misses).
 - `fakeup`: a fast multi-task UDP upstream answering every name (`nx*` gets NXDOMAIN).
-- `just bench-micro`: criterion micro-benchmarks (`benches/micro.rs`).
+- `just bench-micro`: criterion micro-benchmarks (`benches/micro.rs`): codec, single-thread cache hit and `cache/hit_16_threads_320k` (16 threads, 320 000 lookups per iteration; ops/s = 320 000 / time).
 
 Performance stories paste the `just bench` table into their PR. Run it on an otherwise idle
 machine and pin CPUs with `taskset` when comparing before and after.

@@ -359,7 +359,7 @@ async fn route<H: Handler>(
         principal,
         received_at: Instant::now(),
     };
-    let Some(mut response) = state.handler.respond(ctx, query.clone()).await else {
+    let Some(mut response) = state.handler.respond(ctx, &query).await else {
         // HTTP cannot stay silent: a dropped query becomes a bare 403.
         return reply(StatusCode::FORBIDDEN);
     };

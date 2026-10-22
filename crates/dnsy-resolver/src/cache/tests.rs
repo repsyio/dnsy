@@ -1177,3 +1177,125 @@ fn stale_and_prefetch_counters() {
     let s = c.stats();
     assert_eq!((s.stale_served, s.prefetches), (1, 2));
 }
+
+#[test]
+fn shard_count_scales_with_cores_and_never_exceeds_the_bound() {
+    let cores = thread::available_parallelism().map_or(1, usize::from);
+    let big = Cache::new(CacheOptions {
+        max_entries: 10_000_000,
+        ..cfg()
+    });
+    assert_eq!(big.shards.len(), 16.max(4 * cores));
+    let small = Cache::new(CacheOptions {
+        max_entries: 4,
+        ..cfg()
+    });
+    assert_eq!(small.shards.len(), 4);
+}
+
+#[test]
+fn counters_are_summed_across_shards() {
+    let c = Cache::new(cfg());
+    let t0 = Instant::now();
+    for i in 0..200 {
+        let n = format!("c{i}.example.com");
+        c.insert(
+            key(&n, RecordType::A),
+            positive(&n, 300),
+            DnssecStatus::Unchecked,
+            t0,
+        );
+    }
+    for i in 0..200 {
+        let n = format!("c{i}.example.com");
+        assert!(matches!(
+            c.get(&key(&n, RecordType::A), t0),
+            CacheLookup::Fresh { .. }
+        ));
+    }
+    for i in 0..50 {
+        let n = format!("absent{i}.example.com");
+        assert!(matches!(
+            c.get(&key(&n, RecordType::A), t0),
+            CacheLookup::Miss
+        ));
+    }
+    let s = c.stats();
+    assert_eq!(
+        (s.inserts, s.hits, s.misses, s.entries),
+        (200, 200, 50, 200)
+    );
+    assert!(
+        c.shards
+            .iter()
+            .filter(|s| s.inserts.load(Ordering::Relaxed) > 0)
+            .count()
+            > 1,
+        "counters are kept per shard"
+    );
+}
+
+#[test]
+fn concurrent_counters_lose_no_updates() {
+    let c = Arc::new(Cache::new(cfg()));
+    let t0 = Instant::now();
+    let k = key("busy.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        positive("busy.example.com", 300),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    let workers: Vec<_> = (0..8)
+        .map(|_| {
+            let (c, k) = (Arc::clone(&c), k.clone());
+            thread::spawn(move || {
+                for _ in 0..1000 {
+                    assert!(matches!(c.get(&k, t0), CacheLookup::Fresh { .. }));
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.join().unwrap();
+    }
+    assert_eq!(c.stats().hits, 8000);
+}
+
+#[test]
+fn hits_share_the_stored_message_and_decrement_a_private_copy() {
+    let c = Cache::new(cfg());
+    let t0 = Instant::now();
+    let k = key("share.example.com", RecordType::A);
+    c.insert(
+        k.clone(),
+        positive("share.example.com", 300),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    let ttl = |at: Instant| match c.get(&k, at) {
+        CacheLookup::Fresh { msg, .. } => msg.answers[0].ttl,
+        other => panic!("expected a hit, got {other:?}"),
+    };
+    assert_eq!(ttl(t0 + Duration::from_secs(100)), 200);
+    // The earlier decrement did not touch the stored message.
+    assert_eq!(ttl(t0), 300);
+    assert_eq!(ttl(t0 + Duration::from_secs(250)), 50);
+}
+
+#[test]
+fn exact_hit_does_not_consult_the_name_level_entry() {
+    let c = Cache::new(cfg());
+    let t0 = Instant::now();
+    c.insert(
+        key("both.example.com", RecordType::A),
+        positive("both.example.com", 300),
+        DnssecStatus::Unchecked,
+        t0,
+    );
+    let k = key("both.example.com", RecordType::A);
+    let before = c.shards.iter().map(|s| lock(&s.shard).clock).sum::<u64>();
+    assert!(matches!(c.get(&k, t0), CacheLookup::Fresh { .. }));
+    let after = c.shards.iter().map(|s| lock(&s.shard).clock).sum::<u64>();
+    assert_eq!(after - before, 1, "one shard visited, once");
+}

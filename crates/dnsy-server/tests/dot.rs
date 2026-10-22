@@ -18,8 +18,8 @@ use tokio_rustls::client::TlsStream;
 struct Echo;
 
 impl Handler for Echo {
-    fn handle(&self, ctx: RequestContext, query: Message) -> impl Future<Output = Message> + Send {
-        let mut r = Message::response_to(&query);
+    fn handle(&self, ctx: RequestContext, query: &Message) -> impl Future<Output = Message> + Send {
+        let mut r = Message::response_to(query);
         // Lets tests see which transport the engine was told about.
         r.header.rcode = if ctx.transport == dnsy_core::Transport::Dot {
             Rcode::NoError
