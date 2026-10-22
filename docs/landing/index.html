@@ -198,9 +198,9 @@
     <h2 id="pipeline-h">Every query takes<br>the same path.</h2>
     <p>Whatever the transport, each request runs through one pipeline. The first step that can answer ends it, and every request emits exactly one query event for the log and the stats.</p>
     <dl>
-      <div><dt>Guard</dt><dd>ACL, per-client rate limit, sanity checks</dd></div>
+      <div><dt>Guard</dt><dd>ACL, per-client rate limit, sanity checks, no zone transfers</dd></div>
       <div><dt>Decide</dt><dd>Blocklists, then your own zones, authoritative</dd></div>
-      <div><dt>Resolve</dt><dd>Cache, then upstream groups with a hard deadline</dd></div>
+      <div><dt>Resolve</dt><dd>Cache, then upstream groups with a hard deadline; identical misses share one exchange</dd></div>
       <div><dt>Trust</dt><dd>DNSSEC validation, scrubbing, response-IP policy</dd></div>
       <div><dt>Shape</dt><dd>The client's id and flags back, AD and EDE added</dd></div>
     </dl>
