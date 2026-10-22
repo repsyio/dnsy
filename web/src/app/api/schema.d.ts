@@ -353,6 +353,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/response-ip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_response_ip"];
+        put: operations["put_response_ip"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rules": {
         parameters: {
             query?: never;
@@ -1621,6 +1637,14 @@ export interface components {
             entries?: number | null;
             /** @description `updated` or `not_modified`. */
             outcome: string;
+        };
+        /** @description The response-IP networks. */
+        ResponseIpList: {
+            /**
+             * @description Addresses or networks, e.g. `10.0.0.0/8` or `192.0.2.1`. An upstream answer with an A or
+             *     AAAA record inside any of them is blocked (EDE 15). An empty list disables the policy.
+             */
+            cidrs: string[];
         };
         /** @description Rollover options. */
         RolloverInput: {
@@ -2997,6 +3021,82 @@ export interface operations {
             };
             /** @description Too many live-tail connections */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_response_ip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseIpList"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_response_ip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResponseIpList"];
+            };
+        };
+        responses: {
+            /** @description The list now in effect */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseIpList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid or too many entries; nothing changed */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

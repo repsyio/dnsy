@@ -119,5 +119,12 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     if c.filter.refresh_interval == 0 {
         return Err(invalid("filter.refresh_interval must be at least 1"));
     }
+    for net in &c.filter.response_ip_blocklist {
+        if net.parse::<ipnet::IpNet>().is_err() && net.parse::<std::net::IpAddr>().is_err() {
+            return Err(invalid(&format!(
+                "filter.response_ip_blocklist entry `{net}` is not an address or network"
+            )));
+        }
+    }
     Ok(())
 }

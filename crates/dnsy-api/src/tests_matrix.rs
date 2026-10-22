@@ -36,6 +36,8 @@ const EXPECTED: &[(&str, &str, Access)] = &[
     ("GET", "/api/v1/acl", Read),
     ("POST", "/api/v1/acl", Write),
     ("PUT", "/api/v1/acl/rate-limit", Write),
+    ("GET", "/api/v1/response-ip", Read),
+    ("PUT", "/api/v1/response-ip", Write),
     ("DELETE", "/api/v1/acl/{id}", Write),
     ("POST", "/api/v1/auth/bootstrap", Public),
     ("POST", "/api/v1/auth/login", Public),

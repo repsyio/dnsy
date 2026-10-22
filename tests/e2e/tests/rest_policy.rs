@@ -886,3 +886,122 @@ async fn client_certificate_allowlist_crud_and_dot_effect() {
     assert!(back["id"].is_i64());
     assert!(try_dot().await.is_ok());
 }
+
+// ---- response-IP policy ----
+
+fn forwarding() -> Opts {
+    Opts {
+        upstream: true,
+        ..Opts::default()
+    }
+}
+
+async fn ask(h: &Harness, name: &str) -> Message {
+    udp_exchange(h.udp, &query_edns(name, RecordType::A, 1232)).await
+}
+
+#[tokio::test]
+async fn response_ip_policy_from_config_blocks_and_api_replaces_it() {
+    let h = Harness::start(Opts {
+        response_ip: vec!["198.51.100.0/24".to_owned()],
+        ..forwarding()
+    })
+    .await;
+    let api = h.rest();
+    let admin = Auth::Bearer(&h.api_token);
+    let up = h.upstream.as_ref().unwrap();
+    up.set_default(Reply::Answer(vec![a("rebind.test.", 60, "198.51.100.9")]));
+
+    assert_eq!(
+        api.get("/response-ip", admin).await.ok(200),
+        json!({"cidrs": ["198.51.100.0/24"]})
+    );
+    let r = ask(&h, "rebind.test.").await;
+    assert_eq!(ede_codes(&r), [ede::BLOCKED], "configured network blocks");
+    eventually(WAIT, "the blocked query in the log", || async {
+        let page = api.get("/querylog?source=blocked", admin).await.ok(200);
+        (!page["entries"].as_array().unwrap().is_empty()).then_some(())
+    })
+    .await;
+
+    // An invalid network is rejected and nothing changes.
+    api.put("/response-ip", admin, &json!({"cidrs": ["10.0.0.0/33"]}))
+        .await
+        .problem(422);
+    api.put("/response-ip", admin, &json!({"cidrs": ["nope"]}))
+        .await
+        .problem(422);
+    assert_eq!(
+        api.get("/response-ip", admin).await.ok(200)["cidrs"],
+        json!(["198.51.100.0/24"])
+    );
+    assert_eq!(ede_codes(&ask(&h, "rebind.test.").await), [ede::BLOCKED]);
+
+    // Replacing the list applies live; host bits are truncated, duplicates dropped.
+    let put = api
+        .put(
+            "/response-ip",
+            admin,
+            &json!({"cidrs": ["203.0.113.5/24", "203.0.113.0/24", "192.0.2.1"]}),
+        )
+        .await
+        .ok(200);
+    assert_eq!(put["cidrs"], json!(["203.0.113.0/24", "192.0.2.1/32"]));
+    let r = ask(&h, "rebind.test.").await;
+    assert_eq!(r.header.rcode, Rcode::NoError);
+    assert_eq!(
+        ede_codes(&r),
+        Vec::<u16>::new(),
+        "198.51.100.9 is no longer listed"
+    );
+    assert!(matches!(r.answers[0].data, RData::A(ip) if ip.to_string() == "198.51.100.9"));
+
+    up.set_default(Reply::Answer(vec![a("other.test.", 60, "192.0.2.1")]));
+    assert_eq!(ede_codes(&ask(&h, "other.test.").await), [ede::BLOCKED]);
+
+    // An empty list disables the policy.
+    api.put("/response-ip", admin, &json!({"cidrs": []}))
+        .await
+        .ok(200);
+    assert_eq!(
+        api.get("/response-ip", admin).await.ok(200)["cidrs"],
+        json!([])
+    );
+    assert_eq!(ede_codes(&ask(&h, "other.test.").await), Vec::<u16>::new());
+}
+
+#[tokio::test]
+async fn response_ip_policy_roles() {
+    let h = Harness::start(forwarding()).await;
+    let api = h.rest();
+    let viewer = api
+        .token_for(&h.api_token, "vera", "viewer", &["api:read"])
+        .await;
+    let operator = api
+        .token_for(&h.api_token, "olga", "operator", &["api:read", "api:write"])
+        .await;
+    let body = json!({"cidrs": ["198.51.100.0/24"]});
+
+    api.get("/response-ip", Auth::Bearer(&viewer)).await.ok(200);
+    api.put("/response-ip", Auth::Bearer(&viewer), &body)
+        .await
+        .problem(403);
+    assert_eq!(
+        api.get("/response-ip", Auth::Bearer(&h.api_token))
+            .await
+            .ok(200)["cidrs"],
+        json!([]),
+        "the viewer changed nothing"
+    );
+    api.put("/response-ip", Auth::Bearer(&operator), &body)
+        .await
+        .ok(200);
+    api.put(
+        "/response-ip",
+        Auth::Bearer(&h.api_token),
+        &json!({"cidrs": []}),
+    )
+    .await
+    .ok(200);
+    api.get("/response-ip", Auth::None).await.problem(401);
+}

@@ -29,6 +29,18 @@ impl ResponseIpPolicy {
         }
     }
 
+    /// Builds the policy from CIDR or single-address strings; entries that do not parse are
+    /// skipped (configuration and the API validate before this point).
+    #[must_use]
+    pub fn from_strings<'a>(cidrs: impl IntoIterator<Item = &'a String>) -> Self {
+        Self::new(cidrs.into_iter().filter_map(|s| {
+            let s = s.trim();
+            s.parse::<IpNet>()
+                .ok()
+                .or_else(|| s.parse::<IpAddr>().ok().map(IpNet::from))
+        }))
+    }
+
     /// True when an address record in the answer section is listed.
     #[must_use]
     pub fn blocks(&self, msg: &Message) -> bool {
@@ -390,5 +402,23 @@ mod tests {
         msg.answers = vec![rec("a.example.", RData::A(Ipv4Addr::new(192, 0, 2, 1)))];
         assert!(!policy.blocks(&msg));
         assert!(!ResponseIpPolicy::default().blocks(&msg));
+    }
+
+    #[test]
+    fn response_ip_policy_from_strings_takes_networks_and_addresses() {
+        let list = [
+            "10.0.0.0/8".to_owned(),
+            "192.0.2.1".to_owned(),
+            "bad".to_owned(),
+        ];
+        let policy = ResponseIpPolicy::from_strings(&list);
+        let q = question("a.example.", RecordType::A);
+        let mut msg = response(&q);
+        msg.answers = vec![rec("a.example.", RData::A(Ipv4Addr::new(192, 0, 2, 1)))];
+        assert!(policy.blocks(&msg));
+        msg.answers = vec![rec("a.example.", RData::A(Ipv4Addr::new(192, 0, 2, 2)))];
+        assert!(!policy.blocks(&msg));
+        msg.answers = vec![rec("a.example.", RData::A(Ipv4Addr::new(10, 9, 9, 9)))];
+        assert!(policy.blocks(&msg));
     }
 }

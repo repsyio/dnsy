@@ -557,6 +557,31 @@ async fn response_ip_blocked() {
 }
 
 #[tokio::test]
+async fn response_ip_blocklist_from_config_blocks_and_live_policy_replaces_it() {
+    let mut config = Config::default();
+    config.filter.response_ip_blocklist = vec!["198.51.100.0/24".to_owned()];
+    let h = harness_with(
+        Fake::a_record(Ipv4Addr::new(198, 51, 100, 9)),
+        &config,
+        |b| b,
+    );
+    let r = h
+        .engine
+        .handle(ctx(), query("rebind.example.", RecordType::A))
+        .await;
+    assert_eq!(ede_codes(&r), [ede::BLOCKED]);
+    h.engine
+        .set_response_ip_policy(ResponseIpPolicy::from_strings(&[
+            "203.0.113.0/24".to_owned()
+        ]));
+    let r = h
+        .engine
+        .handle(ctx(), query("rebind.example.", RecordType::A))
+        .await;
+    assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::new(198, 51, 100, 9)));
+}
+
+#[tokio::test]
 async fn acl_refused_logged() {
     let acl = Acl::new(
         AclAction::Allow,

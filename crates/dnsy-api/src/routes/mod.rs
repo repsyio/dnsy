@@ -18,6 +18,7 @@ mod filtering;
 mod live;
 mod meta;
 mod querylog;
+mod response_ip;
 mod settings;
 mod stats;
 mod tokens;
@@ -36,6 +37,7 @@ pub fn v1() -> OpenApiRouter<ApiState> {
         .merge(dnssec::router())
         .merge(filtering::router())
         .merge(acl::router())
+        .merge(response_ip::router())
         .merge(blocklists::router())
         .merge(upstreams::router())
         .merge(certs::router())

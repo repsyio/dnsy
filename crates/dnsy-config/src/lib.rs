@@ -346,6 +346,24 @@ mod tests {
     }
 
     #[test]
+    fn response_ip_blocklist_parses_and_validates() {
+        let c = Config::from_toml(
+            "[filter]\nresponse_ip_blocklist = [\"10.0.0.0/8\", \"192.0.2.1\", \"fc00::/7\"]",
+        )
+        .unwrap();
+        assert_eq!(c.filter.response_ip_blocklist.len(), 3);
+        assert_eq!(
+            Config::default().filter.response_ip_blocklist,
+            Vec::<String>::new()
+        );
+        assert!(
+            err("[filter]\nresponse_ip_blocklist = [\"10.0.0.0/33\"]")
+                .contains("response_ip_blocklist")
+        );
+        assert!(err("[filter]\nresponse_ip_blocklist = [\"nope\"]").contains("`nope`"));
+    }
+
+    #[test]
     fn other_validation_errors() {
         assert!(err("[resolver]\nattempts = 0").contains("resolver"));
         assert!(err("[filter]\nrefresh_interval = 0").contains("refresh_interval"));

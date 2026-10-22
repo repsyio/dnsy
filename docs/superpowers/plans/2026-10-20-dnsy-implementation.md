@@ -215,6 +215,8 @@ impl FilterSet { pub fn check(&self, qname: &Name) -> Verdict; }
 | `0014_client_certs_autoincrement.sql` | DNSY-80 | rebuild `client_certs` with `INTEGER PRIMARY KEY AUTOINCREMENT` (ids never reused) |
 | `0015_querylog_compact.sql` | DNSY-95 | rebuild `query_log` with integer `transport`/`source`/`dnssec` codes and a 4/16-byte binary `client`; indexes recreated |
 
+| `0016_response_ip.sql` | DNSY-107 | `response_ip_policy`: the stored response-IP networks (0015 is DNSY-95) |
+
 The runner's own table `schema_migrations(version, name, checksum, applied_at)` is created by DNSY-6. The runner applies every known migration missing from that table in version order (set-based, not "max version"), so two migrations merged in the same wave in either order still converge.
 
 ## Phases and epics

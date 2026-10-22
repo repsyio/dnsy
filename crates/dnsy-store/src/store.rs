@@ -711,6 +711,27 @@ mod tests {
         );
     }
 
+    /// A database at migration 14 gains `response_ip_policy` on upgrade, whatever lands between.
+    #[tokio::test]
+    async fn response_ip_policy_table_is_added_to_a_version_14_database() {
+        let (_d, p) = db();
+        let old = &MIGRATIONS[..14];
+        assert_eq!(old.last().unwrap().version, 14);
+        drop(Store::open_with(&p, old).unwrap());
+        let after = Store::open(&p).unwrap();
+        let n: i64 = after
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'response_ip_policy'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
     /// A database written by the schema of main before this story (migrations 0001 to 0009),
     /// populated, upgrades in place: nothing is lost, the new indexes appear and the runner's
     /// checksum and registry rules still hold.

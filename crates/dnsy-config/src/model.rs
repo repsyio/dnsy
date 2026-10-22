@@ -402,6 +402,9 @@ pub struct Filter {
     pub blocklists: Vec<String>,
     /// Blocklist refresh interval, seconds.
     pub refresh_interval: u64,
+    /// Networks (CIDR or single address) whose addresses block an upstream answer. Changes made
+    /// through the API are stored and win over this list after a restart.
+    pub response_ip_blocklist: Vec<String>,
 }
 
 impl Default for Filter {
@@ -410,6 +413,7 @@ impl Default for Filter {
             block_mode: BlockMode::default(),
             blocklists: Vec::new(),
             refresh_interval: 86_400,
+            response_ip_blocklist: Vec::new(),
         }
     }
 }

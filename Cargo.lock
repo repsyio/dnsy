@@ -606,6 +606,7 @@ name = "dnsy-config"
 version = "0.1.0"
 dependencies = [
  "dnsy-core",
+ "ipnet",
  "serde",
  "thiserror",
  "toml",
