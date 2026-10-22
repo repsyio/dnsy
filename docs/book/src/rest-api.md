@@ -136,6 +136,7 @@ a restart returns to the `[dnssec]` section.
 | `GET /api/v1/stats/summary` | read | totals, blocked ratio, cache hit ratio, answer sources, DNSSEC status counts, latency |
 | `GET /api/v1/stats/timeseries` | read | counts per bucket |
 | `GET /api/v1/stats/top-domains`, `top-blocked`, `top-clients` | read | ranked lists |
+| `GET /api/v1/stats/dashboard` | read | summary, timeseries and the three top lists in one response |
 | `GET /api/v1/cache` | read | live cache counters |
 | `DELETE /api/v1/cache` | write | flush everything; answers `{"removed": n}` |
 | `DELETE /api/v1/cache/entries?name=<name>&subtree=<bool>` | write | flush one name, optionally with everything below it; answers `{"removed": n}` |
@@ -153,6 +154,11 @@ Unknown filter values answer 400.
 3600, at most 5000 buckets). The top lists take `limit` (1 to 100, default 10). Rollups are minute
 or hour granular for the last two to three days and day granular before that, so buckets touching
 the range count whole; `timeseries` buckets under one day have no data for older days.
+
+`/stats/dashboard` answers `{summary, series, top_domains, top_blocked, top_clients}`, each section
+identical to the response of its own route for the same range. It takes `from`, `to`, `bucket` and
+`limit` with the rules above (one `limit` for all three lists) and answers 400 on the same
+violations. The individual routes stay available.
 
 The live tail sends `query` events (one log record as JSON) and `lagged` when rows were skipped
 because the reader was too slow. The server polls the log at its own pace, so a slow reader never

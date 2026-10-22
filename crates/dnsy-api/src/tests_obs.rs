@@ -330,6 +330,68 @@ async fn stats_top_domains_shape() {
 }
 
 #[tokio::test]
+async fn stats_dashboard_matches_the_individual_routes() {
+    let f = Fx::new(|s| s);
+    let t = f.viewer().await;
+    let now = now_ms();
+    let mut blocked = event("ads.example.", now);
+    blocked.source = AnswerSource::Blocked { list: "ads".into() };
+    f.ingest(vec![
+        event("a.example.", now),
+        event("a.example.", now),
+        event("b.example.", now),
+        blocked,
+    ])
+    .await;
+
+    let q = format!("from={}&to={}", now - 60_000, now + 60_000);
+    let (st, d) = f
+        .get_json(
+            &format!("/api/v1/stats/dashboard?{q}&bucket=60&limit=2"),
+            &t,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, summary) = f.get_json(&format!("/api/v1/stats/summary?{q}"), &t).await;
+    let (_, series) = f
+        .get_json(&format!("/api/v1/stats/timeseries?{q}&bucket=60"), &t)
+        .await;
+    let (_, domains) = f
+        .get_json(&format!("/api/v1/stats/top-domains?{q}&limit=2"), &t)
+        .await;
+    let (_, blocked) = f
+        .get_json(&format!("/api/v1/stats/top-blocked?{q}&limit=2"), &t)
+        .await;
+    let (_, clients) = f
+        .get_json(&format!("/api/v1/stats/top-clients?{q}&limit=2"), &t)
+        .await;
+    assert_eq!(d["summary"], summary);
+    assert_eq!(d["series"], series);
+    assert_eq!(d["top_domains"], domains);
+    assert_eq!(d["top_blocked"], blocked);
+    assert_eq!(d["top_clients"], clients);
+    assert_eq!(d["summary"]["total"], 4);
+    assert_eq!(d["top_domains"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn stats_dashboard_rejects_bad_parameters() {
+    let f = Fx::new(|s| s);
+    let t = f.viewer().await;
+    for uri in [
+        "/api/v1/stats/dashboard?from=200&to=100",
+        "/api/v1/stats/dashboard?from=0&to=99999999999999",
+        "/api/v1/stats/dashboard?bucket=90",
+        "/api/v1/stats/dashboard?limit=0",
+        "/api/v1/stats/dashboard?limit=101",
+        "/api/v1/stats/dashboard?from=0&to=31536000000&bucket=60",
+    ] {
+        let (st, _) = f.get_json(uri, &t).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn invalid_range_400() {
     let f = Fx::new(|s| s);
     let t = f.operator().await;

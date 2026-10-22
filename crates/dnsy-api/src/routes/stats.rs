@@ -33,6 +33,7 @@ pub fn router() -> OpenApiRouter<ApiState> {
         .routes(routes!(top_domains))
         .routes(routes!(top_blocked))
         .routes(routes!(top_clients))
+        .routes(routes!(dashboard))
 }
 
 /// Time range. Rollups are minute (counters) or hour (top lists) granular, so buckets that
@@ -154,8 +155,8 @@ fn internal(e: ObserveError) -> ApiError {
     }
 }
 
-fn top_limit(p: &TopParams) -> Result<usize, ApiError> {
-    let n = p.limit.unwrap_or(DEFAULT_TOP);
+fn top_limit(limit: Option<usize>) -> Result<usize, ApiError> {
+    let n = limit.unwrap_or(DEFAULT_TOP);
     if n == 0 || n > MAX_TOP {
         return Err(ApiError::BadRequest(format!(
             "`limit` must be between 1 and {MAX_TOP}"
@@ -178,7 +179,10 @@ async fn summary(
     State(state): State<ApiState>,
     Params(p): Params<RangeParams>,
 ) -> Result<Json<SummaryBody>, ApiError> {
-    let range = range(p.from, p.to)?;
+    summary_body(&state, range(p.from, p.to)?).await.map(Json)
+}
+
+async fn summary_body(state: &ApiState, range: TimeRange) -> Result<SummaryBody, ApiError> {
     let s = StatsService::new(state.observe.store.clone())
         .summary(range)
         .await
@@ -191,7 +195,7 @@ async fn summary(
     } else {
         blocked as f64 / s.total as f64
     };
-    Ok(Json(SummaryBody {
+    Ok(SummaryBody {
         from: range.from_ms,
         to: range.to_ms,
         total: s.total,
@@ -212,7 +216,7 @@ async fn summary(
         max_latency_us: s.max_latency_us,
         querylog_dropped: lost.dropped,
         querylog_flush_errors: lost.flush_errors,
-    }))
+    })
 }
 
 /// Query counts per bucket (only buckets with data), oldest first.
@@ -229,8 +233,17 @@ async fn timeseries(
     State(state): State<ApiState>,
     Params(p): Params<SeriesParams>,
 ) -> Result<Json<Vec<SeriesPoint>>, ApiError> {
-    let range = range(p.from, p.to)?;
-    let bucket = p.bucket.unwrap_or(DEFAULT_BUCKET_S);
+    series_points(&state, range(p.from, p.to)?, p.bucket)
+        .await
+        .map(Json)
+}
+
+async fn series_points(
+    state: &ApiState,
+    range: TimeRange,
+    bucket: Option<u64>,
+) -> Result<Vec<SeriesPoint>, ApiError> {
+    let bucket = bucket.unwrap_or(DEFAULT_BUCKET_S);
     if bucket > MAX_BUCKET_S {
         return Err(ApiError::BadRequest(
             "`bucket` must not exceed 366 days".to_owned(),
@@ -247,18 +260,16 @@ async fn timeseries(
         .timeseries(range, Duration::from_secs(bucket))
         .await
         .map_err(internal)?;
-    Ok(Json(
-        points
-            .into_iter()
-            .map(|t| SeriesPoint {
-                start_ms: t.start_ms,
-                total: t.total,
-                blocked: t.blocked,
-                cache_hits: t.cache_hits,
-                max_latency_us: t.max_latency_us,
-            })
-            .collect(),
-    ))
+    Ok(points
+        .into_iter()
+        .map(|t| SeriesPoint {
+            start_ms: t.start_ms,
+            total: t.total,
+            blocked: t.blocked,
+            cache_hits: t.cache_hits,
+            max_latency_us: t.max_latency_us,
+        })
+        .collect())
 }
 
 fn items(state: &ApiState, v: Vec<dnsy_observe::TopEntry>, clients: bool) -> Vec<TopItem> {
@@ -291,12 +302,8 @@ async fn top_domains(
     State(state): State<ApiState>,
     Params(p): Params<TopParams>,
 ) -> Result<Json<Vec<TopItem>>, ApiError> {
-    let (range, n) = (range(p.from, p.to)?, top_limit(&p)?);
-    let v = StatsService::new(state.observe.store.clone())
-        .top_domains(range, n)
-        .await
-        .map_err(internal)?;
-    Ok(Json(items(&state, v, false)))
+    let (range, n) = (range(p.from, p.to)?, top_limit(p.limit)?);
+    top_items(&state, range, n, Top::Domains).await.map(Json)
 }
 
 /// Most blocked names.
@@ -313,12 +320,8 @@ async fn top_blocked(
     State(state): State<ApiState>,
     Params(p): Params<TopParams>,
 ) -> Result<Json<Vec<TopItem>>, ApiError> {
-    let (range, n) = (range(p.from, p.to)?, top_limit(&p)?);
-    let v = StatsService::new(state.observe.store.clone())
-        .top_blocked(range, n)
-        .await
-        .map_err(internal)?;
-    Ok(Json(items(&state, v, false)))
+    let (range, n) = (range(p.from, p.to)?, top_limit(p.limit)?);
+    top_items(&state, range, n, Top::Blocked).await.map(Json)
 }
 
 /// Busiest clients (network addresses when client redaction is on).
@@ -335,10 +338,85 @@ async fn top_clients(
     State(state): State<ApiState>,
     Params(p): Params<TopParams>,
 ) -> Result<Json<Vec<TopItem>>, ApiError> {
-    let (range, n) = (range(p.from, p.to)?, top_limit(&p)?);
-    let v = StatsService::new(state.observe.store.clone())
-        .top_clients(range, n)
-        .await
-        .map_err(internal)?;
-    Ok(Json(items(&state, v, true)))
+    let (range, n) = (range(p.from, p.to)?, top_limit(p.limit)?);
+    top_items(&state, range, n, Top::Clients).await.map(Json)
+}
+
+#[derive(Clone, Copy)]
+enum Top {
+    Domains,
+    Blocked,
+    Clients,
+}
+
+async fn top_items(
+    state: &ApiState,
+    range: TimeRange,
+    n: usize,
+    kind: Top,
+) -> Result<Vec<TopItem>, ApiError> {
+    let svc = StatsService::new(state.observe.store.clone());
+    let v = match kind {
+        Top::Domains => svc.top_domains(range, n).await,
+        Top::Blocked => svc.top_blocked(range, n).await,
+        Top::Clients => svc.top_clients(range, n).await,
+    }
+    .map_err(internal)?;
+    Ok(items(state, v, matches!(kind, Top::Clients)))
+}
+
+/// Dashboard parameters.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DashboardParams {
+    /// Inclusive start, unix milliseconds (default: `to` minus 24 hours).
+    from: Option<i64>,
+    /// Exclusive end, unix milliseconds (default: now).
+    to: Option<i64>,
+    /// Timeseries bucket width in seconds, a multiple of 60 (default 3600).
+    bucket: Option<u64>,
+    /// Entries per top list, 1 to 100 (default 10).
+    limit: Option<usize>,
+}
+
+/// Everything the dashboard shows from the stats rollups, in one response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DashboardBody {
+    pub summary: SummaryBody,
+    pub series: Vec<SeriesPoint>,
+    pub top_domains: Vec<TopItem>,
+    pub top_blocked: Vec<TopItem>,
+    pub top_clients: Vec<TopItem>,
+}
+
+/// Summary, timeseries and the three top lists for one range: the same data as the individual
+/// `/stats/*` routes, with the same parameters, limits and read scope.
+#[utoipa::path(get, path = "/stats/dashboard", tag = "stats", security(("bearer" = []), ("session" = [])),
+    params(DashboardParams),
+    responses(
+        (status = 200, body = DashboardBody),
+        (status = 400, body = Problem, content_type = "application/problem+json"),
+        (status = 401, body = Problem, content_type = "application/problem+json"),
+        (status = 403, body = Problem, content_type = "application/problem+json"),
+    ))]
+async fn dashboard(
+    _scope: RequireScope<Read>,
+    State(state): State<ApiState>,
+    Params(p): Params<DashboardParams>,
+) -> Result<Json<DashboardBody>, ApiError> {
+    let (range, n) = (range(p.from, p.to)?, top_limit(p.limit)?);
+    let (summary, series, top_domains, top_blocked, top_clients) = tokio::try_join!(
+        summary_body(&state, range),
+        series_points(&state, range, p.bucket),
+        top_items(&state, range, n, Top::Domains),
+        top_items(&state, range, n, Top::Blocked),
+        top_items(&state, range, n, Top::Clients),
+    )?;
+    Ok(Json(DashboardBody {
+        summary,
+        series,
+        top_domains,
+        top_blocked,
+        top_clients,
+    }))
 }
