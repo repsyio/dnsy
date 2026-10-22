@@ -18,6 +18,15 @@ export class Api {
     return new Api(ctx, baseURL);
   }
 
+  /**
+   * A client that reuses a session saved earlier (the global setup's), without a login. Logins
+   * count against the server's throttle per username and address, in flight included, so many
+   * workers logging in as the same user at once would lock that user out.
+   */
+  static async fromState(baseURL: string, storageState: string): Promise<Api> {
+    return new Api(await request.newContext({ baseURL, storageState }), baseURL);
+  }
+
   private async csrf(): Promise<Record<string, string>> {
     const state = await this.ctx.storageState();
     const token = state.cookies.find((c) => c.name === 'dnsy_csrf')?.value;
