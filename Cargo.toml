@@ -61,6 +61,7 @@ rcgen = "0.14.10"
 tempfile = "3.27.0"
 insta = { version = "1.49.0", default-features = false }
 criterion = "0.8.2"
+dhat = "0.3.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

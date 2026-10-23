@@ -65,6 +65,10 @@ bench:
 bench-micro:
     cargo bench -p dnsy-bench --bench micro
 
+# Allocation counts on the cache-hit path (dhat as the global allocator); fails above the targets (cache hit 2, UDP hit 30).
+allocs:
+    cargo run --release -p dnsy-bench --bin allocs -- --check
+
 # Regenerate web/src/app/api/schema.d.ts from openapi/dnsy.json.
 web-types:
     cd web && pnpm types && pnpm prettier --write src/app/api/schema.d.ts
