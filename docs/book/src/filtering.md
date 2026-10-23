@@ -25,6 +25,12 @@ Each client gets a token bucket refilling at `qps` tokens per second with a burs
 
 Over the limit, UDP queries are dropped silently (a reply to a spoofed source address would amplify an attack); TCP, DoT and DoH queries get REFUSED. A `qps` of `0` disables limiting. The limit is stored in the `rate_limits` table.
 
+## CNAME targets
+
+A blocklist entry also matches the CNAME targets in an upstream answer. If a query for `www.site.test` is answered with a chain that reaches `cdn.tracker.example` and that name (or a parent) is blocked, the whole response is replaced by the configured block response with EDE 15 (Blocked), and the query log records source `blocked` with the list that matched. This closes CNAME cloaking, where a first-party name hides a tracker. Allow entries on a target win, as for queried names.
+
+Design: the check runs after resolution, next to the response-IP policy, walking the same loop-safe chain as the resolver (at most 16 hops; a loop ends the walk and does not block). It runs on cache hits too, so a list update applies at once, and the blocked reply is not cached (the upstream answer is, once). Local zones are not checked. A `CNAME` query is answered as asked and not walked.
+
 ## Response-IP policy
 
 An upstream answer whose A or AAAA record lies inside a listed network is blocked: the client gets the configured block response with EDE 15 (Blocked), and the query log records the source `blocked` with list `response-ip`. This stops DNS rebinding to internal ranges and known-bad addresses. IPv4-mapped IPv6 addresses are matched as IPv4. The check also applies to cached answers, so a change takes effect at once.

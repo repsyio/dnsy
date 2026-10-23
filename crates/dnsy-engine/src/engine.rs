@@ -44,8 +44,8 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::handler::{Admission, Handler, RequestContext};
 use crate::response::{
-    RESPONSE_IP_LIST, ResponseIpPolicy, answers_question, authoritative, bogus_servfail, dnssec_ok,
-    error_response, finish, scrub,
+    RESPONSE_IP_LIST, ResponseIpPolicy, answers_question, authoritative, blocked_cname_target,
+    bogus_servfail, dnssec_ok, error_response, finish, scrub,
 };
 
 /// Logged when the system clock is earlier than the build time.
@@ -457,18 +457,8 @@ impl<E: Exchange> Engine<E> {
             }
         };
 
-        if self.response_ip.load().blocks(&msg)
-            && let Some(blocked) = block_response(query, **self.block_mode.load(), RESPONSE_IP_LIST)
-        {
-            return Outcome {
-                dnssec,
-                ..Outcome::new(
-                    finish(query, blocked),
-                    AnswerSource::Blocked {
-                        list: RESPONSE_IP_LIST.into(),
-                    },
-                )
-            };
+        if let Some(blocked) = self.block_resolved(query, question, &msg, dnssec) {
+            return blocked;
         }
         let mut response = finish(query, msg);
         // RFC 6840 5.7: AD only for validated data, and only to clients that asked for it.
@@ -478,6 +468,35 @@ impl<E: Exchange> Engine<E> {
             dnssec,
             ..Outcome::new(response, source)
         }
+    }
+
+    /// Blocks a resolved answer: a CNAME chain that reaches a blocklisted name, or an address in
+    /// the response-IP policy. Runs on cache hits too, so list and policy changes apply at once;
+    /// the blocked reply itself is not cached.
+    fn block_resolved(
+        &self,
+        query: &Message,
+        question: &Question,
+        msg: &Message,
+        dnssec: DnssecStatus,
+    ) -> Option<Outcome> {
+        let (list, mode): (Arc<str>, BlockMode) = if let Some(hit) = blocked_cname_target(
+            &self.filter.current(),
+            &question.name,
+            question.qtype,
+            &msg.answers,
+        ) {
+            hit
+        } else if self.response_ip.load().blocks(msg) {
+            (RESPONSE_IP_LIST.into(), **self.block_mode.load())
+        } else {
+            return None;
+        };
+        let blocked = block_response(query, mode, &list)?;
+        Some(Outcome {
+            dnssec,
+            ..Outcome::new(finish(query, blocked), AnswerSource::Blocked { list })
+        })
     }
 
     /// The cache entry for `key`, or a forwarded and validated answer (then cached). In strict
