@@ -2,9 +2,10 @@
 // text asset so the embedded UI can serve them with `Content-Encoding` and no per-request work.
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 
-const root = new URL('../dist/dnsy/browser', import.meta.url).pathname;
+const root = fileURLToPath(new URL('../dist/dnsy/browser', import.meta.url));
 const compressible = new Set([
   '.html',
   '.js',
