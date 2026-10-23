@@ -1,7 +1,8 @@
 //! Authentication and authorisation for API handlers.
 //!
 //! A handler takes `RequireScope<Read>`, `RequireScope<Write>` or `RequireScope<AdminScope>`.
-//! Credentials, in order: `Authorization: Bearer <token>`, then the `dnsy_session` cookie.
+//! Credentials, in order: `Authorization: Bearer <token>`, then the `dnsy_session` cookie
+//! (`__Host-dnsy_session` when cookies are `Secure`).
 //! Cookie credentials on unsafe methods must also carry an `X-CSRF-Token` header equal to
 //! the `dnsy_csrf` cookie (double submit). Bearer requests need no CSRF token.
 //!
@@ -22,6 +23,28 @@ use crate::state::ApiState;
 
 pub const SESSION_COOKIE: &str = "dnsy_session";
 pub const CSRF_COOKIE: &str = "dnsy_csrf";
+
+/// Name of the session cookie: `__Host-dnsy_session` when cookies are `Secure`, else
+/// `dnsy_session`. The `__Host-` prefix makes browsers refuse a cookie that is not `Secure`,
+/// has a `Domain` or a `Path` other than `/`.
+#[must_use]
+pub fn session_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        "__Host-dnsy_session"
+    } else {
+        SESSION_COOKIE
+    }
+}
+
+/// Name of the CSRF cookie: `__Host-dnsy_csrf` when cookies are `Secure`, else `dnsy_csrf`.
+#[must_use]
+pub fn csrf_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        "__Host-dnsy_csrf"
+    } else {
+        CSRF_COOKIE
+    }
+}
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
 /// The client address of a request, as an `axum` extension set by the listener: the TCP peer,
@@ -116,7 +139,8 @@ impl<'a> Authenticator<'a> {
                 .ok_or(ApiError::Unauthorized)?;
             return self.by_token(token, needed).await;
         }
-        let session = cookie(headers, SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
+        let session = cookie(headers, session_cookie_name(self.state.auth.cookie_secure))
+            .ok_or(ApiError::Unauthorized)?;
         self.by_session(session, headers, method, needed).await
     }
 
@@ -148,7 +172,7 @@ impl<'a> Authenticator<'a> {
         if !user.role.allows(needed) {
             return Err(ApiError::Forbidden("the role lacks the required scope"));
         }
-        if !is_safe(method) && !csrf_matches(headers) {
+        if !is_safe(method) && !csrf_matches(headers, self.state.auth.cookie_secure) {
             return Err(ApiError::Forbidden("missing or invalid CSRF token"));
         }
         Ok(AuthUser {
@@ -163,9 +187,9 @@ fn is_safe(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
-fn csrf_matches(headers: &HeaderMap) -> bool {
+fn csrf_matches(headers: &HeaderMap, secure: bool) -> bool {
     let (Some(cookie_value), Some(header_value)) = (
-        cookie(headers, CSRF_COOKIE),
+        cookie(headers, csrf_cookie_name(secure)),
         headers.get(CSRF_HEADER).and_then(|v| v.to_str().ok()),
     ) else {
         return false;
@@ -201,12 +225,12 @@ mod tests {
     #[test]
     fn csrf_requires_both_and_equal() {
         let mut h = HeaderMap::new();
-        assert!(!csrf_matches(&h));
+        assert!(!csrf_matches(&h, false));
         h.insert(header::COOKIE, "dnsy_csrf=tok".parse().unwrap());
-        assert!(!csrf_matches(&h));
+        assert!(!csrf_matches(&h, false));
         h.insert(CSRF_HEADER, "other".parse().unwrap());
-        assert!(!csrf_matches(&h));
+        assert!(!csrf_matches(&h, false));
         h.insert(CSRF_HEADER, "tok".parse().unwrap());
-        assert!(csrf_matches(&h));
+        assert!(csrf_matches(&h, false));
     }
 }

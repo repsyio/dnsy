@@ -18,7 +18,7 @@ use utoipa_axum::routes;
 
 use super::users::{UserInfo, check_password};
 use crate::auth::{
-    AuthMethod, CSRF_COOKIE, ClientAddr, Read, RequireScope, SESSION_COOKIE, cookie,
+    AuthMethod, ClientAddr, Read, RequireScope, cookie, csrf_cookie_name, session_cookie_name,
 };
 use crate::error::{ApiError, Problem};
 use crate::state::ApiState;
@@ -109,7 +109,7 @@ fn session_cookies(
         (
             SET_COOKIE,
             cookie_header(
-                SESSION_COOKIE,
+                session_cookie_name(state.auth.cookie_secure),
                 session,
                 ABSOLUTE_TIMEOUT_SECS,
                 true,
@@ -119,7 +119,7 @@ fn session_cookies(
         (
             SET_COOKIE,
             cookie_header(
-                CSRF_COOKIE,
+                csrf_cookie_name(state.auth.cookie_secure),
                 &csrf,
                 ABSOLUTE_TIMEOUT_SECS,
                 false,
@@ -133,11 +133,23 @@ fn clear_cookies(state: &ApiState) -> AppendHeaders<[(axum::http::HeaderName, He
     AppendHeaders([
         (
             SET_COOKIE,
-            cookie_header(SESSION_COOKIE, "", 0, true, state.auth.cookie_secure),
+            cookie_header(
+                session_cookie_name(state.auth.cookie_secure),
+                "",
+                0,
+                true,
+                state.auth.cookie_secure,
+            ),
         ),
         (
             SET_COOKIE,
-            cookie_header(CSRF_COOKIE, "", 0, false, state.auth.cookie_secure),
+            cookie_header(
+                csrf_cookie_name(state.auth.cookie_secure),
+                "",
+                0,
+                false,
+                state.auth.cookie_secure,
+            ),
         ),
     ])
 }
@@ -145,7 +157,7 @@ fn clear_cookies(state: &ApiState) -> AppendHeaders<[(axum::http::HeaderName, He
 /// Log in with username and password; sets the session and CSRF cookies.
 #[utoipa::path(post, path = "/auth/login", tag = "auth", request_body = Login,
     responses(
-        (status = 200, description = "Logged in; `dnsy_session` (HttpOnly) and `dnsy_csrf` cookies set", body = UserInfo),
+        (status = 200, description = "Logged in; `dnsy_session` (HttpOnly) and `dnsy_csrf` cookies set (`__Host-` prefixed when cookies are Secure)", body = UserInfo),
         (status = 401, description = "Wrong username or password", body = Problem, content_type = "application/problem+json"),
         (status = 429, description = "Too many failed logins", body = Problem, content_type = "application/problem+json"),
     ))]
@@ -156,7 +168,7 @@ async fn login(
     headers: HeaderMap,
     Json(body): Json<Login>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let previous = cookie(&headers, SESSION_COOKIE);
+    let previous = cookie(&headers, session_cookie_name(state.auth.cookie_secure));
     let (session, user) = state
         .auth
         .sessions
@@ -186,7 +198,7 @@ async fn logout(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
-    if let Some(id) = cookie(&headers, SESSION_COOKIE) {
+    if let Some(id) = cookie(&headers, session_cookie_name(state.auth.cookie_secure)) {
         state.auth.sessions.destroy(id).await?;
     }
     Ok((StatusCode::NO_CONTENT, clear_cookies(&state)))

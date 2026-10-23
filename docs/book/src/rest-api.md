@@ -25,6 +25,12 @@ Cookie requests with an unsafe method (anything but `GET`, `HEAD`, `OPTIONS`) mu
 `X-CSRF-Token` header equal to the `dnsy_csrf` cookie (double submit); otherwise the answer is 403.
 Bearer requests need no CSRF token.
 
+When the cookies are `Secure` (DNSY serves TLS, or `[api] secure_cookies = true`), both are named with the
+`__Host-` prefix: `__Host-dnsy_session` and `__Host-dnsy_csrf`. Browsers then refuse to store them unless
+they are `Secure`, have `Path=/` and no `Domain`, so a sibling subdomain or a plain-HTTP response cannot
+plant them. Over plain HTTP (development, e2e) the unprefixed names are used. In each mode the server only
+accepts the cookie names it sets.
+
 Credentials are never logged: request tracing records only method, path, status and latency.
 
 ## Auth, users and tokens

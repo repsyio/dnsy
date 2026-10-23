@@ -2207,7 +2207,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Logged in; `dnsy_session` (HttpOnly) and `dnsy_csrf` cookies set */
+            /** @description Logged in; `dnsy_session` (HttpOnly) and `dnsy_csrf` cookies set (`__Host-` prefixed when cookies are Secure) */
             200: {
                 headers: {
                     [name: string]: unknown;

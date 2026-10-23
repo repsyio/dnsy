@@ -29,7 +29,9 @@ export class Api {
 
   private async csrf(): Promise<Record<string, string>> {
     const state = await this.ctx.storageState();
-    const token = state.cookies.find((c) => c.name === 'dnsy_csrf')?.value;
+    const token = state.cookies.find(
+      (c) => c.name === 'dnsy_csrf' || c.name === '__Host-dnsy_csrf',
+    )?.value;
     return token ? { 'X-CSRF-Token': token } : {};
   }
 
