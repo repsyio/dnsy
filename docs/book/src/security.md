@@ -17,7 +17,7 @@ acknowledged within a few working days. The policy is in `SECURITY.md` in the re
 | Upstream exhaustion by slow names | identical concurrent cache misses share one upstream exchange, and at most 256 requests wait on one; further identical misses get SERVFAIL (EDE 22) at once instead of holding a listener slot ([Resolver](resolver.md#cache)) |
 | DNSSEC attacks | work limits against KeyTrap-style and NSEC3 cost attacks, algorithm checks, signature validity windows, a clock-safety guard ([DNSSEC](dnssec.md)) |
 | DNS rebinding | response-IP policy replaces answers pointing into listed networks |
-| Credential theft | passwords hashed, tokens stored as SHA-256 of the secret and compared in constant time, sessions stored hashed, login throttling, HttpOnly SameSite=Strict cookies with double-submit CSRF ([Users, tokens and sessions](auth.md)) |
+| Credential theft | passwords hashed, tokens stored as SHA-256 of the secret and compared in constant time, sessions stored hashed, login throttling, HttpOnly SameSite=Strict cookies (`__Host-` prefixed when `Secure`) with double-submit CSRF ([Users, tokens and sessions](auth.md)) |
 | Secret leakage | tokens, `Authorization`, cookies, DoH path tokens, passwords and the DNSSEC passphrase never reach logs, the query log, API responses or error bodies ([Logging and metrics](logging-and-metrics.md)) |
 | Key theft at rest | DNSSEC private keys encrypted with a passphrase when one is configured ([DNSSEC](dnssec.md#encryption-at-rest)) |
 | SSRF through blocklist fetch | blocklist URLs to private or loopback addresses are refused unless an admin allows them ([Filtering](filtering.md#url-safety-ssrf)) |

@@ -1096,3 +1096,134 @@ async fn secure_cookies_false_overrides_tls() {
             .contains_key(axum::http::header::STRICT_TRANSPORT_SECURITY)
     );
 }
+
+/// A fixture whose cookies are `Secure` (TLS on).
+fn secure_fixture() -> Fixture {
+    let mut f = fixture();
+    f.app = router(
+        f.state.clone(),
+        ApiConfig {
+            tls: true,
+            ..ApiConfig::default()
+        },
+    );
+    f
+}
+
+fn cookie_request(
+    method: Method,
+    uri: &str,
+    cookie: &str,
+    csrf_header: Option<&str>,
+) -> Request<Body> {
+    let mut b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::COOKIE, cookie);
+    if let Some(c) = csrf_header {
+        b = b.header("x-csrf-token", c);
+    }
+    b.body(Body::empty()).unwrap()
+}
+
+#[tokio::test]
+async fn host_prefixed_cookies_when_secure() {
+    let f = secure_fixture();
+    f.state
+        .auth
+        .users
+        .create("alice", PW, Role::Viewer)
+        .await
+        .unwrap();
+    let res = login(&f, "alice", PW).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let cookies = set_cookies(&res);
+    assert_eq!(cookies.len(), 2);
+    let session = cookies
+        .iter()
+        .find(|c| c.starts_with("__Host-dnsy_session="))
+        .expect("prefixed session cookie");
+    let csrf = cookies
+        .iter()
+        .find(|c| c.starts_with("__Host-dnsy_csrf="))
+        .expect("prefixed csrf cookie");
+    for c in [session, csrf] {
+        // `__Host-` requires Secure, Path=/ and no Domain.
+        assert!(c.contains("; Secure") && c.contains("; Path=/"), "{c}");
+        assert!(!c.to_ascii_lowercase().contains("domain"), "{c}");
+        assert!(c.contains("SameSite=Strict"), "{c}");
+    }
+    assert!(session.contains("HttpOnly"));
+    assert!(!csrf.contains("HttpOnly"));
+
+    // The prefixed names authenticate, and logout needs the prefixed CSRF cookie and header.
+    let id = cookie_value(&cookies, "__Host-dnsy_session");
+    let token = cookie_value(&cookies, "__Host-dnsy_csrf");
+    let jar = format!("__Host-dnsy_session={id}; __Host-dnsy_csrf={token}");
+    let me = call(
+        &f,
+        cookie_request(Method::GET, "/api/v1/auth/me", &jar, None),
+    )
+    .await;
+    assert_eq!(me.status(), StatusCode::OK);
+    let no_header = call(
+        &f,
+        cookie_request(Method::POST, "/api/v1/auth/logout", &jar, None),
+    )
+    .await;
+    assert_eq!(no_header.status(), StatusCode::FORBIDDEN);
+    let out = call(
+        &f,
+        cookie_request(Method::POST, "/api/v1/auth/logout", &jar, Some(&token)),
+    )
+    .await;
+    assert_eq!(out.status(), StatusCode::NO_CONTENT);
+    let cleared = set_cookies(&out);
+    for name in ["__Host-dnsy_session=", "__Host-dnsy_csrf="] {
+        let line = cleared.iter().find(|c| c.starts_with(name)).expect(name);
+        assert!(
+            line.contains("Max-Age=0") && line.contains("; Secure"),
+            "{line}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unprefixed_session_cookie_is_ignored_when_secure() {
+    let f = secure_fixture();
+    f.state
+        .auth
+        .users
+        .create("alice", PW, Role::Viewer)
+        .await
+        .unwrap();
+    let cookies = set_cookies(&login(&f, "alice", PW).await);
+    let id = cookie_value(&cookies, "__Host-dnsy_session");
+    let me = call(
+        &f,
+        cookie_request(
+            Method::GET,
+            "/api/v1/auth/me",
+            &format!("dnsy_session={id}"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(me.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn plain_cookie_names_when_not_secure() {
+    let f = fixture();
+    f.state
+        .auth
+        .users
+        .create("alice", PW, Role::Viewer)
+        .await
+        .unwrap();
+    let cookies = set_cookies(&login(&f, "alice", PW).await);
+    assert!(cookies.iter().all(|c| !c.contains("__Host-")));
+    assert!(cookies.iter().all(|c| !c.contains("; Secure")));
+    assert!(cookies.iter().any(|c| c.starts_with("dnsy_session=")));
+    assert!(cookies.iter().any(|c| c.starts_with("dnsy_csrf=")));
+}

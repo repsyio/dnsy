@@ -5,7 +5,8 @@ import { catchError, throwError } from 'rxjs';
 import { ApiError, isProblem } from './api-error';
 import { AuthService } from './auth.service';
 
-export const CSRF_COOKIE = 'dnsy_csrf';
+/** The CSRF cookie is `__Host-` prefixed when the server serves `Secure` cookies. */
+export const CSRF_COOKIES = ['__Host-dnsy_csrf', 'dnsy_csrf'];
 export const CSRF_HEADER = 'X-CSRF-Token';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const API_PREFIX = '/api/';
@@ -18,6 +19,14 @@ export function readCookie(name: string): string | null {
   return null;
 }
 
+export function readCsrfCookie(): string | null {
+  for (const name of CSRF_COOKIES) {
+    const value = readCookie(name);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
 const ANSWERS_401 = ['/auth/login', '/auth/me', '/auth/me/password'];
 
 /**
@@ -26,7 +35,7 @@ const ANSWERS_401 = ['/auth/login', '/auth/me', '/auth/me/password'];
  */
 export const apiInterceptor: HttpInterceptorFn = (req, next) => {
   if (!req.url.startsWith(API_PREFIX)) return next(req);
-  const token = SAFE_METHODS.has(req.method) ? null : readCookie(CSRF_COOKIE);
+  const token = SAFE_METHODS.has(req.method) ? null : readCsrfCookie();
   const outgoing = token ? req.clone({ setHeaders: { [CSRF_HEADER]: token } }) : req;
   const auth = inject(AuthService);
   const router = inject(Router);

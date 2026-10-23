@@ -35,6 +35,19 @@ describe('apiInterceptor', () => {
     req.flush({});
   });
 
+  it('csrf_interceptor_reads_the_host_prefixed_cookie', () => {
+    document.cookie = 'dnsy_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+    document.cookie = '__Host-dnsy_csrf=host-tok; path=/; Secure';
+    try {
+      http.post('/api/v1/zones', {}).subscribe();
+      const req = ctrl.expectOne('/api/v1/zones');
+      expect(req.request.headers.get('X-CSRF-Token')).toBe('host-tok');
+      req.flush({});
+    } finally {
+      document.cookie = '__Host-dnsy_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; Secure';
+    }
+  });
+
   it('csrf_header_not_added_on_safe_or_foreign_requests', () => {
     http.get('/api/v1/version').subscribe();
     expect(ctrl.expectOne('/api/v1/version').request.headers.has('X-CSRF-Token')).toBe(false);

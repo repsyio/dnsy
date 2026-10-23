@@ -82,7 +82,7 @@ paths render the 404 page.
 
 The session is an HttpOnly cookie. `apiInterceptor` (same-origin `/api/` calls only):
 
-- adds `X-CSRF-Token` from the `dnsy_csrf` cookie on unsafe methods (double submit);
+- adds `X-CSRF-Token` from the `dnsy_csrf` cookie (`__Host-dnsy_csrf` when the cookies are `Secure`) on unsafe methods (double submit);
 - maps failures to a typed `ApiError`, carrying the RFC 9457 problem document when the body is
   `application/problem+json`;
 - on a 401 clears the session and navigates to `/login`.
