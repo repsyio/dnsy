@@ -20,7 +20,7 @@ env:
 jobs:
   rust:
     name: e2e (rust)
-    runs-on: hetzner-lg
+    runs-on: repsy-lg
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: |
-          # The Hetzner runners have no rustup; the GitHub-hosted macOS and Windows runners do.
+          # The self-hosted runners have no rustup; the GitHub-hosted macOS and Windows runners do.
           if ! command -v rustup >/dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -46,13 +46,13 @@ jobs:
   # `just e2e-ui`, with system dependencies for Chromium and the report kept on failure.
   browser:
     name: e2e (browser)
-    runs-on: hetzner-lg
+    runs-on: repsy-lg
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Node first: the Hetzner runners ship an old system node that pnpm's installer cannot run
+      # Node first: the self-hosted runners ship an old system node that pnpm's installer cannot run
       # under, so Node 24 must be on the PATH before the pnpm action.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -66,7 +66,7 @@ jobs:
         working-directory: web
       - run: pnpm build
         working-directory: web
-      # The Hetzner runners are an Ubuntu release that Playwright cannot install Chromium for, so
+      # The self-hosted runners are an Ubuntu release that Playwright cannot install Chromium for, so
       # a Chrome binary is installed instead and Playwright is pointed at it through CHROME_BIN
       # (see web/playwright.config.ts).
       - name: Set up Chrome
@@ -79,7 +79,7 @@ jobs:
         run: echo "CHROME_BIN=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
       - name: Install the pinned toolchain
         run: |
-          # The Hetzner runners have no rustup; the GitHub-hosted macOS and Windows runners do.
+          # The self-hosted runners have no rustup; the GitHub-hosted macOS and Windows runners do.
           if ! command -v rustup >/dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -111,7 +111,7 @@ jobs:
     name: e2e
     if: always()
     needs: [rust, browser]
-    runs-on: hetzner-md
+    runs-on: repsy-md
     timeout-minutes: 5
     steps:
       - name: Require every job to have succeeded
