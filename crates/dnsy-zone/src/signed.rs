@@ -127,9 +127,9 @@ impl SignedIndex {
         for ((owner, code), set) in &signed.rrsets {
             let rtype = RecordType::from(*code);
             if !set.rrsigs.is_empty() {
-                sigs.insert((owner.clone(), rtype), Arc::from(set.rrsigs.as_slice()));
+                sigs.insert((owner.clone(), rtype), Arc::clone(&set.rrsigs));
             }
-            for r in &set.records {
+            for r in set.records.iter() {
                 match &r.data {
                     RData::Nsec { .. } => {
                         nsec.insert(owner.clone(), r.clone());
