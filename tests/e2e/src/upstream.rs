@@ -105,7 +105,7 @@ impl SignedRoot {
         let name = Name::from_ascii(name).expect("name");
         self.zone
             .rrset(&name, rtype)
-            .map(|s| s.records.iter().chain(&s.rrsigs).cloned().collect())
+            .map(|s| s.records.iter().chain(s.rrsigs.iter()).cloned().collect())
             .unwrap_or_default()
     }
 }
@@ -208,7 +208,13 @@ impl FakeUpstream {
         for ((name, code), set) in &signed.rrsets {
             s.rules.insert(
                 (name.clone(), RecordType::from(*code)),
-                Reply::Answer(set.records.iter().chain(&set.rrsigs).cloned().collect()),
+                Reply::Answer(
+                    set.records
+                        .iter()
+                        .chain(set.rrsigs.iter())
+                        .cloned()
+                        .collect(),
+                ),
             );
         }
         SignedRoot {

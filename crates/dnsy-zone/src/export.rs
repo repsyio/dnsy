@@ -389,17 +389,22 @@ mod tests {
 
     /// A snapshot holding exactly `records` (no signatures), for export tests.
     fn snapshot(records: Vec<dnsy_proto::Record>) -> SignedZone {
-        let mut rrsets = std::collections::BTreeMap::new();
+        let mut sets: std::collections::BTreeMap<_, Vec<_>> = std::collections::BTreeMap::new();
         for r in records {
-            rrsets
-                .entry((r.name.clone(), u16::from(r.rtype)))
-                .or_insert_with(|| SignedRrset {
-                    records: Vec::new(),
-                    rrsigs: Vec::new(),
-                })
-                .records
+            sets.entry((r.name.clone(), u16::from(r.rtype)))
+                .or_default()
                 .push(r);
         }
+        let rrsets = sets
+            .into_iter()
+            .map(|(key, records)| {
+                let set = SignedRrset {
+                    records: records.into(),
+                    rrsigs: Vec::new().into(),
+                };
+                (key, set)
+            })
+            .collect();
         SignedZone::new(Name::from_ascii("example.com.").unwrap(), rrsets, 0)
     }
 

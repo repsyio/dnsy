@@ -466,3 +466,35 @@ fn name_hash_is_case_insensitive_and_covers_long_names() {
     assert_eq!(hash(&upper), hash(&lower));
     assert_eq!(hash(&Name::root()), hash(&Name::root()));
 }
+
+/// A name of 42 octets, too long to live inline.
+fn long_name() -> Name {
+    n("0123456789abcdefghijklmnopqrstuv.example.")
+}
+
+#[test]
+fn long_name_clone_shares_its_octets() {
+    let name = long_name();
+    assert!(name.wire_len() > 32);
+    let copy = name.clone();
+    assert_eq!(copy, name);
+    assert_eq!(copy.as_wire().as_ptr(), name.as_wire().as_ptr());
+}
+
+#[test]
+fn lowercasing_a_lowercase_long_name_shares_its_octets() {
+    let name = long_name();
+    assert_eq!(
+        name.to_lowercase().as_wire().as_ptr(),
+        name.as_wire().as_ptr()
+    );
+}
+
+#[test]
+fn lowercasing_a_mixed_case_long_name_copies_and_leaves_the_original() {
+    let name = n("0123456789ABCDEFGHIJKLMNOPQRSTUV.Example.");
+    let lower = name.to_lowercase();
+    assert_eq!(lower.as_wire(), long_name().as_wire());
+    assert!(name.as_wire().starts_with(b"\x200123456789ABCDEF"));
+    assert_ne!(lower.as_wire().as_ptr(), name.as_wire().as_ptr());
+}

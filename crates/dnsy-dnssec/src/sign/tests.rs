@@ -146,7 +146,7 @@ fn dnskeys(z: &SignedZone) -> Vec<Dnskey> {
 fn verify_zone(z: &SignedZone, now: u32) {
     let keys = dnskeys(z);
     for ((name, code), set) in &z.rrsets {
-        for sig in &set.rrsigs {
+        for sig in set.rrsigs.iter() {
             let s = rrsig(sig);
             let k = keys
                 .iter()
@@ -263,7 +263,7 @@ fn rrsig_fields_follow_rfc4034() {
     let window = (5 * DAY).min(validity - 5 * DAY) / 2;
     let mut expirations = BTreeSet::new();
     for set in z.rrsets.values() {
-        for sig in &set.rrsigs {
+        for sig in set.rrsigs.iter() {
             let e = rrsig(sig).expiration;
             assert!(e <= NOW + validity && e > NOW + validity - window, "{e}");
             expirations.insert(e);
@@ -456,7 +456,7 @@ fn nsec3_opt_out_skips_insecure_delegations() {
     assert!(matches!(&param.data, RData::Nsec3param(p) if p.flags == 0));
     // The insecure delegation itself is still unsigned.
     let cut = z.rrset(&n("insecure.example."), RecordType::Ns).unwrap();
-    assert_eq!(cut.rrsigs, []);
+    assert!(cut.rrsigs.is_empty());
 }
 
 #[test]
@@ -542,7 +542,7 @@ fn resign_only_near_expiry() {
     verify_zone(&third, now(&clock));
     let mut replaced = 0;
     for (k, set) in &third.rrsets {
-        for (old, new) in second.rrsets[k].rrsigs.iter().zip(&set.rrsigs) {
+        for (old, new) in second.rrsets[k].rrsigs.iter().zip(set.rrsigs.iter()) {
             if old == new {
                 assert!(rrsig(old).expiration > now(&clock) + 5 * DAY);
             } else {
@@ -559,7 +559,7 @@ fn resign_only_near_expiry() {
     let other = csk(Algorithm::EcdsaP256Sha256);
     let fourth = ZoneSigner::resign(&data, &other, &p, &third, now(&clock)).unwrap();
     for (k, set) in &fourth.rrsets {
-        for sig in &set.rrsigs {
+        for sig in set.rrsigs.iter() {
             assert!(!third.rrsets[k].rrsigs.contains(sig));
         }
     }
@@ -1215,4 +1215,69 @@ fn resign_drops_cached_hashes_of_removed_names() {
     assert!(!hashes.contains_key(&n("h7.example.")));
     assert!(hashes.contains_key(&n("new.example.")));
     assert_eq!(second, sign_with(&zone, &keys, nsec3(false), None, 1));
+}
+
+/// Every `RRset` of `new` that is also in `old`, sharing its records and its signatures.
+fn shared_rrsets(old: &SignedZone, new: &SignedZone) -> usize {
+    new.rrsets
+        .iter()
+        .filter(|(k, s)| {
+            old.rrsets.get(*k).is_some_and(|o| {
+                Arc::ptr_eq(&o.records, &s.records) && Arc::ptr_eq(&o.rrsigs, &s.rrsigs)
+            })
+        })
+        .count()
+}
+
+#[test]
+fn resign_of_an_unchanged_zone_shares_every_rrset_with_the_previous_snapshot() {
+    let zone = big_zone(500);
+    let keys = csk(Algorithm::EcdsaP256Sha256);
+    for denial in [Denial::Nsec, nsec3(false)] {
+        let first = sign_with(&zone, &keys, denial.clone(), None, 4);
+        let second = sign_with(&zone, &keys, denial, Some(&first), 4);
+        assert_eq!(first, second);
+        assert_eq!(shared_rrsets(&first, &second), second.rrsets.len());
+    }
+}
+
+#[test]
+fn resign_after_one_change_shares_all_other_rrsets() {
+    let mut zone = big_zone(500);
+    let keys = csk(Algorithm::EcdsaP256Sha256);
+    let first = sign_with(&zone, &keys, nsec3(false), None, 4);
+    zone.records
+        .iter_mut()
+        .find(|r| r.name == n("h7.example."))
+        .unwrap()
+        .data = RData::A(Ipv4Addr::new(203, 0, 113, 7));
+    let second = sign_with(&zone, &keys, nsec3(false), Some(&first), 4);
+    assert_eq!(shared_rrsets(&first, &second), second.rrsets.len() - 1);
+    let changed = &second.rrsets[&(n("h7.example."), u16::from(RecordType::A))];
+    assert!(!Arc::ptr_eq(
+        &changed.records,
+        &first.rrsets[&(n("h7.example."), u16::from(RecordType::A))].records
+    ));
+}
+
+#[test]
+fn a_set_keeps_its_records_in_zone_order_and_the_lowest_ttl() {
+    let mut zone = big_zone(3);
+    let mut late = a("h1.example.", [10, 0, 0, 9]);
+    late.ttl = 60;
+    zone.records.push(a("h1.example.", [10, 0, 0, 7]));
+    zone.records.push(late);
+    zone.records.push(a("h1.example.", [10, 0, 0, 8]));
+    let signed = sign_with(&zone, &csk(Algorithm::Ed25519), Denial::Nsec, None, 1);
+    let set = &signed.rrsets[&(n("h1.example."), u16::from(RecordType::A))];
+    let ips: Vec<_> = set
+        .records
+        .iter()
+        .map(|r| match r.data {
+            RData::A(ip) => ip.octets()[3],
+            _ => panic!("not an A record"),
+        })
+        .collect();
+    assert_eq!(ips, [1, 7, 9, 8]);
+    assert!(set.records.iter().all(|r| r.ttl == 60));
 }
