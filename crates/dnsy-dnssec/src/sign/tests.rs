@@ -1261,6 +1261,26 @@ fn resign_after_one_change_shares_all_other_rrsets() {
 }
 
 #[test]
+fn resign_serves_the_new_case_when_only_an_owner_name_case_changed() {
+    let mut zone = big_zone(5);
+    let keys = csk(Algorithm::EcdsaP256Sha256);
+    let first = sign_with(&zone, &keys, Denial::Nsec, None, 1);
+    for r in zone
+        .records
+        .iter_mut()
+        .filter(|r| r.name == n("h2.example."))
+    {
+        r.name = n("H2.Example.");
+    }
+    let second = sign_with(&zone, &keys, Denial::Nsec, Some(&first), 1);
+    let set = &second.rrsets[&(n("h2.example."), u16::from(RecordType::A))];
+    assert_eq!(set.records[0].name.as_wire(), n("H2.Example.").as_wire());
+    assert_eq!(set.rrsigs[0].name.as_wire(), n("H2.Example.").as_wire());
+    // The A set and the NSEC set at the same owner are the only ones that follow the new case.
+    assert_eq!(shared_rrsets(&first, &second), second.rrsets.len() - 2);
+}
+
+#[test]
 fn a_set_keeps_its_records_in_zone_order_and_the_lowest_ttl() {
     let mut zone = big_zone(3);
     let mut late = a("h1.example.", [10, 0, 0, 9]);

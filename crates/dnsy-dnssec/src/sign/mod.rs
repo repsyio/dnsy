@@ -587,11 +587,11 @@ fn sign_job(
     // memory (the one being served and the one replacing it) share everything that did not
     // change.
     let rrsigs = match old {
-        Some(o) if *o.rrsigs == *fresh => Arc::clone(&o.rrsigs),
+        Some(o) if identical(&o.rrsigs, &fresh) => Arc::clone(&o.rrsigs),
         _ => fresh.into(),
     };
     let records = match old {
-        Some(o) if *o.records == *records => Arc::clone(&o.records),
+        Some(o) if identical(&o.records, &records) => Arc::clone(&o.records),
         _ => records,
     };
     Ok((key, SignedRrset { records, rrsigs }))
@@ -672,7 +672,12 @@ fn rrsig_for(
         })
     });
     if let Some(sig) = kept {
-        return Ok(sig.clone());
+        // The signature covers the canonical (lowercase) owner, so it stays valid when the
+        // owner's case changed; only the served name has to follow the records.
+        return Ok(Record {
+            name: records[0].name.clone(),
+            ..sig.clone()
+        });
     }
     let first = &records[0];
     signer.sign_rrset(
@@ -844,6 +849,15 @@ fn add_apex_records(
         );
     }
     Ok(())
+}
+
+/// True when two record lists are equal and every owner name has the same bytes. `Name`
+/// equality ignores case, so `==` alone would keep serving the old case after a case-only edit.
+fn identical(a: &[Record], b: &[Record]) -> bool {
+    a == b
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.name.as_wire() == y.name.as_wire())
 }
 
 /// True when two `RRsets` have the same TTL, classes and RDATA (in canonical form, as
