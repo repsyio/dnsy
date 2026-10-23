@@ -6,6 +6,8 @@ All notable changes to DNSY are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-23
+
 ### Changed
 
 - **Behaviour change:** the default client ACL is private-only. Only loopback, RFC 1918,
@@ -16,6 +18,11 @@ All notable changes to DNSY are documented here. The format follows
 
 ### Added
 
+- Blocklist matching on CNAME targets: a response whose CNAME chain reaches a blocked name is
+  blocked, and the check runs again on every cache hit.
+- With Secure cookies the session and CSRF cookies use the `__Host-` prefix
+  (`__Host-dnsy_session`, `__Host-dnsy_csrf`); plain-HTTP setups keep the old names.
+- During an algorithm rollover the zone is signed with both the old and the new algorithm.
 - Release pipeline: pushing a `v*` tag builds `dnsy` with the web UI embedded for Linux (gnu and musl,
   x86_64 and aarch64), macOS (x86_64 and aarch64) and Windows (x86_64) with cargo-dist, and publishes
   archives, SHA-256 checksums and shell and PowerShell installers to a GitHub Release. See
@@ -61,4 +68,4 @@ All notable changes to DNSY are documented here. The format follows
 - Settings changed through `PATCH /api/v1/settings*` apply at once but are runtime-only, except the
   per-client rate limit.
 - No Prometheus `/metrics` endpoint.
-- No release binaries or hosted documentation site yet (planned with the pipelines).
+- The documentation site is published at dnsy.dev; release binaries appear with the first `v*` tag.
