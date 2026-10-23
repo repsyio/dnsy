@@ -29,12 +29,24 @@ Gatekeeper and Windows SmartScreen may warn on first run.
 
 ```sh
 # Linux and macOS: installs to $CARGO_HOME/bin (default ~/.cargo/bin)
+curl -fsSL https://dnsy.dev/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://dnsy.dev/install.ps1 | iex
+```
+
+`dnsy.dev/install.sh` and `dnsy.dev/install.ps1` are two-line wrappers (sources in `docs/landing/`)
+that run the installer attached to the latest release, so they never go stale. The direct commands
+work too, and are what the wrappers run:
+
+```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/repsyio/dnsy/releases/latest/download/dnsy-installer.sh | sh
 ```
 
 ```powershell
-# Windows
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/repsyio/dnsy/releases/latest/download/dnsy-installer.ps1 | iex"
 ```
 
