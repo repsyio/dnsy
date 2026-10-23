@@ -64,9 +64,18 @@ no DNS library, only `ring` for raw crypto primitives.
 
 ## Quickstart
 
-DNSY is built from source for now; release binaries come with the release pipeline.
+Prebuilt binaries for Linux, macOS and Windows are on the
+[releases page](https://github.com/repsyio/dnsy/releases). On Linux and macOS:
 
-**1. Build.** You need a Rust toolchain (pinned in `rust-toolchain.toml`). `just build` also builds
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/repsyio/dnsy/releases/latest/download/dnsy-installer.sh | sh
+```
+
+On Windows, use `dnsy-installer.ps1` from the same page (see [Releases](docs/book/src/release.md)),
+or build from source as below.
+
+**1. Build (skip this if you installed a release).** You need a Rust toolchain (pinned in `rust-toolchain.toml`). `just build` also builds
 the web UI and embeds it (it needs node and pnpm); without them
 `cargo build --release -p dnsy` gives the same server with the UI paths answering 404.
 
@@ -189,10 +198,10 @@ scripts/      coverage gates, SVG check, demo and screenshot tooling
 
 ## Documentation
 
-- The book: <https://dnsy.dev/docs/> (planned; build it locally with `just docs`, output in `target/site/`)
+- The book: <https://dnsy.dev/docs/> (build it locally with `just docs`, output in `target/site/`)
   with install, configuration, zones, DNSSEC, filtering, DoT, DoH, REST API, operations,
   troubleshooting and more. Sources are in [`docs/book/src`](docs/book/src/SUMMARY.md).
-- API reference: <https://dnsy.dev/api/> (planned). The OpenAPI document is checked in as
+- API reference: <https://dnsy.dev/api/>. The OpenAPI document is checked in as
   [`openapi/dnsy.json`](openapi/dnsy.json), and a running server serves it at `/api/openapi.json`.
   See [API reference](docs/book/src/api-reference.md).
 - [Changelog](CHANGELOG.md).

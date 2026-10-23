@@ -42,6 +42,7 @@ source, DNSSEC status and latency per query, but not the answer records or Exten
 and the UI has no one-click block or allow buttons on log rows; add rules on the Filtering page.
 
 **Which platforms are supported?** Linux is the primary target; the code is portable and release
-binaries for Linux, macOS and Windows are planned with the release pipeline.
+binaries for Linux (x86_64 and aarch64), macOS (Intel and Apple silicon) and Windows (x86_64) are
+published with every release; see [Releases](release.md).
 
 **Where do I report a security issue?** Privately, see [Security](security.md).
