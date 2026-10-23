@@ -10,8 +10,9 @@ dependencies) feeds the DNS crates, and the binary `dnsy` wires them together.
  UDP/TCP :53 ---> |  dnsy-server  listeners (UDP TCP DoT DoH)
  DoT     :853 --> |        |                                |
  DoH     :443 --> |        v                                |
-                  |  dnsy-engine  pipeline: sanity, ACL, rate limit, filter,
-                  |        |      local zones, cache, validation, shaping
+                  |  dnsy-engine  pipeline: ACL, rate limit, sanity, filter,
+                  |        |      local zones, cache, upstreams, validation,
+                  |        |      scrubbing, response-IP policy, shaping
                   |        |---> dnsy-zone      JSON zones, signing, lookup
                   |        |---> dnsy-filter    blocklists, ACL rules
                   |        '---> dnsy-resolver  cache, load balancing ----> 1.1.1.1 ...
@@ -59,18 +60,19 @@ query is decided. The sections below describe the listeners and the pipeline.
 
 `dnsy-engine::Engine` runs every query through one pipeline, whatever the transport. The first step that produces an answer ends the pipeline; exactly one `QueryEvent` (source, rcode, DNSSEC status, latency, principal) is emitted per request, including refused and dropped ones.
 
-1. **Sanity:** no question -> FORMERR; opcode other than QUERY -> NOTIMP; EDNS version other than 0 -> BADVERS.
-2. **ACL:** the client address (or mTLS certificate) decides `allow`, `refuse` (REFUSED) or `drop`.
-3. **Rate limit:** per client (IPv4 /32, IPv6 /64) token bucket; over the limit UDP is dropped and stream transports get REFUSED.
-4. **Blocklists / allowlist:** a blocked name is answered per `block_mode` (NXDOMAIN, `0.0.0.0`/`::`, REFUSED or custom addresses) with EDE 15 (list) or 17 (custom rule). Blocked answers are never cached.
-5. **Local zones:** an authoritative answer with AA set. Local zones **bypass the cache in both directions**: the cache is never consulted for them and their answers are never inserted, so edits take effect immediately. A CNAME chain that ends in a name missing from the zone answers NXDOMAIN, one that ends in a missing type NOERROR (RFC 6604: the RCODE describes the last name of the chain); chains leaving our zones are returned as-is and not chased.
-6. **RD check:** a non-local query with RD=0 is REFUSED (we only offer recursion).
-7. **Cache:** keyed by (name, type, class, DO, CD), so DNSSEC-requesting and checking-disabled clients never share entries with others.
-8. **Upstream groups:** a clean copy of the question (no client EDNS options, our own id, the client's DO and CD) goes to the routed group, retried up to `resolver.attempts` times. The whole step is bounded by the deadline `resolver.timeout_ms * resolver.attempts` measured from receipt: when every upstream is down or slow the client gets SERVFAIL with EDE 22 (no reachable upstream) within it, never a hang; upstream transport errors or unusable responses give SERVFAIL with EDE 23 (network error). Error responses are not cached.
-9. **Scrubbing (cache poisoning defence):** a response whose question differs from ours is discarded (SERVFAIL, EDE 23) and never cached. Otherwise only in-bailiwick data is kept: answer records on the CNAME chain from the question name, the SOA of a zone enclosing the final name for negative answers, DNSSEC proofs only for DO clients, and no additional section (minimal responses). AA and AD from upstream are cleared.
-10. **DNSSEC validation:** a seam returning `Unchecked` until the validating forwarder lands; its status is stored with the cache entry.
-11. **Response-IP policy:** an answer (fresh or cached) with an A/AAAA address inside a listed network is replaced by a block answer (list name `response-ip`, EDE 15), e.g. against DNS rebinding.
-12. **Shaping:** the client's id, flags and question spelling are restored, RA is set, and an OPT record is sent only to clients that sent one (our payload size, their DO bit, EDE options only).
+1. **ACL:** the client address (or mTLS certificate) decides `allow`, `refuse` (REFUSED) or `drop`. This runs before any other reply, error replies included.
+2. **Rate limit:** per client (IPv4 /32, IPv6 /64) token bucket, also before any other reply. Over the limit, UDP is dropped (one in `limits.rate_limit_slip` gets a minimal truncated reply instead) and stream transports get REFUSED.
+3. **Sanity:** no question -> FORMERR; opcode other than QUERY -> NOTIMP; EDNS version other than 0 -> BADVERS.
+4. **Zone transfers:** AXFR and IXFR are REFUSED, for local zones and forwarded names alike.
+5. **Blocklists / allowlist:** a blocked name is answered per `block_mode` (NXDOMAIN, `0.0.0.0`/`::`, REFUSED or custom addresses) with EDE 15 (list) or 17 (custom rule). Blocked answers are never cached.
+6. **Local zones:** an authoritative answer with AA set. ANY gets the RFC 8482 minimal answer. Local zones **bypass the cache in both directions**: the cache is never consulted for them and their answers are never inserted, so edits take effect immediately. A CNAME chain that ends in a name missing from the zone answers NXDOMAIN, one that ends in a missing type NOERROR (RFC 6604: the RCODE describes the last name of the chain); chains leaving our zones are returned as-is and not chased.
+7. **RD and ANY check:** a non-local query with RD=0 is REFUSED (we only offer recursion), and so is a non-local ANY query: forwarding it would turn the server into an amplifier.
+8. **Cache:** keyed by (name, type, class, DO, CD), so DNSSEC-requesting and checking-disabled clients never share entries with others. A hit skips the upstreams, validation and scrubbing (they ran when the entry was stored) but still passes the response-IP policy and shaping. Stale answers are served with EDE 3 or 19.
+9. **Upstream groups:** on a miss, a clean copy of the question (no client EDNS options, our own id) goes to the routed group, retried up to `resolver.attempts` times. Identical concurrent misses share one upstream exchange; at most `MAX_MISS_WAITERS` (256) requests wait on it, further ones get SERVFAIL (EDE 22) at once. The whole step is bounded by the deadline `resolver.timeout_ms * resolver.attempts` measured from receipt: when every upstream is down or slow the client gets SERVFAIL with EDE 22 (no reachable upstream) within it, never a hang; upstream transport errors or unusable responses give SERVFAIL with EDE 23 (network error). Error responses are not cached.
+10. **DNSSEC validation:** unless `dnssec.validation` is `off` or the client sent CD=1, the query goes upstream with DO=1 and CD=1 and the raw answer is validated by `dnsy-dnssec`, fetching DS and DNSKEY records through the cache. Validation runs before scrubbing. Answer TTLs are capped by the remaining validity of the signatures, and the status is stored with the cache entry. In `strict` mode a Bogus answer becomes SERVFAIL with the validator's EDE; in `permissive` mode it is served without AD, the EDE attached. A client CD=1 skips validation: the upstream answer is returned as-is from its own (CD) cache entry. See [DNSSEC](dnssec.md).
+11. **Scrubbing (cache poisoning defence):** a response whose question differs from ours is discarded (SERVFAIL, EDE 23) and never cached. Otherwise only in-bailiwick data is kept: answer records on the CNAME chain from the question name, the SOA of a zone enclosing the final name for negative answers, DNSSEC records only for DO clients, and no additional section (minimal responses). AA and AD from upstream are cleared.
+12. **Response-IP policy:** an answer (fresh or cached) with an A/AAAA address inside a listed network is replaced by a block answer (list name `response-ip`, EDE 15), e.g. against DNS rebinding.
+13. **Shaping:** the client's id, flags and question spelling are restored, RA is set, AD is set only for Secure answers to clients that sent DO or AD (RFC 6840 5.7), and an OPT record is sent only to clients that sent one (our payload size, their DO bit, EDE options only).
 
 `Handler::handle` must always return a message, so a dropped request is answered REFUSED there; transports that can stay silent call `Engine::process`, which returns `None` for drops.
 
