@@ -4,6 +4,12 @@ name: Release verify
 
 on:
   workflow_call:
+  # The step names a test by path; run it when that test or this file changes so it cannot drift.
+  pull_request:
+    paths:
+      - .github/workflows/release-verify.yml
+      - crates/dnsy-api/**
+      - web/**
 
 permissions:
   contents: read
@@ -30,6 +36,6 @@ jobs:
           pnpm build
       - name: Embedded UI test (release profile settings, UI compiled in)
         run: |
-          cargo test --release -p dnsy-api --features embed-ui --lib -- ui_serves_brotli_when_accepted 2>&1 | tee test.log
+          cargo test --release -p dnsy-api --features embed-ui --test guards -- ui_serves_brotli_when_accepted 2>&1 | tee test.log
           # A filter that matches nothing exits 0; make that a failure.
-          grep -q 'test tests::ui_serves_brotli_when_accepted ... ok' test.log
+          grep -q 'test ui_serves_brotli_when_accepted ... ok' test.log
