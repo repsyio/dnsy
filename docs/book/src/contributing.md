@@ -147,6 +147,7 @@ gate like `dnsy-e2e`) holds the performance tools:
   `--pipeline`, `--count` names cycled for cache hits, `--unique` for misses).
 - `fakeup`: a fast multi-task UDP upstream answering every name (`nx*` gets NXDOMAIN).
 - `just bench-micro`: criterion micro-benchmarks (`benches/micro.rs`): codec, single-thread cache hit and `cache/hit_16_threads_320k` (16 threads, 320 000 lookups per iteration; ops/s = 320 000 / time).
+- `just allocs`: allocations per cache hit (`allocs` binary). `unsafe_code` is forbidden, so the repo has no counting allocator of its own; the binary installs the `dhat` crate's as the global allocator (bench crate only) and reads its cumulative block count around 2 000 runs, counting every thread. It reports `Cache::get` alone, `Handler::handle` on a warm cache and a datagram through the UDP listener and back (engine with an event sink that drops events). Targets: cache hit at most 2, UDP hit at most 30; the recipe fails above them. Measured on this tree: cache hit 2.00, engine hit 2.00, UDP hit 9.00. The two cache-hit allocations are the owned copy of the cached message (its question and answer vectors) that `Cache::get` returns with TTLs decremented; decrementing at encode time would remove that copy but needs the codec and the engine pipeline to carry the cached message by reference, which the numbers do not call for.
 
 Performance stories paste the `just bench` table into their PR. Run it on an otherwise idle
 machine and pin CPUs with `taskset` when comparing before and after.
@@ -301,7 +302,7 @@ the function. Put new tests in their own `*_tests.rs` module or `tests/` file. U
 
 ## Continuous integration
 
-Two workflows run on every pull request and on pushes to `main`; both call the same `just`
+Two workflows run on every pull request; both call the same `just`
 recipes as the local gate, so a green `just ci` predicts a green pipeline.
 
 | Workflow / job | What it runs |

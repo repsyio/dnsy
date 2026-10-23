@@ -65,6 +65,10 @@ bench:
 bench-micro:
     cargo bench -p dnsy-bench --bench micro
 
+# Allocation counts on the cache-hit path (dhat as the global allocator); fails above the targets (cache hit 2, UDP hit 30).
+allocs:
+    cargo run --release -p dnsy-bench --bin allocs -- --check
+
 # Regenerate web/src/app/api/schema.d.ts from openapi/dnsy.json.
 web-types:
     cd web && pnpm types && pnpm prettier --write src/app/api/schema.d.ts
@@ -89,7 +93,7 @@ docs:
     target="$(realpath -m "${CARGO_TARGET_DIR:-target}")"
     rm -rf "$target/site"
     mkdir -p "$target/site"
-    cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
     cp -r "$target/doc" "$target/site/api"
     # A workspace rustdoc build has no root index; send /api/ to the shared vocabulary crate.
     printf '%s\n' '<!doctype html><meta charset="utf-8"><title>DNSY API docs</title><meta http-equiv="refresh" content="0; url=dnsy_core/index.html"><a href="dnsy_core/index.html">DNSY API docs</a>' > "$target/site/api/index.html"
