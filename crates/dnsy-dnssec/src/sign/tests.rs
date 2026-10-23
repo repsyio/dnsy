@@ -689,6 +689,123 @@ fn snapshot_accessors_and_ttl_normalisation() {
     assert_eq!(dnskey.records[0].ttl, 3600);
 }
 
+fn key_alg(role: KeyRole, state: KeyState, alg: Algorithm) -> ZoneKey {
+    ZoneKey::new(
+        role,
+        state,
+        SigningKey::generate(alg, role.is_sep()).unwrap(),
+    )
+}
+
+/// The algorithms that signed an `RRset`, sorted.
+fn sig_algorithms(z: &SignedZone, owner: &str, t: RecordType) -> Vec<u8> {
+    let mut v: Vec<u8> = z
+        .rrset(&n(owner), t)
+        .unwrap()
+        .rrsigs
+        .iter()
+        .map(|s| rrsig(s).algorithm)
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+const ECDSA: u8 = 13;
+const ED25519: u8 = 15;
+
+#[test]
+fn algorithm_rollover_publish_double_signs_zone_data() {
+    let keys = ActiveKeys {
+        keys: vec![
+            key_alg(KeyRole::Ksk, KeyState::Active, Algorithm::EcdsaP256Sha256),
+            key_alg(KeyRole::Zsk, KeyState::Active, Algorithm::EcdsaP256Sha256),
+            key_alg(KeyRole::Ksk, KeyState::Published, Algorithm::Ed25519),
+            key_alg(KeyRole::Zsk, KeyState::Published, Algorithm::Ed25519),
+        ],
+    };
+    let z = ZoneSigner::sign(&zone(), &keys, &policy(Denial::Nsec), NOW).unwrap();
+    verify_zone(&z, NOW);
+    for (owner, t) in [
+        ("www.example.", RecordType::A),
+        ("example.", RecordType::Soa),
+        ("example.", RecordType::Nsec),
+    ] {
+        assert_eq!(
+            sig_algorithms(&z, owner, t),
+            [ECDSA, ED25519],
+            "{owner} {t:?}"
+        );
+    }
+    assert_eq!(
+        sig_algorithms(&z, "example.", RecordType::Dnskey),
+        [ECDSA, ED25519]
+    );
+}
+
+#[test]
+fn algorithm_rollover_retired_old_algorithm_keeps_signing() {
+    let keys = ActiveKeys {
+        keys: vec![
+            key_alg(KeyRole::Csk, KeyState::Retired, Algorithm::EcdsaP256Sha256),
+            key_alg(KeyRole::Csk, KeyState::Active, Algorithm::Ed25519),
+        ],
+    };
+    let z = ZoneSigner::sign(
+        &zone(),
+        &keys,
+        &policy(Denial::Nsec3 {
+            iterations: 0,
+            salt: Vec::new(),
+            opt_out: false,
+        }),
+        NOW,
+    )
+    .unwrap();
+    verify_zone(&z, NOW);
+    assert_eq!(
+        sig_algorithms(&z, "www.example.", RecordType::A),
+        [ECDSA, ED25519]
+    );
+}
+
+#[test]
+fn same_algorithm_rollover_keeps_single_signature() {
+    let keys = ActiveKeys {
+        keys: vec![
+            key_alg(KeyRole::Zsk, KeyState::Active, Algorithm::Ed25519),
+            key_alg(KeyRole::Zsk, KeyState::Published, Algorithm::Ed25519),
+            key_alg(KeyRole::Zsk, KeyState::Retired, Algorithm::Ed25519),
+            key_alg(KeyRole::Ksk, KeyState::Active, Algorithm::Ed25519),
+        ],
+    };
+    let z = ZoneSigner::sign(&zone(), &keys, &policy(Denial::Nsec), NOW).unwrap();
+    assert_eq!(sig_algorithms(&z, "www.example.", RecordType::A), [ED25519]);
+    assert_eq!(
+        z.rrset(&n("www.example."), RecordType::A)
+            .unwrap()
+            .rrsigs
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn algorithm_rollover_signing_flags() {
+    use KeyRole::{Csk, Ksk, Zsk};
+    use KeyState::{Active, Generated, Published, Removed, Retired};
+    let flags = ZoneKey::signing_flags(&[
+        (Ksk, Active, ECDSA),
+        (Zsk, Active, ECDSA),
+        (Zsk, Published, ED25519),
+        (Zsk, Retired, ECDSA),
+        (Zsk, Published, ECDSA),
+        (Zsk, Generated, ED25519),
+        (Zsk, Removed, ED25519),
+        (Csk, Published, ED25519),
+    ]);
+    assert_eq!(flags, [true, true, true, false, false, false, false, true]);
+}
+
 #[test]
 fn key_duties() {
     use KeyRole::{Csk, Ksk, Zsk};

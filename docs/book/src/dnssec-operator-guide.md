@@ -411,6 +411,25 @@ explicitly if the zone uses 15). Verified by moving the key timestamps in the da
 forward: both transitions happened on the next timer pass and the signatures of `www` changed
 from key tag 44434 to 31218 on the pass after.
 
+### Algorithm rollover: double signing
+
+When the new key has a different algorithm than the active key of its role (for example 13
+to 15), every algorithm in the DNSKEY RRset must have a complete set of signatures (RFC 4035
+2.2, RFC 6781 4.1.4). DNSY therefore double-signs the whole zone for the length of the
+rollover, instead of letting the new key wait unused as in a same-algorithm pre-publish:
+
+- From the moment the new key is `published`, it signs every RRset beside the old key, so
+  validators holding either DNSKEY see a complete chain.
+- A `retired` key of the old algorithm keeps signing zone data until it is `removed`, for
+  the same reason it keeps signing the DNSKEY RRset.
+- A published or retired key whose algorithm an active key of the same kind already covers
+  (a same-algorithm rollover) does not sign zone data, so nothing changes there.
+- Costs: while double-signing, the zone carries two RRSIGs per RRset, so responses with
+  DNSSEC OK and zone transfers grow, and signing takes about twice the CPU.
+
+For a KSK or CSK algorithm change the DS record for the new algorithm still waits for your
+confirmation as above; the double signatures keep the zone valid for resolvers on either DS.
+
 ### KSK or CSK rollover (needs the registrar)
 
 1. Start it: `dnsy dnssec keys rollover example.com --role ksk`

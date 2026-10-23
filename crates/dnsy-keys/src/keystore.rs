@@ -327,8 +327,13 @@ impl KeyStore {
     /// Missing or wrong passphrase, or a database failure.
     pub async fn active_keys(&self, zone: &Name) -> Result<ActiveKeys, KeyStoreError> {
         let mut keys = Vec::new();
-        for (rec, dnskey) in self.dnskeys(zone).await? {
-            keys.push(if ZoneKey::signs(rec.role, rec.state) {
+        let stored = self.dnskeys(zone).await?;
+        let meta: Vec<_> = stored
+            .iter()
+            .map(|(r, _)| (r.role, r.state, r.algorithm.number()))
+            .collect();
+        for ((rec, dnskey), signs) in stored.into_iter().zip(ZoneKey::signing_flags(&meta)) {
+            keys.push(if signs {
                 ZoneKey::new(rec.role, rec.state, self.signing_key(rec.id).await?)
             } else {
                 ZoneKey::public(rec.role, rec.state, dnskey)

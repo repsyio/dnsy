@@ -716,4 +716,108 @@ mod tests {
             KeyState::Published
         );
     }
+
+    /// Signs a minimal zone with the keys the store would hand the signer and returns the
+    /// algorithm numbers on the SOA and on the DNSKEY `RRset`.
+    async fn signature_algorithms(f: &Fixture, z: &Name) -> (Vec<u8>, Vec<u8>) {
+        use dnsy_dnssec::{Denial, SigningPolicy, ZoneData, ZoneSigner};
+        use dnsy_proto::{Class, RData, Record, RecordType, Soa};
+        let soa = Record {
+            name: z.clone(),
+            rtype: RecordType::Soa,
+            class: Class::In,
+            ttl: 300,
+            data: RData::Soa(Soa {
+                mname: z.clone(),
+                rname: z.clone(),
+                serial: 1,
+                refresh: 3600,
+                retry: 600,
+                expire: 86_400,
+                minimum: 300,
+            }),
+        };
+        let data = ZoneData {
+            origin: z.clone(),
+            records: vec![soa],
+        };
+        let policy = SigningPolicy {
+            denial: Denial::Nsec,
+            signature_validity_days: 14,
+            refresh_days: 5,
+            dnskey_ttl: 3600,
+        };
+        let keys = f.ks.active_keys(z).await.unwrap();
+        let signed = ZoneSigner::sign(&data, &keys, &policy, 1_800_000_000).unwrap();
+        let algs = |t: RecordType| {
+            let mut v: Vec<u8> = signed
+                .rrset(z, t)
+                .unwrap()
+                .rrsigs
+                .iter()
+                .map(|r| match &r.data {
+                    RData::Rrsig(s) => s.algorithm,
+                    _ => unreachable!(),
+                })
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        (algs(RecordType::Soa), algs(RecordType::Dnskey))
+    }
+
+    #[tokio::test]
+    async fn algorithm_rollover_double_signs_through_every_state() {
+        let f = fixture(Some("pw"));
+        let z = zone();
+        f.ks.bootstrap(&z, KeyLayout::Csk, ECDSA).await.unwrap();
+        assert_eq!(signature_algorithms(&f, &z).await.0, [13]);
+
+        // Published: the new algorithm signs from the moment its DNSKEY is published.
+        f.ks.start_rollover(&z, KeyRole::Csk, Algorithm::Ed25519)
+            .await
+            .unwrap();
+        assert_eq!(
+            signature_algorithms(&f, &z).await,
+            (vec![13, 15], vec![13, 15])
+        );
+
+        // Waiting for the DS keeps the double signing in place.
+        f.clock.advance(10_000_000);
+        f.ks.tick(&z, T).await.unwrap();
+        assert_eq!(signature_algorithms(&f, &z).await.0, [13, 15]);
+
+        // Active new key, retired old key: both algorithms still sign.
+        let new = f.ks.keys(&z).await.unwrap()[1].id;
+        f.ks.confirm_ds(new).await.unwrap();
+        f.ks.tick(&z, T).await.unwrap();
+        let keys = f.ks.keys(&z).await.unwrap();
+        assert_eq!(
+            states(&keys, KeyRole::Csk),
+            [KeyState::Retired, KeyState::Active]
+        );
+        assert_eq!(
+            signature_algorithms(&f, &z).await,
+            (vec![13, 15], vec![13, 15])
+        );
+
+        // Removed: only the new algorithm remains.
+        f.clock.advance(13_600);
+        f.ks.tick(&z, T).await.unwrap();
+        assert_eq!(signature_algorithms(&f, &z).await, (vec![15], vec![15]));
+    }
+
+    #[tokio::test]
+    async fn same_algorithm_zsk_rollover_never_double_signs() {
+        let f = fixture(None);
+        let z = zone();
+        f.ks.bootstrap(&z, KeyLayout::KskZsk, ECDSA).await.unwrap();
+        f.ks.start_rollover(&z, KeyRole::Zsk, Algorithm::EcdsaP256Sha256)
+            .await
+            .unwrap();
+        assert_eq!(signature_algorithms(&f, &z).await.0, [13]);
+        f.clock.advance(3600);
+        f.ks.tick(&z, T).await.unwrap();
+        assert_eq!(signature_algorithms(&f, &z).await.0, [13]);
+    }
 }
