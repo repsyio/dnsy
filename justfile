@@ -89,7 +89,7 @@ docs:
     target="$(realpath -m "${CARGO_TARGET_DIR:-target}")"
     rm -rf "$target/site"
     mkdir -p "$target/site"
-    cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
     cp -r "$target/doc" "$target/site/api"
     # A workspace rustdoc build has no root index; send /api/ to the shared vocabulary crate.
     printf '%s\n' '<!doctype html><meta charset="utf-8"><title>DNSY API docs</title><meta http-equiv="refresh" content="0; url=dnsy_core/index.html"><a href="dnsy_core/index.html">DNSY API docs</a>' > "$target/site/api/index.html"

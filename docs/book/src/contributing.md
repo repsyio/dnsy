@@ -301,7 +301,7 @@ the function. Put new tests in their own `*_tests.rs` module or `tests/` file. U
 
 ## Continuous integration
 
-Two workflows run on every pull request and on pushes to `main`; both call the same `just`
+Two workflows run on every pull request; both call the same `just`
 recipes as the local gate, so a green `just ci` predicts a green pipeline.
 
 | Workflow / job | What it runs |
