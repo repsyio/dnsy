@@ -20,6 +20,7 @@ use dnsy_proto::{
 };
 use ring::digest::{SHA256, digest};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 const DAY: u32 = 86_400;
 /// Signatures start one hour in the past to tolerate validators with slow clocks.
@@ -158,8 +159,8 @@ pub struct ActiveKeys {
 /// at or below a zone cut).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedRrset {
-    pub records: Vec<Record>,
-    pub rrsigs: Vec<Record>,
+    pub records: Arc<[Record]>,
+    pub rrsigs: Arc<[Record]>,
 }
 
 /// A signed snapshot of a zone: every `RRset`, keyed by owner (canonical order, RFC 4034
@@ -217,7 +218,7 @@ impl SignedZone {
     pub fn records(&self) -> impl Iterator<Item = &Record> {
         self.rrsets
             .values()
-            .flat_map(|s| s.records.iter().chain(&s.rrsigs))
+            .flat_map(|s| s.records.iter().chain(s.rrsigs.iter()))
     }
 
     /// The records the signer added (DNSKEY, CDS, CDNSKEY, NSEC, NSEC3, NSEC3PARAM, RRSIG),
@@ -346,7 +347,21 @@ enum Position {
     Occluded,
 }
 
-type Owners = BTreeMap<Name, BTreeMap<u16, Vec<Record>>>;
+/// The records of one `RRset` of the input zone.
+struct Group {
+    name: Name,
+    code: u16,
+    records: Arc<[Record]>,
+}
+
+/// Every `RRset` of the zone, sorted by owner (canonical order) and type. One flat vector
+/// rather than nested maps: a map node per owner would be freed again before the snapshot is
+/// done, and the holes it leaves stay resident.
+type Owners = Vec<Group>;
+
+fn owner_position(owners: &[Group], name: &Name, code: u16) -> Result<usize, usize> {
+    owners.binary_search_by(|g| g.name.cmp(name).then(g.code.cmp(&code)))
+}
 
 fn sign_zone(
     zone: &ZoneData,
@@ -364,10 +379,9 @@ fn sign_zone(
     }
     let origin = &zone.origin;
     let mut owners = group(zone)?;
-    let soa = owners
-        .get(origin)
-        .and_then(|types| types.get(&u16::from(RecordType::Soa)))
-        .and_then(|set| set.first())
+    let soa = owner_position(&owners, origin, u16::from(RecordType::Soa))
+        .ok()
+        .and_then(|i| owners[i].records.first())
         .ok_or(DnssecError::InvalidZone("no SOA at the apex"))?;
     let RData::Soa(soa_data) = &soa.data else {
         return Err(DnssecError::InvalidZone("malformed SOA"));
@@ -415,7 +429,10 @@ fn sign_zone(
     let node_positions = nodes
         .iter()
         .map(|n| Some(n.position))
+        .collect::<Vec<_>>()
+        .into_iter()
         .chain(std::iter::repeat(None));
+    drop(nodes);
     for (r, node_position) in chain.into_iter().zip(node_positions) {
         let position = if r.rtype == RecordType::Nsec {
             node_position.unwrap_or(Position::Authoritative)
@@ -425,17 +442,15 @@ fn sign_zone(
         jobs.push(Job {
             key: (r.name.clone(), u16::from(r.rtype)),
             duty: authoritative(position, r.rtype),
-            records: vec![r],
+            records: Arc::new([r]),
         });
     }
-    for ((name, types), position) in owners.into_iter().zip(positions) {
-        for (code, records) in types {
-            jobs.push(Job {
-                key: (name.clone(), code),
-                duty: authoritative(position, RecordType::from(code)),
-                records,
-            });
-        }
+    for (group, position) in owners.into_iter().zip(positions) {
+        jobs.push(Job {
+            duty: authoritative(position, RecordType::from(group.code)),
+            key: (group.name, group.code),
+            records: group.records,
+        });
     }
     let signers = Signers {
         zone: &zone_signers,
@@ -444,21 +459,25 @@ fn sign_zone(
     let signed = parallel::map_with(jobs, workers, |job| {
         sign_job(job, &signers, previous, origin, &timing)
     });
-    let mut sets = Vec::with_capacity(signed.len());
     let mut next_resign: Option<u32> = None;
-    for result in signed {
-        let (key, set) = result?;
-        for rrsig in &set.rrsigs {
-            if let RData::Rrsig(sig) = &rrsig.data {
-                let due = sig.expiration.wrapping_sub(timing.refresh);
-                next_resign = Some(match next_resign {
-                    Some(at) if serial_lt(at, due) => at,
-                    _ => due,
-                });
+    // Collected in place and built into the map from the same buffer: a snapshot of 100k
+    // names would otherwise hold three copies of its index at once.
+    let sets = signed
+        .into_iter()
+        .map(|result| {
+            let (key, set) = result?;
+            for rrsig in set.rrsigs.iter() {
+                if let RData::Rrsig(sig) = &rrsig.data {
+                    let due = sig.expiration.wrapping_sub(timing.refresh);
+                    next_resign = Some(match next_resign {
+                        Some(at) if serial_lt(at, due) => at,
+                        _ => due,
+                    });
+                }
             }
-        }
-        sets.push((key, set));
-    }
+            Ok((key, set))
+        })
+        .collect::<Result<Vec<_>, DnssecError>>()?;
     let rrsets: BTreeMap<_, _> = sets.into_iter().collect();
     Ok(SignedZone {
         origin: origin.clone(),
@@ -536,7 +555,7 @@ impl<'a> Signers<'a> {
 /// One `RRset` to sign: its key in the snapshot, its records and which keys sign it.
 struct Job {
     key: (Name, u16),
-    records: Vec<Record>,
+    records: Arc<[Record]>,
     duty: Duty,
 }
 
@@ -551,17 +570,29 @@ fn sign_job(
     let old = previous
         .and_then(|p| p.rrsets.get(&key))
         .filter(|old| same_data(&old.records, &records));
-    let rrsigs = signers
-        .of(duty)
-        .into_iter()
-        .map(|signer| rrsig_for(signer, &records, old, origin, timing))
-        .collect::<Result<Vec<_>, _>>()?;
+    let signing = signers.of(duty);
+    // Exact capacity: a snapshot holds one set per name, so growth slack would be most of it.
+    let mut fresh = Vec::with_capacity(signing.len());
+    for signer in signing {
+        fresh.push(rrsig_for(signer, &records, old, origin, timing)?);
+    }
+    // An unchanged set keeps the allocations of the previous snapshot, so two snapshots in
+    // memory (the one being served and the one replacing it) share everything that did not
+    // change.
+    let rrsigs = match old {
+        Some(o) if *o.rrsigs == *fresh => Arc::clone(&o.rrsigs),
+        _ => fresh.into(),
+    };
+    let records = match old {
+        Some(o) if *o.records == *records => Arc::clone(&o.records),
+        _ => records,
+    };
     Ok((key, SignedRrset { records, rrsigs }))
 }
 
 /// Classifies every owner relative to zone cuts and collects the nodes of the denial chain.
 fn classify(
-    owners: &Owners,
+    owners: &[Group],
     origin: &Name,
 ) -> Result<(Vec<Position>, Vec<ChainNode>), DnssecError> {
     // Classify names and collect the denial chain; canonical order puts every name right
@@ -569,11 +600,16 @@ fn classify(
     let mut positions = Vec::with_capacity(owners.len());
     let mut nodes = Vec::new();
     let mut cut: Option<Name> = None;
-    for (name, types) in owners {
+    let mut rest = owners;
+    while let Some(first) = rest.first() {
+        let name = &first.name;
+        let len = rest.iter().take_while(|g| g.name == *name).count();
+        let (types, after) = rest.split_at(len);
+        rest = after;
         let below_cut = cut
             .as_ref()
             .is_some_and(|c| name != c && name.is_subdomain_of(c));
-        let has = |t: RecordType| types.contains_key(&u16::from(t));
+        let has = |t: RecordType| types.iter().any(|g| g.code == u16::from(t));
         let position = if below_cut {
             Position::Occluded
         } else if name != origin && has(RecordType::Ns) {
@@ -585,16 +621,14 @@ fn classify(
         if has(RecordType::Ds) && position != Position::Cut {
             return Err(DnssecError::InvalidZone("DS outside a delegation point"));
         }
+        positions.extend(std::iter::repeat_n(position, len));
         let node_types: Vec<RecordType> = match position {
-            Position::Occluded => {
-                positions.push(position);
-                continue;
-            }
+            Position::Occluded => continue,
             Position::Cut => [RecordType::Ns, RecordType::Ds]
                 .into_iter()
                 .filter(|t| has(*t))
                 .collect(),
-            Position::Authoritative => types.keys().map(|t| RecordType::from(*t)).collect(),
+            Position::Authoritative => types.iter().map(|g| RecordType::from(g.code)).collect(),
         };
         let secure = position == Position::Authoritative || has(RecordType::Ds);
         nodes.push(ChainNode {
@@ -604,7 +638,6 @@ fn classify(
             insecure_cut: !secure,
             position,
         });
-        positions.push(position);
     }
 
     Ok((positions, nodes))
@@ -646,7 +679,6 @@ fn rrsig_for(
 /// Groups the zone records into `RRsets` by owner and type, checking that the signer can
 /// own the DNSSEC records. Each `RRset` gets the lowest TTL among its records (RFC 2181 5.2).
 fn group(zone: &ZoneData) -> Result<Owners, DnssecError> {
-    let mut owners: Owners = BTreeMap::new();
     for r in &zone.records {
         if !r.name.is_subdomain_of(&zone.origin) {
             return Err(DnssecError::InvalidZone("record outside the zone"));
@@ -662,18 +694,45 @@ fn group(zone: &ZoneData) -> Result<Owners, DnssecError> {
         if r.rtype == RecordType::Ds && r.name == zone.origin {
             return Err(DnssecError::InvalidZone("DS at the apex"));
         }
-        owners
-            .entry(r.name.clone())
-            .or_default()
-            .entry(u16::from(r.rtype))
-            .or_default()
-            .push(r.clone());
     }
-    for set in owners.values_mut().flat_map(BTreeMap::values_mut) {
-        let ttl = set.iter().map(|r| r.ttl).min().unwrap_or_default();
-        for r in set {
-            r.ttl = ttl;
-        }
+    // Sorting positions instead of records keeps one copy of each record. A stable sort keeps
+    // the records of a set in zone order.
+    let records = &zone.records;
+    let mut order: Vec<usize> = (0..records.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&records[a], &records[b]);
+        a.name
+            .cmp(&b.name)
+            .then(u16::from(a.rtype).cmp(&u16::from(b.rtype)))
+    });
+    let mut owners = Vec::with_capacity(order.len() + 4);
+    let mut rest = order.as_slice();
+    while let Some(&first) = rest.first() {
+        let head = &records[first];
+        let len = rest
+            .iter()
+            .take_while(|&&i| records[i].name == head.name && records[i].rtype == head.rtype)
+            .count();
+        let (indices, after) = rest.split_at(len);
+        rest = after;
+        // Exact capacity: a snapshot keeps these vectors, so growth slack would be most of it.
+        let ttl = indices
+            .iter()
+            .map(|&i| records[i].ttl)
+            .min()
+            .unwrap_or_default();
+        let set: Arc<[Record]> = indices
+            .iter()
+            .map(|&i| Record {
+                ttl,
+                ..records[i].clone()
+            })
+            .collect();
+        owners.push(Group {
+            name: head.name.clone(),
+            code: u16::from(head.rtype),
+            records: set,
+        });
     }
     Ok(owners)
 }
@@ -715,15 +774,26 @@ fn add_apex_records(
         ttl,
         data,
     };
-    let apex = owners.entry(origin.clone()).or_default();
+    let mut put = |code: RecordType, records: Vec<Record>| {
+        let code = u16::from(code);
+        let group = Group {
+            name: origin.clone(),
+            code,
+            records: records.into(),
+        };
+        match owner_position(owners, origin, code) {
+            Ok(i) => owners[i] = group,
+            Err(i) => owners.insert(i, group),
+        }
+    };
     let mut dnskeys: Vec<&Dnskey> = Vec::new();
     for k in keys.keys.iter().filter(|k| k.state.is_published()) {
         if !dnskeys.contains(&&k.dnskey) {
             dnskeys.push(&k.dnskey);
         }
     }
-    apex.insert(
-        u16::from(RecordType::Dnskey),
+    put(
+        RecordType::Dnskey,
         dnskeys
             .iter()
             .map(|k| mk(policy.dnskey_ttl, RData::Dnskey((*k).clone())))
@@ -745,16 +815,16 @@ fn add_apex_records(
             cds.push(mk(policy.dnskey_ttl, RData::Cds(ds)));
             cdnskey.push(mk(policy.dnskey_ttl, RData::Cdnskey(k.dnskey.clone())));
         }
-        apex.insert(u16::from(RecordType::Cds), cds);
-        apex.insert(u16::from(RecordType::Cdnskey), cdnskey);
+        put(RecordType::Cds, cds);
+        put(RecordType::Cdnskey, cdnskey);
     }
 
     if let Denial::Nsec3 {
         iterations, salt, ..
     } = &policy.denial
     {
-        apex.insert(
-            u16::from(RecordType::Nsec3param),
+        put(
+            RecordType::Nsec3param,
             vec![mk(
                 denial_ttl,
                 RData::Nsec3param(Nsec3Param {

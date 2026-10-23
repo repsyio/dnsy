@@ -191,6 +191,17 @@ non-zero iteration count (RFC 9276 recommends 0, where SHA-1 costs little). The 
 about one name and 20 bytes per chain name to a snapshot and is dropped when the parameters
 change or the zone is signed with NSEC.
 
+A snapshot is built to be held. Each `RRset` and its signatures sit in their own exactly sized
+shared slices (`Arc<[Record]>`), names longer than 32 octets (every NSEC3 owner) are shared
+rather than copied, and the zone is grouped by sorting instead of through a map per owner, so
+signing leaves no freed map nodes behind in the heap. `resign` hands an unchanged `RRset`
+(and its kept signatures) on to the new snapshot as the same allocations, which means the
+snapshot being served and the one replacing it cost little more than one. The zone store's
+signature index shares the snapshot's signatures too. For a 100,000-name zone signed with NSEC3
+and ECDSA P-256 on 24 cores, one snapshot raised the peak resident set by about 157 MiB (it was
+about 380 MiB: growth slack in the per-set vectors and copies of every long name) and two held
+side by side by about 246 MiB (it was about 670 MiB).
+
 Timing and memory harnesses for a 100,000-name zone are ignored tests in `dnsy-dnssec`; run
 them by hand in release mode on a quiet host:
 

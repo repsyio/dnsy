@@ -1026,7 +1026,7 @@ fn dnskey_signers(set: &ZoneSet, now: u32) -> Vec<u16> {
         })
         .collect();
     let mut tags = Vec::new();
-    for sig in &rrset.rrsigs {
+    for sig in rrset.rrsigs.iter() {
         let RData::Rrsig(s) = &sig.data else {
             unreachable!()
         };
@@ -1220,4 +1220,21 @@ async fn active_keys_load_signers_and_sign_a_zone() {
 
     let locked = KeyStore::open(db, None, Arc::new(clock));
     assert!(locked.active_keys(&zone).await.is_err());
+}
+
+#[test]
+fn the_index_shares_the_signatures_of_the_snapshot() {
+    let zone = zone("nsec3", false);
+    let signed = sign(&zone, &csk());
+    let index = SignedIndex::build(&signed);
+    let mut checked = 0;
+    for ((owner, code), set) in &signed.rrsets {
+        if set.rrsigs.is_empty() {
+            continue;
+        }
+        let shared = &index.sigs[&(owner.clone(), RecordType::from(*code))];
+        assert!(Arc::ptr_eq(shared, &set.rrsigs), "{owner} {code}");
+        checked += 1;
+    }
+    assert!(checked > 0);
 }

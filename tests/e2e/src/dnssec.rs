@@ -444,9 +444,9 @@ fn build_zone(spec: &ZoneSpec, children: &[(&ZoneSpec, &Served)]) -> Built {
     let mut denial = Vec::new();
     for ((name, code), set) in signed.rrsets {
         if matches!(RecordType::from(code), RecordType::Nsec | RecordType::Nsec3) {
-            denial.extend(set.records.into_iter().chain(set.rrsigs));
+            denial.extend(set.records.iter().chain(set.rrsigs.iter()).cloned());
         } else {
-            let mut records = set.records;
+            let mut records = set.records.to_vec();
             if spec.junk_keys > 0 && code == u16::from(RecordType::Dnskey) {
                 // The RRSIG covers the canonical order, so the order served is free: put the
                 // colliding keys ahead of the real ones, the worst case for a validator that
@@ -456,7 +456,7 @@ fn build_zone(spec: &ZoneSpec, children: &[(&ZoneSpec, &Served)]) -> Built {
                     _ => Vec::new(),
                 });
             }
-            rrsets.insert((name, code), (records, set.rrsigs));
+            rrsets.insert((name, code), (records, set.rrsigs.to_vec()));
         }
     }
     let ds = match spec.ds {

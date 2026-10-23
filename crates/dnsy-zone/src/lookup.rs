@@ -116,7 +116,7 @@ impl ZoneIndex {
                     nodes
                         .entry(owner.clone())
                         .or_default()
-                        .insert(rtype, set.records.clone());
+                        .insert(rtype, set.records.to_vec());
                 }
             }
         } else {
