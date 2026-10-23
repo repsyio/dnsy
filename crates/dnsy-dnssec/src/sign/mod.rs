@@ -348,6 +348,28 @@ enum Position {
 
 type Owners = BTreeMap<Name, BTreeMap<u16, Vec<Record>>>;
 
+/// The keys that sign zone data and the keys that sign the `DNSKEY` set, or an error when
+/// either set is empty.
+fn select_signers(keys: &ActiveKeys) -> Result<(Vec<&SigningKey>, Vec<&SigningKey>), DnssecError> {
+    let active = ZoneKey::active_algorithms(
+        keys.keys
+            .iter()
+            .map(|k| (k.role, k.state, k.dnskey.algorithm)),
+    );
+    let zone_signers: Vec<&SigningKey> = signers(keys, |k| {
+        ZoneKey::signs_zone_data(k.role, k.state)
+            || ZoneKey::double_signs(k.role, k.state, k.dnskey.algorithm, &active)
+    })?;
+    let key_signers: Vec<&SigningKey> = signers(keys, |k| ZoneKey::signs_dnskeys(k.role, k.state))?;
+    if zone_signers.is_empty() {
+        return Err(DnssecError::NoSigningKey("zone data"));
+    }
+    if key_signers.is_empty() {
+        return Err(DnssecError::NoSigningKey("the DNSKEY RRset"));
+    }
+    Ok((zone_signers, key_signers))
+}
+
 fn sign_zone(
     zone: &ZoneData,
     keys: &ActiveKeys,
@@ -374,22 +396,7 @@ fn sign_zone(
     };
     let denial_ttl = soa_data.minimum.min(soa.ttl);
 
-    let active = ZoneKey::active_algorithms(
-        keys.keys
-            .iter()
-            .map(|k| (k.role, k.state, k.dnskey.algorithm)),
-    );
-    let zone_signers: Vec<&SigningKey> = signers(keys, |k| {
-        ZoneKey::signs_zone_data(k.role, k.state)
-            || ZoneKey::double_signs(k.role, k.state, k.dnskey.algorithm, &active)
-    })?;
-    let key_signers: Vec<&SigningKey> = signers(keys, |k| ZoneKey::signs_dnskeys(k.role, k.state))?;
-    if zone_signers.is_empty() {
-        return Err(DnssecError::NoSigningKey("zone data"));
-    }
-    if key_signers.is_empty() {
-        return Err(DnssecError::NoSigningKey("the DNSKEY RRset"));
-    }
+    let (zone_signers, key_signers) = select_signers(keys)?;
 
     add_apex_records(&mut owners, origin, keys, policy, denial_ttl)?;
 
