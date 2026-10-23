@@ -2,7 +2,9 @@
 //! minimal responses), error responses and the response-IP policy.
 
 use std::net::IpAddr;
+use std::sync::Arc;
 
+use dnsy_filter::{BlockMode, FilterSet, Verdict};
 use dnsy_proto::{
     Class, Edns, EdnsOption, Message, Name, Question, RData, Rcode, Record, RecordType,
 };
@@ -135,6 +137,26 @@ fn chain(qname: &Name, qtype: RecordType, answers: &[Record]) -> Vec<Name> {
         }
     }
     names
+}
+
+/// The first CNAME target in the answer chain from `qname` that the filter blocks, as the list
+/// and block mode of the verdict. The queried name itself is not checked (the engine does that
+/// before resolving); the walk is the loop-safe, [`MAX_CHAIN`]-bounded [`chain`].
+pub(crate) fn blocked_cname_target(
+    filter: &FilterSet,
+    qname: &Name,
+    qtype: RecordType,
+    answers: &[Record],
+) -> Option<(Arc<str>, BlockMode)> {
+    chain(qname, qtype, answers)
+        .iter()
+        .skip(1)
+        .find_map(
+            |target| match filter.check_lowercase(&target.to_lowercase()) {
+                Verdict::Block { list, mode } => Some((list, mode)),
+                Verdict::Allow => None,
+            },
+        )
 }
 
 /// The response for an authoritative lookup. Answers from our zones carry AA (referrals do not).

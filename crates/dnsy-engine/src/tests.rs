@@ -377,6 +377,135 @@ async fn blocked_returns_nxdomain_with_ede() {
     assert_eq!(ede_codes(&r), [ede::FILTERED]);
 }
 
+/// A fake upstream answering `qname` with the given `(owner, target)` CNAME hops and a final A.
+fn cname_chain(hops: &'static [(&'static str, &'static str)], last: &'static str) -> Fake {
+    Fake::answering(move |q| {
+        let mut r = Message::response_to(q);
+        for (owner, target) in hops {
+            r.answers.push(rec(owner, RData::Cname(name(target))));
+        }
+        r.answers
+            .push(rec(last, RData::A(Ipv4Addr::new(192, 0, 2, 7))));
+        Ok(r)
+    })
+}
+
+fn tracker_filter(mode: BlockMode) -> dnsy_filter::FilterSet {
+    let mut lists = FilterSetBuilder::new(mode, FilterLimits::default());
+    lists
+        .add_list(
+            "trackers",
+            dnsy_filter::ListFormat::Domains,
+            "tracker.example\n".as_bytes(),
+        )
+        .unwrap();
+    lists.build()
+}
+
+#[tokio::test]
+async fn cname_target_on_blocklist_blocks_the_response() {
+    let h = harness_with(
+        cname_chain(
+            &[
+                ("www.site.test.", "mid.site.test."),
+                ("mid.site.test.", "cdn.TRACKER.example."),
+            ],
+            "cdn.tracker.example.",
+        ),
+        &Config::default(),
+        |b| b.filter(tracker_filter(BlockMode::NxDomain)),
+    );
+    let r = h
+        .engine
+        .handle(ctx(), &query("www.site.test.", RecordType::A))
+        .await;
+    assert_eq!(r.header.rcode, Rcode::NxDomain);
+    assert_eq!(r.answers.len(), 0);
+    assert_eq!(ede_codes(&r), [ede::BLOCKED]);
+    let ev = h.events.take();
+    assert_eq!(
+        ev[0].source,
+        AnswerSource::Blocked {
+            list: "trackers".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn cname_target_block_honours_block_mode() {
+    let h = harness_with(
+        cname_chain(
+            &[("www.site.test.", "t.tracker.example.")],
+            "t.tracker.example.",
+        ),
+        &Config::default(),
+        |b| b.filter(tracker_filter(BlockMode::NullIp)),
+    );
+    let r = h
+        .engine
+        .handle(ctx(), &query("www.site.test.", RecordType::A))
+        .await;
+    assert_eq!(r.answers[0].data, RData::A(Ipv4Addr::UNSPECIFIED));
+}
+
+#[tokio::test]
+async fn clean_cname_chain_is_answered_and_cname_queries_are_not_checked() {
+    let h = harness_with(
+        cname_chain(&[("www.site.test.", "cdn.ok.test.")], "cdn.ok.test."),
+        &Config::default(),
+        |b| b.filter(tracker_filter(BlockMode::NxDomain)),
+    );
+    let r = h
+        .engine
+        .handle(ctx(), &query("www.site.test.", RecordType::A))
+        .await;
+    assert_eq!(r.header.rcode, Rcode::NoError);
+    assert_eq!(r.answers.len(), 2);
+}
+
+#[tokio::test]
+async fn cname_loop_terminates_without_blocking() {
+    let h = harness_with(
+        Fake::answering(|q| {
+            let mut r = Message::response_to(q);
+            r.answers
+                .push(rec("a.site.test.", RData::Cname(name("b.site.test."))));
+            r.answers
+                .push(rec("b.site.test.", RData::Cname(name("a.site.test."))));
+            Ok(r)
+        }),
+        &Config::default(),
+        |b| b.filter(tracker_filter(BlockMode::NxDomain)),
+    );
+    let r = h
+        .engine
+        .handle(ctx(), &query("a.site.test.", RecordType::A))
+        .await;
+    assert_eq!(r.header.rcode, Rcode::NoError);
+}
+
+#[tokio::test]
+async fn cname_block_applies_on_cache_hits_without_a_second_upstream_query() {
+    let h = harness_with(
+        cname_chain(
+            &[("www.site.test.", "t.tracker.example.")],
+            "t.tracker.example.",
+        ),
+        &Config::default(),
+        |b| b.filter(tracker_filter(BlockMode::NxDomain)),
+    );
+    for _ in 0..2 {
+        let r = h
+            .engine
+            .handle(ctx(), &query("www.site.test.", RecordType::A))
+            .await;
+        assert_eq!(r.header.rcode, Rcode::NxDomain);
+    }
+    // Like the response-IP policy, the check runs after the cache: the upstream answer is cached
+    // once, the blocked reply is built per request, so a filter swap applies at once.
+    assert_eq!(h.fake.calls(), 1);
+}
+
 #[tokio::test]
 async fn blocked_not_cached() {
     let mut fb = FilterSetBuilder::new(BlockMode::NullIp, FilterLimits::default());
