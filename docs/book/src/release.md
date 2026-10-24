@@ -17,7 +17,7 @@ in v1.
 | `aarch64-apple-darwin` | `dnsy-aarch64-apple-darwin.tar.xz` | macos-14 |
 | `x86_64-pc-windows-msvc` | `dnsy-x86_64-pc-windows-msvc.zip` | windows-2022 |
 
-Each archive holds `dnsy` (`dnsy.exe` on Windows), `LICENSE`, `README.md` and `CHANGELOG.md`.
+Each archive holds `dnsy` (`dnsy.exe` on Windows), `LICENSE`, `README.md`, `CHANGELOG.md` and the sample config `dnsy.toml`.
 Next to the archives the release has `dnsy-installer.sh` (Linux and macOS), `dnsy-installer.ps1`
 (Windows), `source.tar.gz`, one `<file>.sha256` per file and a combined `sha256.sum`.
 

@@ -8,6 +8,9 @@ DNSY is one binary, `dnsy`. It needs no runtime dependencies: SQLite is bundled 
 Every tagged release publishes archives and installers for Linux, macOS and Windows with the web
 UI embedded; see [Releases](release.md) for the targets, installers and checksum verification.
 
+Every archive also holds `dnsy.toml`, an annotated sample configuration. Copy it to
+`/etc/dnsy/dnsy.toml` or let the binary write it for you, see [Starter configuration](#starter-configuration).
+
 ## From source
 
 ```sh
@@ -25,6 +28,23 @@ just build                             # pnpm build in web/, then cargo build --
 The UI is compiled into the binary with the `embed-ui` feature from `web/dist/dnsy/browser`.
 Building that feature without `web/dist` prints a warning and fails to compile, so run
 `just build` rather than passing the feature by hand.
+
+## Starter configuration
+
+A fresh install has no config file, and the defaults assume root (port 53, `/etc/dnsy`,
+`/var/lib/dnsy`). `dnsy config init` writes the annotated starter file to the `--config` path
+(default `/etc/dnsy/dnsy.toml`, parent directories are created):
+
+```sh
+sudo dnsy config init                  # the annotated defaults, the same text as the archive's dnsy.toml
+dnsy --config dnsy.toml config init --dev
+dnsy --config dnsy.toml serve
+```
+
+`--dev` writes a configuration that runs without privileges: DNS on `127.0.0.1:5353`, the API on
+`127.0.0.1:5380`, state under `./dnsy-data` (relative to the working directory) and the public
+upstreams `1.1.1.1` and `9.9.9.9`, so queries resolve. Try it with `dig @127.0.0.1 -p 5353 example.com`.
+An existing file is never overwritten unless you pass `--force`.
 
 ## Release profile
 

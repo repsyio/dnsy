@@ -90,6 +90,15 @@ pub struct ServeArgs {
 pub enum ConfigCommand {
     /// Validate the configuration file and report every problem.
     Check,
+    /// Write a commented starter configuration to the `--config` path.
+    Init {
+        /// Write a configuration that runs unprivileged (port 5353, loopback, ./dnsy-data).
+        #[arg(long)]
+        dev: bool,
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

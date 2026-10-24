@@ -8,6 +8,7 @@
 mod admin;
 mod cacheflush;
 pub mod cli;
+mod configinit;
 mod http;
 pub mod logging;
 mod serve;
@@ -88,6 +89,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         Command::Openapi => admin::openapi(&mut out),
         Command::Config(ConfigCommand::Check) => admin::config_check(&cli.config, &mut out),
+        Command::Config(ConfigCommand::Init { dev, force }) => {
+            configinit::init(&cli.config, dev, force, &mut out)
+        }
         Command::Migrate { status } => {
             let config = load_config(&cli.config)?;
             admin::migrate(&config, status, &mut out)

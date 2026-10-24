@@ -23,6 +23,8 @@ targets = [
 # Release only the `dnsy` binary, with the web UI compiled in (web/dist is built in build-setup.yml first).
 precise-builds = true
 features = ["embed-ui"]
+# Ship the annotated sample config as dnsy.toml in every archive (`dnsy config init` writes the same text).
+include = ["examples/dnsy.toml"]
 # Checksum every artifact (sha256) and publish a unified sha256.sum
 checksum = "sha256"
 # Path that installers should place binaries in
