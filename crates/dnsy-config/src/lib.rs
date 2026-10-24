@@ -149,8 +149,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn startup_warns_when_resolver_upstreams_empty() {
+        let mut c = Config::default();
+        let w = c.warnings();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("resolver.upstreams"), "{w:?}");
+        assert!(w[0].contains("1.1.1.1:53"), "example value: {w:?}");
+        c.resolver.upstreams = vec!["1.1.1.1:53".parse().unwrap()];
+        assert!(c.warnings().is_empty(), "upstreams set does not warn");
+    }
+
+    #[test]
     fn startup_warns_for_open_unlimited_listener() {
         let mut c = Config::default();
+        c.resolver.upstreams = vec!["1.1.1.1:53".parse().unwrap()];
         assert!(c.warnings().is_empty(), "safe defaults do not warn");
         c.limits.open_resolver = true;
         assert!(c.warnings().is_empty(), "qps 50 does not warn");

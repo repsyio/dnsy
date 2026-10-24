@@ -23,6 +23,14 @@ fn invalid(msg: &str) -> ConfigError {
 /// Non-fatal configuration problems.
 pub(crate) fn warnings(c: &Config) -> Vec<String> {
     let mut out = Vec::new();
+    if c.resolver.upstreams.is_empty() {
+        out.push(
+            "resolver.upstreams is empty: every forwarded query answers SERVFAIL unless upstream \
+             groups were added through the API. Set upstreams under [resolver], for example \
+             upstreams = [\"1.1.1.1:53\"]"
+                .to_owned(),
+        );
+    }
     let public = c
         .dns
         .udp
