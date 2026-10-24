@@ -68,12 +68,12 @@ Prebuilt binaries for Linux, macOS and Windows are on the
 [releases page](https://github.com/repsyio/dnsy/releases). On Linux and macOS:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/repsyio/dnsy/releases/latest/download/dnsy-installer.sh | sh
+curl -fsSL https://dnsy.dev/install.sh | sh
 ```
 
-On Windows, use `dnsy-installer.ps1` from the same page (see [Releases](docs/book/src/release.md)),
-or build from source as below.
+On Windows (PowerShell): `irm https://dnsy.dev/install.ps1 | iex`. Both are small wrappers around the
+installer attached to the latest release (see [Releases](docs/book/src/release.md)); you can also
+build from source as below.
 
 **1. Build (skip this if you installed a release).** You need a Rust toolchain (pinned in `rust-toolchain.toml`). `just build` also builds
 the web UI and embeds it (it needs node and pnpm); without them

@@ -56,6 +56,10 @@
   .install code { white-space: nowrap; }
   .install .p { color: var(--dnsy-red); user-select: none; }
   .hero .install { align-self: flex-start; margin-top: 34px; }
+  .install .copy { margin-left: auto; flex: none; align-self: center; font-family: var(--dnsy-font-display); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dnsy-muted); background: none; border: 0.5px solid var(--dnsy-line); border-radius: 2px; padding: 6px 10px; cursor: pointer; transition: color 0.15s, border-color 0.15s; }
+  .install .copy:hover, .install .copy:focus-visible { color: var(--dnsy-red); border-color: var(--dnsy-red); outline: none; }
+  .install .copy.done { color: var(--dnsy-text); border-color: var(--dnsy-text); }
+  .other code { font-size: 12px; color: var(--dnsy-text); }
   .other { margin-top: 10px; font-size: 13px; }
   .other a { color: var(--dnsy-muted); }
   .chips { margin: 36px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 8px 22px; font-family: var(--dnsy-font-mono); font-size: 12px; color: var(--dnsy-muted); }
@@ -166,8 +170,8 @@
     <h1>The ultimate<br><em>DNS server.</em></h1>
     <p class="lead">One binary that answers your zones, forwards the rest over encrypted transports, signs and validates DNSSEC, filters what you don't want and shows you every query.</p>
     <div class="cta"><a class="btn solid" href="docs/quickstart.html">Get started</a><a class="btn ghost" href="https://github.com/repsyio/dnsy">Star on GitHub</a></div>
-    <div class="install" role="group" aria-label="Install command" tabindex="0"><span class="p" aria-hidden="true">$</span><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/repsyio/dnsy/releases/latest/download/dnsy-installer.sh | sh</code></div>
-    <div class="other"><a href="docs/install.html">Windows, archives and building from source</a></div>
+    <div class="install" role="group" aria-label="Install command" tabindex="0"><span class="p" aria-hidden="true">$</span><code>curl -fsSL https://dnsy.dev/install.sh | sh</code><button class="copy" type="button" data-copy="curl -fsSL https://dnsy.dev/install.sh | sh" aria-label="Copy the install command">Copy</button></div>
+    <div class="other">Windows: <code>irm https://dnsy.dev/install.ps1 | iex</code> · <a href="docs/install.html">archives and building from source</a></div>
     <ul class="chips" aria-label="Highlights"><li>UDP / TCP</li><li>DoT + mTLS</li><li>DoH + tokens</li><li>DNSSEC</li><li>Blocklists</li><li>Web panel</li></ul>
   </div>
 </header>
@@ -324,7 +328,7 @@
 <section class="close" aria-labelledby="start-h"><div class="wrap">
   <div class="eyebrow">Get started</div>
   <h2 id="start-h">Run it in a minute.</h2>
-  <div class="install" role="group" aria-label="Install command" tabindex="0"><span class="p" aria-hidden="true">$</span><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/repsyio/dnsy/releases/latest/download/dnsy-installer.sh | sh</code></div>
+  <div class="install" role="group" aria-label="Install command" tabindex="0"><span class="p" aria-hidden="true">$</span><code>curl -fsSL https://dnsy.dev/install.sh | sh</code><button class="copy" type="button" data-copy="curl -fsSL https://dnsy.dev/install.sh | sh" aria-label="Copy the install command">Copy</button></div>
   <div class="cta"><a class="btn solid" href="docs/">Read the docs</a><a class="btn ghost" href="https://github.com/repsyio/dnsy">GitHub</a></div>
 </div></section>
 </main>
@@ -335,6 +339,33 @@
   <span class="sp">Apache-2.0 · watched over by Nox</span>
 </div></footer>
 
+<script>
+// Copy buttons on the install commands.
+(() => {
+  for (const button of document.querySelectorAll('button.copy')) {
+    button.addEventListener('click', async () => {
+      const text = button.dataset.copy || '';
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.append(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+      }
+      const label = button.textContent;
+      button.textContent = 'Copied';
+      button.classList.add('done');
+      setTimeout(() => { button.textContent = label; button.classList.remove('done'); }, 1800);
+    });
+  }
+})();
+</script>
 <script>
 // The hero blob: the same wireframe sphere as the panel's login page (DNSY-108), drawn on a 2D canvas.
 (() => {

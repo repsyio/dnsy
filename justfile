@@ -98,7 +98,7 @@ docs:
     # A workspace rustdoc build has no root index; send /api/ to the shared vocabulary crate.
     printf '%s\n' '<!doctype html><meta charset="utf-8"><title>DNSY API docs</title><meta http-equiv="refresh" content="0; url=dnsy_core/index.html"><a href="dnsy_core/index.html">DNSY API docs</a>' > "$target/site/api/index.html"
     cp -r branding "$target/site/branding"
-    cp docs/landing/index.html docs/landing/CNAME "$target/site/"
+    cp docs/landing/index.html docs/landing/install.sh docs/landing/install.ps1 docs/landing/CNAME "$target/site/"
     if command -v npx >/dev/null 2>&1; then
       mkdir -p "$target/site/rest-api"
       npx --yes @redocly/cli@2.67.1 build-docs openapi/dnsy.json -o "$target/site/rest-api/index.html"
