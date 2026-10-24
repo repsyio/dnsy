@@ -9,8 +9,20 @@
    ```
 
    `config check` validates the file (unknown keys are errors), the zone files, and that the
-   referenced certificate, key and passphrase files exist. For a first try without root set
-   `[dns] udp/tcp` to `127.0.0.1:5353` and `[server] data_dir` to a directory you own.
+   referenced certificate, key and passphrase files exist.
+
+   Set `[resolver] upstreams` to the resolvers DNSY forwards to, for example
+   `upstreams = ["1.1.1.1:53", "9.9.9.9:53"]`. With no upstreams DNSY logs a warning at startup,
+   and every forwarded query answers SERVFAIL. Upstreams are seeded into the database on the first
+   start only; after that, change them through the web UI or the API.
+
+   To try without root, set `[dns] udp` and `tcp` to `127.0.0.1:5353` and `[server] data_dir` to a
+   directory you own. The same overrides work from the environment, without editing the file:
+
+   ```sh
+   export DNSY_DNS__UDP='["127.0.0.1:5353"]' DNSY_DNS__TCP='["127.0.0.1:5353"]'
+   export DNSY_SERVER__DATA_DIR="$HOME/dnsy-data"
+   ```
 
 2. Create the first user (a random password is printed once, or use `--password-stdin`):
 
@@ -26,6 +38,10 @@
    ```sh
    dnsy serve
    ```
+
+   The DNS listeners default to `0.0.0.0:53`, which needs root or `CAP_NET_BIND_SERVICE`; with
+   the unprivileged override above they listen on `127.0.0.1:5353`. If the server exits with
+   `address already in use` on port 53, see [Port 53 and systemd-resolved](#port-53-and-systemd-resolved).
 
    The API and UI listen on `[api] listen` (default `127.0.0.1:5380`). `GET /healthz` is
    liveness, `GET /readyz` checks that the database answers.
@@ -53,6 +69,33 @@
 
    The secret is printed once. `dns:query` tokens authenticate DoH clients; `api:*` tokens
    call the REST API.
+
+## Port 53 and systemd-resolved
+
+On Ubuntu and other systemd hosts, `systemd-resolved` answers on a stub listener at
+`127.0.0.53:53`. Binding DNSY to `0.0.0.0:53` then fails with `address already in use`. Either:
+
+- listen on an address the stub does not hold, for example your LAN address:
+
+  ```toml
+  [dns]
+  udp = ["192.168.1.10:53"]
+  tcp = ["192.168.1.10:53"]
+  ```
+
+- or turn the stub off and restart the resolver:
+
+  ```sh
+  sudo mkdir -p /etc/systemd/resolved.conf.d
+  printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/dnsy.conf
+  sudo systemctl restart systemd-resolved
+  ```
+
+  The host's `/etc/resolv.conf` still points at `127.0.0.53` afterwards, so point it at DNSY
+  (for example `nameserver 127.0.0.1`) or name resolution on this host stops working.
+
+Binding port 53 itself needs root or `CAP_NET_BIND_SERVICE`. Running on a high port, as in step 1,
+avoids both.
 
 ## Command reference
 
