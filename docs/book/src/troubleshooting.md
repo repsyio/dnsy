@@ -7,8 +7,9 @@ Start with `dnsy config check`, `curl -s http://127.0.0.1:5380/readyz` and the s
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `permission denied` binding port 53 or 853 | privileged ports need `CAP_NET_BIND_SERVICE` or root; grant the capability, or listen on a high port and forward |
-| `address already in use` | another resolver (`systemd-resolved`, `dnsmasq`) holds the port; stop it or change `[dns]` |
+| `cannot bind udp listener on 0.0.0.0:53: permission denied` | privileged ports need `CAP_NET_BIND_SERVICE` or root; grant the capability, or listen on a high port and forward. The message names the protocol and address and the key to override (`dns.udp`, `dns.tcp`, `dot.listen`, `doh.listen`, `api.listen`, or the matching `DNSY_DNS__UDP` style variable) |
+| `cannot bind ...: address in use` | another resolver (`systemd-resolved` listens on 127.0.0.53/54, which collides with `0.0.0.0:53`; also `dnsmasq`) holds the port; stop it or change the listen address named in the message |
+| `cannot create the data directory /var/lib/dnsy: permission denied` (or the zones directory, or `dnsy.db`) | running unprivileged against the default paths; set `server.data_dir` / `zones.dir` (or `DNSY_SERVER__DATA_DIR`, `DNSY_ZONES__DIR`) to a directory you can write |
 | a config error naming a key | unknown keys and invalid combinations are errors; run `dnsy config check`, see [Configuration reference](configuration.md#validation-rules) |
 | `database disk image is malformed`, or sudden query-log or login errors after a crash or disk fault | run `dnsy db check --full`; if it reports problems, stop the server and restore the last `dnsy db backup` (see [Backup and restore](backup-restore.md)) |
 | `dnsy db vacuum` says the database is open in another process | the server holds it; stop `dnsy serve` first (backup and check do not need that) |

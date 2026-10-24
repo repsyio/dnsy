@@ -15,6 +15,7 @@
 //! truncated to the client's EDNS payload size (at most 1232, or 512 without EDNS).
 
 mod admission;
+mod bind_error;
 mod doh;
 mod dot;
 mod query;
@@ -31,6 +32,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 pub use admission::{Activity, Busy, Slot, SlotLimit};
+pub use bind_error::bind_error;
 pub use doh::{
     DOH_TOKEN_CACHE_CAPACITY, DOH_TOKEN_CACHE_TTL, DohAuthenticator, DohConfig, DohDenied,
     TokenAuth,
@@ -119,7 +121,8 @@ impl Server {
         let mut udp_addrs = Vec::new();
         let mut tcp_addrs = Vec::new();
         for addr in &config.udp {
-            let sockets = udp::bind(*addr, config.udp_sockets_per_address)?;
+            let sockets = udp::bind(*addr, config.udp_sockets_per_address)
+                .map_err(|e| bind_error("udp", "dns.udp", *addr, &e))?;
             udp_addrs.push(sockets[0].local_addr()?);
             udp_sockets += sockets.len();
             for socket in sockets {
@@ -133,7 +136,9 @@ impl Server {
             }
         }
         for addr in &config.tcp {
-            let listener = tokio::net::TcpListener::bind(addr).await?;
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|e| bind_error("tcp", "dns.tcp", *addr, &e))?;
             tcp_addrs.push(listener.local_addr()?);
             tasks.push(tokio::spawn(tcp::serve(
                 listener,
@@ -152,7 +157,9 @@ impl Server {
                 &[dot::ALPN_DOT],
             )?;
             for addr in &dot.listen {
-                let listener = tokio::net::TcpListener::bind(addr).await?;
+                let listener = tokio::net::TcpListener::bind(addr)
+                    .await
+                    .map_err(|e| bind_error("dot", "dot.listen", *addr, &e))?;
                 dot_addrs.push(listener.local_addr()?);
                 tasks.push(tokio::spawn(dot::serve(
                     listener,
@@ -172,7 +179,9 @@ impl Server {
             let acceptor = dot::acceptor(Arc::clone(&store), None, doh::ALPN)?;
             let state = doh::State::new(&doh, Arc::clone(&handler), config.tcp_idle);
             for addr in &doh.listen {
-                let listener = tokio::net::TcpListener::bind(addr).await?;
+                let listener = tokio::net::TcpListener::bind(addr)
+                    .await
+                    .map_err(|e| bind_error("doh", "doh.listen", *addr, &e))?;
                 doh_bound.push(listener.local_addr()?);
                 tasks.push(tokio::spawn(doh::serve(
                     listener,

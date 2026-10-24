@@ -47,6 +47,7 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
     warn_unsafe_config(&config);
     let store = open_store(&config)?;
     warn_loose_key_files(&config);
+    create_zones_dir(&config)?;
     let mut services = Services::open(&config, &store).await?;
     let querylog_task = services.take_querylog_task();
     let engine = Arc::new(
@@ -67,7 +68,7 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
     let server = Server::start(server_config, Arc::clone(&engine)).await?;
 
     // API.
-    let state = api_state(
+    let (state, bootstrap) = api_state(
         &config,
         &engine,
         &services,
@@ -89,7 +90,9 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
     let mut api_addrs = Vec::new();
     let mut api_tasks = Vec::new();
     for addr in &config.api.listen {
-        let listener = TcpListener::bind(addr).await?;
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|e| Error::from(dnsy_server::bind_error("api", "api.listen", *addr, &e)))?;
         api_addrs.push(listener.local_addr()?);
         api_tasks.push(tokio::spawn(http::serve(
             listener,
@@ -100,6 +103,11 @@ pub(crate) async fn serve(config: Config, config_path: &Path, args: ServeArgs) -
         )));
     }
 
+    // Only now, with every listener bound, is the one-time code shown: a failed start never
+    // burns or hides it.
+    if let Some(code) = bootstrap {
+        eprintln!("{}", bootstrap_notice(&code));
+    }
     log_listeners(&server, &api_addrs);
     if let Some(path) = &args.ready_file {
         write_ready_file(path, &server, &api_addrs)?;
@@ -186,7 +194,7 @@ async fn api_state(
     store: &dnsy_store::Store,
     allowlist: Option<Allowlist>,
     background: &mut Vec<JoinHandle<()>>,
-) -> Result<ApiState> {
+) -> Result<(ApiState, Option<String>)> {
     let mut state = ApiState::new(store.clone())
         .with_config(config)
         .with_policy(Arc::clone(engine) as Arc<dyn dnsy_engine::LivePolicy>)
@@ -201,10 +209,28 @@ async fn api_state(
             RETENTION_INTERVAL,
         ));
     }
-    if let Some(code) = UserService::new(store.clone()).start_bootstrap().await? {
-        state = state.with_bootstrap(Arc::new(code));
+    let mut shown = None;
+    if let Some((handle, code)) = UserService::new(store.clone()).start_bootstrap().await? {
+        state = state.with_bootstrap(Arc::new(handle));
+        shown = Some(code);
     }
-    Ok(state)
+    Ok((state, shown))
+}
+
+fn create_zones_dir(config: &Config) -> Result<()> {
+    std::fs::create_dir_all(&config.zones.dir).map_err(|e| {
+        crate::path_error(
+            "create the zones directory",
+            &config.zones.dir,
+            &e,
+            "zones.dir",
+        )
+    })
+}
+
+/// The line that shows the one-time bootstrap code.
+fn bootstrap_notice(code: &str) -> String {
+    format!("dnsy: no users exist. One-time bootstrap code (valid 1 hour, shown once): {code}")
 }
 
 /// A configured `u32` limit as a `usize`.
@@ -446,6 +472,15 @@ fn warn_unsafe_config(config: &Config) {
 mod tests {
     use super::*;
     use dnsy_resolver::{UpstreamClient, UpstreamConfig};
+
+    #[test]
+    fn bootstrap_notice_carries_the_code() {
+        let line = bootstrap_notice("abc123");
+        assert!(
+            line.contains("abc123") && line.contains("shown once"),
+            "{line}"
+        );
+    }
 
     fn engine(config: &Config) -> Arc<Engine> {
         let client = UpstreamClient::new(UpstreamConfig::default()).unwrap();
