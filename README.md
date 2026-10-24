@@ -123,6 +123,10 @@ export DNSY_CONFIG="$PWD/dnsy-demo/dnsy.toml"
 dnsy config check
 ```
 
+`[resolver] upstreams` is where forwarded queries go. Without it DNSY logs a warning at startup,
+and every forwarded query answers SERVFAIL. The upstreams are seeded on the first start only; after
+that, change them in the web UI or the API.
+
 **3. First admin.** Create the admin from the command line (the password is printed once)...
 
 ```sh
@@ -139,6 +143,13 @@ dnsy serve
 ```
 
 The web UI and the API are on <http://127.0.0.1:5380> (`/healthz` and `/readyz` are the probes).
+
+The configuration above uses port 5353, so no root is needed. The DNS default is `0.0.0.0:53`,
+which needs root or `CAP_NET_BIND_SERVICE`. On systemd hosts, `systemd-resolved` holds
+`127.0.0.53:53` and the bind fails with `address already in use`: listen on another address
+(`[dns] udp = ["192.168.1.10:53"]`) or set `DNSStubListener=no` in `resolved.conf` and restart
+`systemd-resolved`. The full steps, and the `/etc/resolv.conf` change they need, are in the
+[quickstart](docs/book/src/quickstart.md#port-53-and-systemd-resolved).
 
 **5. Ask it** (in another terminal, with `PATH` and `DNSY_CONFIG` still set):
 

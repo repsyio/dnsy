@@ -45,7 +45,9 @@ The embedded UI ships a brotli and a gzip copy of every text asset (written by `
 | `<zones.dir>/*.json` | zone files |
 
 Binding port 53 or 853 needs privilege: run as a dedicated non-root user and grant
-`CAP_NET_BIND_SERVICE` (or listen on high ports behind a forwarder). The data directory, the
+`CAP_NET_BIND_SERVICE` (or listen on high ports behind a forwarder). On systemd hosts,
+`systemd-resolved` may already hold `127.0.0.53:53`; see
+[Port 53 and systemd-resolved](quickstart.md#port-53-and-systemd-resolved). The data directory, the
 key passphrase file and TLS private keys should be readable by that user only.
 
 ## Build time
