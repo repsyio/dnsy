@@ -396,20 +396,17 @@ impl UserService {
             .await?)
     }
 
-    /// If there are no users, issue a one-time bootstrap code (valid 1 hour),
-    /// print it once to stderr and return its handle. Returns `None` otherwise.
+    /// If there are no users, issue a one-time bootstrap code (valid 1 hour) and return its
+    /// handle with the plaintext code. Returns `None` otherwise. The caller shows the code once,
+    /// and only once its listeners have bound.
     ///
     /// # Errors
     /// A store failure.
-    pub async fn start_bootstrap(&self) -> Result<Option<BootstrapCode>, UserError> {
+    pub async fn start_bootstrap(&self) -> Result<Option<(BootstrapCode, String)>, UserError> {
         if self.count().await? > 0 {
             return Ok(None);
         }
-        let (handle, code) = BootstrapCode::generate(bootstrap::TTL);
-        eprintln!(
-            "dnsy: no users exist. One-time bootstrap code (valid 1 hour, shown once): {code}"
-        );
-        Ok(Some(handle))
+        Ok(Some(BootstrapCode::generate(bootstrap::TTL)))
     }
 
     /// Create the first admin with a valid bootstrap code. The code is consumed
@@ -717,8 +714,8 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_only_without_users() {
         let (s, _d) = svc();
-        let h = s.start_bootstrap().await.unwrap().expect("code issued");
-        let _ = h;
+        let (_, code) = s.start_bootstrap().await.unwrap().expect("code issued");
+        assert_eq!(code.len(), 32);
         s.create("a", "pw", Role::Admin).await.unwrap();
         assert!(s.start_bootstrap().await.unwrap().is_none());
         let (h, code) = BootstrapCode::generate(bootstrap::TTL);

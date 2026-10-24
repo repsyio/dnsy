@@ -124,8 +124,27 @@ fn load_quiet(path: &Path) -> Result<Config> {
 /// Opens (creating and migrating) `<data_dir>/dnsy.db`. A missing data directory is created with
 /// mode 0700 and the database with 0600; existing ones keep their modes.
 pub(crate) fn open_store(config: &Config) -> Result<Store> {
-    create_private_dir(&config.server.data_dir)?;
-    Ok(Store::open(&db_path(config))?)
+    let dir = &config.server.data_dir;
+    create_private_dir(dir)
+        .map_err(|e| path_error("create the data directory", dir, &e, "server.data_dir"))?;
+    let db = db_path(config);
+    Store::open(&db).map_err(|e| path_error("open the database", &db, &e, "server.data_dir"))
+}
+
+/// A data directory, zones directory or database failure that names the path and, since this is almost always
+/// permissions (an unprivileged run against the default `/var/lib/dnsy`), the way out.
+pub(crate) fn path_error(
+    action: &str,
+    path: &Path,
+    err: &dyn std::error::Error,
+    key: &str,
+) -> Error {
+    let env = format!("DNSY_{}", key.to_ascii_uppercase().replace('.', "__"));
+    Error::msg(format!(
+        "cannot {action} {}: {err} (set `{key}` in the config file or {env} to a directory \
+         this user can write)",
+        path.display()
+    ))
 }
 
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
@@ -171,6 +190,49 @@ mod tests {
         assert_eq!(
             workers(&["dnsy", "-c", "/nonexistent/dnsy.toml", "serve"]),
             default
+        );
+    }
+
+    #[test]
+    fn data_dir_failure_names_the_path_and_the_fix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blocker = tmp.path().join("file");
+        std::fs::write(&blocker, "x").unwrap();
+        let mut config = Config::default();
+        config.server.data_dir = blocker.join("dnsy");
+        let msg = open_store(&config).err().expect("fails").to_string();
+        assert!(msg.contains("create the data directory"), "{msg}");
+        assert!(
+            msg.contains(&blocker.join("dnsy").display().to_string()),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("server.data_dir") && msg.contains("DNSY_SERVER__DATA_DIR"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn path_error_derives_the_env_var_from_the_key() {
+        let e = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let msg = path_error("create", Path::new("/x/zones"), &e, "zones.dir").to_string();
+        assert!(
+            msg.contains("/x/zones") && msg.contains("DNSY_ZONES__DIR"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn unopenable_database_names_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.server.data_dir = tmp.path().to_path_buf();
+        std::fs::create_dir(db_path(&config)).unwrap();
+        let msg = open_store(&config).err().expect("fails").to_string();
+        assert!(msg.contains("open the database"), "{msg}");
+        assert!(
+            msg.contains("dnsy.db") && msg.contains("DNSY_SERVER__DATA_DIR"),
+            "{msg}"
         );
     }
 

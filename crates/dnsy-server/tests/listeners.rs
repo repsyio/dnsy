@@ -457,3 +457,27 @@ async fn udp_sockets_per_address_binds_n_sockets() {
     }
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn bind_failure_names_protocol_address_and_override() {
+    let taken = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let addr = taken.local_addr().unwrap();
+    let c = ServerConfig::new(Vec::new(), vec![addr]);
+    let err = Server::start(c, Arc::new(RefusedHandler))
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+    let msg = err.to_string();
+    assert!(msg.contains(&format!("tcp listener on {addr}")), "{msg}");
+    assert!(msg.contains("DNSY_DNS__TCP"), "{msg}");
+
+    let taken = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let addr = taken.local_addr().unwrap();
+    let c = ServerConfig::new(vec![addr], Vec::new());
+    let msg = Server::start(c, Arc::new(RefusedHandler))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains(&format!("udp listener on {addr}")), "{msg}");
+    assert!(msg.contains("DNSY_DNS__UDP"), "{msg}");
+}
