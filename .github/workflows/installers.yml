@@ -1,0 +1,130 @@
+# Builds the macOS .pkg and the Windows .msi that release.yml ships (dist installers `pkg` and `msi`)
+# and installs them on the matching runner. It only runs when something the packages depend on
+# changes, because it compiles the release binary with the web UI. Nothing is published.
+name: installers
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/installers.yml
+      - .github/build-setup.yml
+      - dist-workspace.toml
+      - crates/dnsy/Cargo.toml
+      - crates/dnsy/wix/**
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installers-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+
+jobs:
+  pkg:
+    name: pkg (macos arm64)
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build the web UI
+        run: |
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm build
+          test -f dist/dnsy/browser/index.html
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install dist
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh
+      - name: Build the pkg
+        run: dist build --artifacts=local --target=aarch64-apple-darwin
+      - name: Install the pkg and run dnsy
+        run: |
+          set -euo pipefail
+          pkg=target/distrib/dnsy-aarch64-apple-darwin.pkg
+          test -f "$pkg"
+          pkgutil --check-signature "$pkg" || true
+          sudo installer -pkg "$pkg" -target / -verbose
+          pkgutil --files dev.dnsy.dnsy
+          want=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          out=$(dnsy version)
+          echo "$out"
+          case "$out" in *"$want"*) ;; *) echo "dnsy version does not mention $want" >&2; exit 1 ;; esac
+          command -v dnsy
+
+  msi:
+    name: msi (windows x64)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build the web UI
+        shell: bash
+        run: |
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm build
+          test -f dist/dnsy/browser/index.html
+      - name: Install the pinned toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install dist
+        run: powershell -c "irm https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.ps1 | iex"
+      - name: Build the msi
+        run: dist build --artifacts=local --target=x86_64-pc-windows-msvc
+      - name: Install the msi, run dnsy, uninstall
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Resolve-Path 'target/distrib/dnsy-x86_64-pc-windows-msvc.msi').Path
+          $exe = 'C:\Program Files\dnsy\bin\dnsy.exe'
+          function Run-Msi($msiArgs) {
+            $p = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "msiexec $msiArgs exited with $($p.ExitCode)" }
+          }
+          Run-Msi "/i `"$msi`" /qn /l*v install.log"
+          if (-not (Test-Path $exe)) { throw "$exe was not installed" }
+          $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+          $entries = $machinePath -split ';' | ForEach-Object { $_.TrimEnd('\') }
+          if ($entries -notcontains 'C:\Program Files\dnsy\bin') { throw "install dir is not on the machine PATH: $machinePath" }
+          $want = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $out = & $exe version
+          Write-Host $out
+          if (($out | Out-String) -notmatch [regex]::Escape($want)) { throw "dnsy version does not mention $want" }
+          Run-Msi "/x `"$msi`" /qn /l*v uninstall.log"
+          if (Test-Path $exe) { throw "$exe still present after uninstall" }
+          $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+          if ($machinePath -like '*Program Files\dnsy*') { throw "PATH entry left after uninstall: $machinePath" }
+      - name: Upload the installer logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-logs
+          path: |
+            install.log
+            uninstall.log
+          if-no-files-found: ignore
