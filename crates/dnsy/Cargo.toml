@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 publish = false
+authors = ["DNSY"]
+description = "DNSY, a single-binary DNS server"
 build = "build.rs"
 
 [features]
@@ -15,6 +17,13 @@ embed-ui = ["dnsy-api/embed-ui"]
 [package.metadata.dist]
 # `publish = false` hides the package from cargo-dist; opt back in (dist-workspace.toml).
 dist = true
+
+# WiX (MSI) identity. These GUIDs identify the product line for upgrades and the PATH component; never change them.
+[package.metadata.wix]
+upgrade-guid = "FAE7A02F-E8E4-4CCF-95F7-74988369DAE8"
+path-guid = "0816C889-DE3E-4911-8AA7-57FEE91583B6"
+license = false
+eula = false
 
 [[bin]]
 name = "dnsy"
