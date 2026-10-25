@@ -9,9 +9,9 @@ in v1.
 
 | Target | Archive | Runner |
 | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | `dnsy-x86_64-unknown-linux-gnu.tar.xz` | ubuntu-22.04 |
+| `x86_64-unknown-linux-gnu` | `dnsy-x86_64-unknown-linux-gnu.tar.xz` | ubuntu-22.04, `manylinux_2_28` container |
 | `x86_64-unknown-linux-musl` | `dnsy-x86_64-unknown-linux-musl.tar.xz` | ubuntu-22.04 |
-| `aarch64-unknown-linux-gnu` | `dnsy-aarch64-unknown-linux-gnu.tar.xz` | ubuntu-24.04-arm |
+| `aarch64-unknown-linux-gnu` | `dnsy-aarch64-unknown-linux-gnu.tar.xz` | ubuntu-24.04-arm, `manylinux_2_28` container |
 | `aarch64-unknown-linux-musl` | `dnsy-aarch64-unknown-linux-musl.tar.xz` | ubuntu-24.04-arm |
 | `x86_64-apple-darwin` | `dnsy-x86_64-apple-darwin.tar.xz` | macos-15-intel |
 | `aarch64-apple-darwin` | `dnsy-aarch64-apple-darwin.tar.xz` | macos-14 |
@@ -31,8 +31,12 @@ Next to the archives the release has `dnsy-installer.sh` (Linux and macOS), `dns
 and a combined `sha256.sum`. The packages hold only the binary (no `LICENSE`, `README.md` or sample
 config; use `dnsy config init` to write a config).
 
-The `gnu` builds link glibc 2.35 or newer (ubuntu-22.04); use the `musl` builds on older or
-glibc-free distributions such as Alpine. Binaries and packages are not code-signed or notarised
+The `gnu` builds (x86_64 and aarch64) are built inside `quay.io/pypa/manylinux_2_28_<arch>`
+containers and need glibc 2.28 or newer: RHEL, Rocky and Alma 8+, Debian 10+, Ubuntu 20.04+. Use
+the `musl` builds on older or glibc-free distributions such as Alpine. The `glibc-floor` job in
+`release-verify.yml` builds the same binary in the same images and runs
+`scripts/check-glibc-floor.sh`, which fails the release if `objdump -T` shows any `GLIBC_` symbol
+version above 2.28. Binaries and packages are not code-signed or notarised
 (see [Unsigned packages](#unsigned-packages)).
 
 ## Installing a release
@@ -148,11 +152,12 @@ Configuration lives in `dist-workspace.toml`; the workflow is `.github/workflows
 1. `plan` runs `dist host --steps=create` and computes the build matrix from the tag. It fails if
    the tag does not match the version in `Cargo.toml`.
 2. `custom-release-verify` (`release-verify.yml`) builds the web UI and runs the embedded-UI test
-   `ui_serves_brotli_when_accepted` with `--features embed-ui` in release mode. No artifact is built
-   when it fails.
+   `ui_serves_brotli_when_accepted` with `--features embed-ui` in release mode; its `glibc-floor` job builds `dnsy` in the two
+   manylinux_2_28 images and checks the glibc floor. No artifact is built when either fails.
 3. `build-local-artifacts` runs once per target. Its prerequisite steps (`.github/build-setup.yml`)
    install pnpm and Node 24, run `pnpm install --frozen-lockfile && pnpm build` in `web/` (producing
-   `web/dist/dnsy/browser`) and install `musl-tools`; then `dist build` compiles
+   `web/dist/dnsy/browser`) and, outside the manylinux containers (no `apt-get` there), install
+   `musl-tools`; then `dist build` compiles
    `dnsy --features embed-ui` with the `dist` profile, which inherits `[profile.release]` unchanged
    (fat LTO, one codegen unit, stripped, overflow checks, `panic = "unwind"`).
    On the macOS and Windows runners the same `dist build` also produces the `.pkg` (`pkgbuild` and
