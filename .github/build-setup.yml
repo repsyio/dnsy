@@ -17,7 +17,9 @@
     pnpm install --frozen-lockfile
     pnpm build
     test -f dist/dnsy/browser/index.html
+# The musl targets build on the Ubuntu runner itself; the gnu targets run in manylinux (CentOS-family,
+# no apt-get) containers, where matrix.container is set.
 - name: Install musl-tools
-  if: runner.os == 'Linux'
+  if: runner.os == 'Linux' && !matrix.container
   shell: bash
   run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
