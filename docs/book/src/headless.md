@@ -10,6 +10,12 @@ Distribution packages install them to `/usr/lib/systemd/system/dnsy.service` and
 `/usr/lib/sysusers.d/dnsy.conf`. For a tarball or `cargo install` setup, copy them there yourself
 (or to `/etc/systemd/system/dnsy.service` and `/etc/sysusers.d/dnsy.conf`).
 
+With a `.deb` or `.rpm` ([Linux packages](release.md#linux-packages-deb-and-rpm)) everything below
+is already in place except enabling the service: the package creates the `dnsy` user, installs the
+unit and a sample `/etc/dnsy/dnsy.toml`, and leaves the service disabled and stopped. Edit the
+config, deal with [port 53](#port-53-and-systemd-resolved) if needed, then
+`sudo systemctl enable --now dnsy`.
+
 ## Service user
 
 `dnsy.sysusers` is a [`sysusers.d`](https://www.freedesktop.org/software/systemd/man/sysusers.d.html)

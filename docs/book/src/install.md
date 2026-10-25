@@ -8,6 +8,17 @@ DNSY is one binary, `dnsy`. It needs no runtime dependencies: SQLite is bundled 
 Every tagged release publishes archives and installers for Linux, macOS and Windows with the web
 UI embedded; see [Releases](release.md) for the targets, installers and checksum verification.
 
+On Debian, Ubuntu, RHEL, Rocky, Alma and Fedora, the release also has `.deb` and `.rpm` packages that
+install the binary, a sample config and the systemd unit (they never start the service):
+
+```sh
+sudo apt install ./dnsy_<ver>_amd64.deb          # or arm64
+sudo dnf install ./dnsy-<ver>-1.x86_64.rpm       # or aarch64
+```
+
+See [Linux packages](release.md#linux-packages-deb-and-rpm) and
+[Headless and service install](headless.md).
+
 Every archive also holds `dnsy.toml`, an annotated sample configuration. Copy it to
 `/etc/dnsy/dnsy.toml` or let the binary write it for you, see [Starter configuration](#starter-configuration).
 
