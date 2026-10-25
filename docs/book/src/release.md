@@ -28,7 +28,7 @@ Gatekeeper and Windows SmartScreen may warn on first run.
 ## Installing a release
 
 ```sh
-# Linux and macOS: installs to $CARGO_HOME/bin (default ~/.cargo/bin)
+# Linux and macOS: asks where to install and whether to write a starter config
 curl -fsSL https://dnsy.dev/install.sh | sh
 ```
 
@@ -37,9 +37,33 @@ curl -fsSL https://dnsy.dev/install.sh | sh
 irm https://dnsy.dev/install.ps1 | iex
 ```
 
-`dnsy.dev/install.sh` and `dnsy.dev/install.ps1` are two-line wrappers (sources in `docs/landing/`)
-that run the installer attached to the latest release, so they never go stale. The direct commands
-work too, and are what the wrappers run:
+`dnsy.dev/install.sh` and `dnsy.dev/install.ps1` are small wrappers (sources in `docs/landing/`)
+that run the installer attached to the latest release, so they never go stale. They ask two questions
+on a terminal (they read the answers from `/dev/tty`, so `curl | sh` works):
+
+1. **Where to install.** `install.sh` offers system-wide (`/usr/local/bin`, uses `sudo` unless you are
+   root), just you (`~/.local/bin`) or a local folder (`./dnsy`, nothing outside it is touched). On
+   Windows the choices are just you (`%USERPROFILE%\.cargo\bin`, added to your PATH) or a local
+   folder. The binary goes only into that folder and no shell profile is edited; if it is not on your PATH the script prints the line to add.
+2. **A starter config.** If you say yes it runs `dnsy config init`: the annotated system config at
+   `/etc/dnsy/dnsy.toml` for a system-wide install, and a `--dev` config (port 5353 on loopback, no
+   root needed) at `~/.config/dnsy/dnsy.toml` or next to a local install. A release older than the
+   one that added `config init` skips this step.
+
+To skip the questions, pass flags after `sh -s --` or set environment variables:
+
+```sh
+curl -fsSL https://dnsy.dev/install.sh | sh -s -- --user --no-config
+# --global | --user | --local     DNSY_INSTALL_MODE=global|user|local
+# --config | --no-config          DNSY_INIT_CONFIG=yes|no
+```
+
+```powershell
+$env:DNSY_INSTALL_MODE = 'local'; $env:DNSY_INIT_CONFIG = 'no'; irm https://dnsy.dev/install.ps1 | iex
+```
+
+Without a terminal to ask, the defaults are a user install and no config. The direct commands work
+too, and are what the wrappers run (they install to `$CARGO_HOME/bin`):
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
