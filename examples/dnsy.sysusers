@@ -1,0 +1,3 @@
+# Creates the dnsy service user. Packages install this as /usr/lib/sysusers.d/dnsy.conf;
+# for a manual install run: sudo systemd-sysusers examples/dnsy.sysusers
+u dnsy - "DNSY DNS server" /var/lib/dnsy

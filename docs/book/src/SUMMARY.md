@@ -5,6 +5,7 @@
 - [Install](install.md)
 - [Releases](release.md)
 - [Quickstart](quickstart.md)
+- [Headless and service install](headless.md)
 - [Configuration reference](configuration.md)
 - [Zones](zones.md)
 - [Resolver, upstreams and cache](resolver.md)
