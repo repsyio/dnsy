@@ -1,30 +1,85 @@
-# Builds the macOS .pkg and the Windows .msi that release.yml ships (dist installers `pkg` and `msi`)
-# and installs them on the matching runner. It only runs when something the packages depend on
-# changes, because it compiles the release binary with the web UI. Nothing is published.
-name: installers
+# Checks that are too slow or too platform-specific to run on every pull request, run before a
+# release instead: the macOS and Windows build and test, and the macOS .pkg and Windows .msi
+# installers (built with cargo-dist and installed on a real runner). Nothing is published.
+#
+# It never runs on pull requests. It runs
+#   * by hand: Actions, release-pre-check, Run workflow (do this on main and wait for green before
+#     tagging a release, see docs/book/src/release.md; pick a branch to check a packaging change
+#     before it merges),
+#   * weekly on main, so a Windows or macOS break does not wait for release day.
+# It is not a required check and the release workflow does not wait for it.
+name: release-pre-check
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/installers.yml
-      - .github/build-setup.yml
-      - dist-workspace.toml
-      - crates/dnsy/Cargo.toml
-      - crates/dnsy/wix/**
-      - Cargo.lock
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1" # Mondays 05:17 UTC
 
 permissions:
   contents: read
 
 concurrency:
-  group: installers-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: release-pre-check-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
 
 jobs:
+  # Build and unit-test on the other platforms. Coverage, deny, e2e and browser suites are
+  # Linux-only; this only proves the workspace compiles and the unit/integration tests pass.
+  cross-platform:
+    name: build-and-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          # The self-hosted runners have no rustup; the GitHub-hosted macOS and Windows runners do.
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-nextest
+      # The release builds the web UI on every platform; build it here on Windows too, where path
+      # handling in the build scripts differs.
+      - if: runner.os == 'Windows'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+      - if: runner.os == 'Windows'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - if: runner.os == 'Windows'
+        name: Build the web UI
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          test -f dist/dnsy/browser/index.html
+      - run: cargo build --workspace --exclude dnsy-bench --all-targets
+      - run: cargo nextest run --workspace --exclude dnsy-e2e --exclude dnsy-bench --no-tests=pass --no-fail-fast
+
   pkg:
     name: pkg (macos arm64)
     runs-on: macos-14
