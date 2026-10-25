@@ -1,0 +1,210 @@
+# Exercises the .deb and .rpm packaging (package-linux.yml) on a pull request: builds a plain debug
+# dnsy (no web UI, so it is cheap), puts it in archives laid out like the release's gnu archives,
+# runs the very same scripts/package-linux.sh, then installs the packages for real in distro
+# containers and natively on arm64. Nothing is published. It only runs when a packaging file changes.
+name: packages
+
+on:
+  pull_request:
+    paths:
+      - packaging/**
+      - .github/workflows/packages.yml
+      - .github/workflows/package-linux.yml
+      - scripts/package-linux.sh
+      - scripts/install-nfpm.sh
+      - examples/dnsy.service
+      - examples/dnsy.sysusers
+      - examples/dnsy.toml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+
+jobs:
+  scripts:
+    name: maintainer scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck --severity=warning packaging/scripts/*.sh packaging/test/*.sh scripts/package-linux.sh scripts/install-nfpm.sh
+      - name: Run the maintainer script tests under dash
+        run: dash packaging/test/test-scripts.sh
+
+  # The gnu archives of a release are built in manylinux_2_28 containers; do the same here with a
+  # debug build so the binary runs on every distro image below (glibc 2.28 floor).
+  build:
+    name: build dnsy (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+            image: quay.io/pypa/manylinux_2_28_x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux_2_28_aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust non-interactively if not already installed
+        run: |
+          if ! command -v cargo > /dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          fi
+      - name: Build dnsy (debug, no web UI)
+        run: cargo build -p dnsy
+      - name: Make a release-shaped archive
+        run: |
+          set -euo pipefail
+          triple=${{ matrix.arch }}-unknown-linux-gnu
+          mkdir -p "out/dnsy-$triple"
+          cp target/debug/dnsy "out/dnsy-$triple/dnsy"
+          tar -cJf "out/dnsy-$triple.tar.xz" -C out "dnsy-$triple"
+          ./target/debug/dnsy version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archive-${{ matrix.arch }}
+          path: out/dnsy-*.tar.xz
+          if-no-files-found: error
+
+  package:
+    name: package (nfpm)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-*
+          path: archives
+          merge-multiple: true
+      - name: Install nfpm (pinned, sha256-verified)
+        run: scripts/install-nfpm.sh "$RUNNER_TEMP/nfpm" && echo "$RUNNER_TEMP/nfpm" >> "$GITHUB_PATH"
+      # The failure mode first: a missing archive must stop packaging, not produce a partial set.
+      - name: Packaging fails without the archives
+        run: |
+          mkdir -p "$RUNNER_TEMP/empty"
+          if scripts/package-linux.sh 0.0.0 "$RUNNER_TEMP/empty" "$RUNNER_TEMP/none"; then
+            echo "package-linux.sh succeeded without archives" >&2
+            exit 1
+          fi
+      - name: Build the packages
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          scripts/package-linux.sh "$version" archives packages
+          ls -l packages
+          (cd packages && sha256sum -c ./*.sha256)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: packages/
+          if-no-files-found: error
+
+  unit:
+    name: systemd unit and sysusers
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: packages
+      - name: Verify the packaged unit and sysusers file
+        run: |
+          set -euo pipefail
+          command -v systemd-analyze >/dev/null || { echo "systemd-analyze is missing on this runner" >&2; exit 1; }
+          root=$RUNNER_TEMP/root
+          mkdir -p "$root"
+          dpkg-deb -x packages/dnsy_*_amd64.deb "$root"
+          unit=$root/usr/lib/systemd/system/dnsy.service
+          test -f "$unit"
+          # verify also checks that ExecStart exists, and dnsy is not installed on the runner:
+          # point it at /bin/true in a scratch copy and keep everything else as packaged.
+          scratch=$(mktemp -d)/dnsy.service
+          sed -E 's#^ExecStart=[^ ]+#ExecStart=/bin/true#' "$unit" > "$scratch"
+          systemd-analyze verify "$scratch"
+          # The packaged sysusers file creates the service user (in a scratch root, not on the runner).
+          mkdir -p "$root/etc"
+          sudo systemd-sysusers --root="$root" "$root/usr/lib/sysusers.d/dnsy.conf"
+          grep -q '^dnsy:' "$root/etc/passwd"
+
+  deb:
+    name: deb (${{ matrix.image }}, ${{ matrix.arch }})
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:22.04", arch: amd64, runner: ubuntu-24.04 }
+          - { image: "debian:12", arch: amd64, runner: ubuntu-24.04 }
+          - { image: "ubuntu:22.04", arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: packages
+      - name: Install, check, remove and purge in the container
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          docker run --rm -e VERSION="$version" \
+            -v "$PWD/packaging/test:/t:ro" -v "$PWD/packages:/pkg:ro" \
+            "${{ matrix.image }}" sh /t/verify-deb.sh
+
+  rpm:
+    name: rpm (${{ matrix.image }}, ${{ matrix.arch }})
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "fedora:latest", arch: x86_64, runner: ubuntu-24.04 }
+          - { image: "rockylinux:9", arch: x86_64, runner: ubuntu-24.04 }
+          - { image: "rockylinux:9", arch: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: packages
+      - name: Install, check and remove in the container
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          docker run --rm -e VERSION="$version" \
+            -v "$PWD/packaging/test:/t:ro" -v "$PWD/packages:/pkg:ro" \
+            "${{ matrix.image }}" sh /t/verify-rpm.sh

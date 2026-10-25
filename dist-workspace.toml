@@ -36,6 +36,8 @@ allow-dirty = ["ci"]
 github-build-setup = "../build-setup.yml"
 # Extra jobs: run the embed-ui tests before any artifact is built
 plan-jobs = ["./release-verify"]
+# After `host` (the release exists): build and upload the .deb and .rpm packages.
+publish-jobs = ["./package-linux"]
 # Native arm64 Linux runners (no cross-compilation). The gnu targets build inside manylinux_2_28
 # containers so the binaries need glibc 2.28 or newer (RHEL 8+, Debian 10+, Ubuntu 20.04+); the
 # container's `host` is the triple of the dist binary that runs in it (a static musl build).

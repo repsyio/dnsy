@@ -25,10 +25,20 @@ Native installers sit beside the archives:
 | `aarch64-apple-darwin` | `dnsy-aarch64-apple-darwin.pkg` | macos-14 |
 | `x86_64-pc-windows-msvc` | `dnsy-x86_64-pc-windows-msvc.msi` | windows-2022 |
 
+Linux distribution packages are built from the two `gnu` archives after the release exists:
+
+| Package | File | Built by |
+| --- | --- | --- |
+| Debian and Ubuntu, x86_64 | `dnsy_<ver>_amd64.deb` | `package-linux.yml` on ubuntu-24.04 |
+| Debian and Ubuntu, arm64 | `dnsy_<ver>_arm64.deb` | `package-linux.yml` on ubuntu-24.04 |
+| RHEL, Rocky, Alma, Fedora, x86_64 | `dnsy-<ver>-1.x86_64.rpm` | `package-linux.yml` on ubuntu-24.04 |
+| RHEL, Rocky, Alma, Fedora, arm64 | `dnsy-<ver>-1.aarch64.rpm` | `package-linux.yml` on ubuntu-24.04 |
+
 Each archive holds `dnsy` (`dnsy.exe` on Windows), `LICENSE`, `README.md`, `CHANGELOG.md` and the sample config `dnsy.toml`.
 Next to the archives the release has `dnsy-installer.sh` (Linux and macOS), `dnsy-installer.ps1`
-(Windows), the two `.pkg` files and the `.msi` above, `source.tar.gz`, one `<file>.sha256` per file
-and a combined `sha256.sum`. The packages hold only the binary (no `LICENSE`, `README.md` or sample
+(Windows), the two `.pkg` files and the `.msi` above, the four Linux packages (each with its own
+`.sha256`, but not listed in `sha256.sum`, which dist writes before the packages exist), `source.tar.gz`, one `<file>.sha256` per file
+and a combined `sha256.sum`. The macOS and Windows packages hold only the binary (no `LICENSE`, `README.md` or sample
 config; use `dnsy config init` to write a config).
 
 The `gnu` builds (x86_64 and aarch64) are built inside `quay.io/pypa/manylinux_2_28_<arch>`
@@ -115,10 +125,55 @@ running `dnsy`. Upgrades replace the previous version in place (the upgrade code
 dnsy-x86_64-pc-windows-msvc.msi /qn` or from Apps in Settings. Without `/qn` the installer shows a
 wizard where the PATH entry can be deselected.
 
+### Linux packages (.deb and .rpm)
+
+Download the file for your architecture from the release page (the version in the name has no
+leading `v`; a pre-release such as `0.2.0-rc.1` is `0.2.0~rc.1` in the file name, so that it sorts
+before `0.2.0`) and install it with the package manager, which resolves nothing extra (the binary
+has no runtime dependencies):
+
+```sh
+sudo apt install ./dnsy_0.1.0_amd64.deb          # Debian, Ubuntu (arm64: _arm64.deb)
+sudo dnf install ./dnsy-0.1.0-1.x86_64.rpm       # RHEL, Rocky, Alma, Fedora (arm64: .aarch64.rpm)
+dnsy version
+```
+
+They need glibc 2.28 or newer, like the `gnu` archives (see above). Each package installs:
+
+| Path | What |
+| --- | --- |
+| `/usr/bin/dnsy` | the binary (the same one as in the `gnu` archive) |
+| `/etc/dnsy/dnsy.toml` | the annotated sample config, mode 0640; a `conffile` (deb) or `%config(noreplace)` (rpm), so your edits survive upgrades |
+| `/usr/lib/systemd/system/dnsy.service` | the hardened [unit](headless.md) |
+| `/usr/lib/sysusers.d/dnsy.conf` | creates the `dnsy` user and group |
+
+The install script creates the `dnsy` user with `systemd-sysusers` and reloads systemd, then prints
+what to do next. **It never enables or starts the service**: on many hosts `systemd-resolved`
+already holds port 53, so edit `/etc/dnsy/dnsy.toml`, free the port if needed, and run
+`sudo systemctl enable --now dnsy`. See [Headless and service install](headless.md). Without systemd
+(a container) the user is not created and nothing else is attempted.
+
+- **Upgrade** (`apt install ./newer.deb`, `dnf install ./newer.rpm`): replaces the binary and unit;
+  keeps and does not restart a running service until you restart it; keeps `dnsy.toml` (dpkg asks
+  if you and the package both changed it, rpm writes `dnsy.toml.rpmnew`).
+- **Remove** (`sudo apt remove dnsy`, `sudo dnf remove dnsy`): stops and disables the service and
+  deletes the binary and unit. `/etc/dnsy`, the `dnsy` user and `/var/lib/dnsy` stay (rpm saves an
+  edited config as `dnsy.toml.rpmsave`).
+- **Purge** (`sudo apt purge dnsy`, Debian only): additionally deletes the config, the `dnsy` user
+  and group, and `/var/lib/dnsy`, including the database and DNSSEC keys. rpm has no purge and never
+  deletes the user or `/var/lib/dnsy`.
+
+What the packages do not do: they are not signed and there is no apt or yum repository yet, so
+`apt upgrade` will not find new versions (download the new file); they do not enable, start or
+restart the service; they do not touch `systemd-resolved`, the firewall or DNS settings; and they
+install no man page, shell completions or `LICENSE` file. The Debian maintainer field is the
+placeholder `DNSY maintainers <firat@repsy.io>`.
+
 ### Unsigned packages
 
 The `.pkg` and `.msi` files are not signed (no Apple Developer ID, no Windows code-signing
-certificate), so both operating systems warn:
+certificate), so both operating systems warn (the `.deb` and `.rpm` files are unsigned too, and
+`dnf` prints a warning about that for a local file):
 
 - **macOS 15 (Sequoia) and later**: Gatekeeper blocks a quarantined unsigned `.pkg` opened from the
   Finder or installed from a browser download. Open **System Settings > Privacy & Security**, scroll
@@ -164,8 +219,18 @@ Configuration lives in `dist-workspace.toml`; the workflow is `.github/workflows
    `productbuild`, identifier from `[dist.mac-pkg-config]`) and the `.msi` (WiX 3 via cargo-wix, from
    `crates/dnsy/wix/main.wxs`; the WiX upgrade and PATH GUIDs are in `[package.metadata.wix]`).
 4. `build-global-artifacts` creates the installers, `source.tar.gz` and `sha256.sum`.
-5. `host` uploads everything and creates the GitHub Release (the only job with `contents: write`).
+5. `host` uploads everything and creates the GitHub Release (it has `contents: write`).
    Tags with a suffix such as `v0.2.0-rc.1` are marked as pre-releases.
+6. `custom-package-linux` (`package-linux.yml`, a dist `publish-jobs` entry, the only other job with
+   `contents: write`) runs after `host` and only for a stable tag (dist skips publish jobs for
+   pre-releases). It downloads `dnsy-x86_64-unknown-linux-gnu.tar.xz` and the aarch64 one from the
+   release, checks them against their `.sha256`, runs `scripts/package-linux.sh` (nfpm 2.48.0,
+   downloaded by `scripts/install-nfpm.sh` and verified against the sha256 pinned in that script;
+   configuration in `packaging/nfpm.yaml`, maintainer scripts in `packaging/scripts/`) and uploads
+   the four packages and their `.sha256` files with `gh release upload --clobber`. Nothing is
+   compiled again. If it fails the release still exists; fix the cause and run **Package Linux**
+   from the Actions tab (`workflow_dispatch`) with the tag, which rebuilds and replaces the
+   packages using the packaging files of the branch you run it on, without moving the tag.
 
 The `host` and `announce` jobs explicitly require `custom-release-verify` to have succeeded (dist's
 default `always()` condition would otherwise accept skipped build jobs and publish after a failed
@@ -173,7 +238,7 @@ verify); the generator script re-applies this.
 
 All actions are pinned by commit SHA. dist emits floating tags and write permissions, so
 `scripts/generate-release-workflow.sh` runs `dist generate` and then re-applies the pins and the
-`contents: read` default. Never edit `release.yml` by hand; change `dist-workspace.toml` or the
+`contents: read` default (and `contents: write` for `host` and `custom-package-linux`). Never edit `release.yml` by hand; change `dist-workspace.toml` or the
 script and regenerate (needs `dist` 0.33.1 on `PATH`). `allow-dirty = ["ci"]` makes dist accept
 the hardened file.
 
@@ -200,7 +265,7 @@ free `ubuntu-24.04-arm` runners need that) or has larger arm runners.
    ```
 
 5. Watch the `Release` workflow. When it is green the release `v0.1.0` has the 7 archives, 2
-   script installers, 2 `.pkg` files, the `.msi`, `source.tar.gz`, per-file `.sha256` files and `sha256.sum`.
+   script installers, 2 `.pkg` files, the `.msi`, the 2 `.deb` and 2 `.rpm` packages, `source.tar.gz`, per-file `.sha256` files and `sha256.sum`.
 6. Verify the packages by hand (the `installers` workflow does the same on pull requests that touch
    the packaging files, but a release is the real test):
    - macOS (a Mac with no `dnsy` installed): download `dnsy-<arch>.pkg` in a browser, expect the
@@ -210,7 +275,13 @@ free `ubuntu-24.04-arm` runners need that) or has larger arm runners.
      open a new terminal and run `dnsy version`; check `C:\Program Files\dnsy\bin\dnsy.exe` and the
      system `PATH`; install it again over itself and over an older build (no second Apps entry);
      uninstall and check both are gone.
-7. Verify: download `sha256.sum` and the archives and run `sha256sum -c sha256.sum --ignore-missing`;
+7. Verify the Linux packages: `apt install ./dnsy_0.1.0_amd64.deb` on a clean Ubuntu or Debian host
+   and `dnf install ./dnsy-0.1.0-1.x86_64.rpm` on a clean Rocky or Fedora host; `dnsy version`
+   prints `0.1.0`, `systemctl status dnsy` shows the unit loaded but inactive and disabled, and
+   `apt purge dnsy` / `dnf remove dnsy` behave as described above. The `packages` workflow runs
+   these steps in containers on pull requests, but only a tag exercises the download from the
+   release and the upload.
+8. Verify: download `sha256.sum` and the archives and run `sha256sum -c sha256.sum --ignore-missing`;
    run the installer on a clean Linux and a clean Windows machine; `dnsy version` must print
    `0.1.0` and `/` on the web port must serve the UI (embedded).
 

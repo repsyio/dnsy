@@ -2,7 +2,8 @@
 # Regenerates .github/workflows/release.yml with cargo-dist, then hardens it:
 #   * every action is pinned by full commit SHA (dist emits floating tags),
 #   * workflow-level permissions are `contents: read`; only the `host` job (creates the GitHub
-#     Release) gets `contents: write`.
+#     Release) and the `custom-package-linux` publish job (uploads the .deb and .rpm to it) get
+#     `contents: write` (dist's id-token and packages write on the publish job is dropped).
 # dist-workspace.toml sets allow-dirty = ["ci"] so `dist plan` accepts the hardened file.
 # Usage: scripts/generate-release-workflow.sh   (needs `dist` 0.33.1 on PATH)
 set -euo pipefail
@@ -35,6 +36,11 @@ s = s.replace('uses: "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c
 assert not re.search(r"uses: [^\n]*@v\d", s), "unpinned action left"
 s = s.replace('permissions:\n  "contents": "write"', 'permissions:\n  contents: read', 1)
 s = s.replace('  host:\n    needs:', '  host:\n    permissions:\n      contents: write\n    needs:', 1)
+# The publish job runs after host and uploads to the release it created. dist gives publish jobs
+# id-token and packages write; this one needs neither, so swap that block for contents: write.
+dist_perms = '    # publish jobs get escalated permissions\n    permissions:\n      "id-token": "write"\n      "packages": "write"\n'
+assert s.count(dist_perms) == 1, "expected exactly one publish job with escalated permissions"
+s = s.replace(dist_perms, "    permissions:\n      contents: write\n", 1)
 s = s.replace("  custom-release-verify:\n", "  custom-release-verify:\n    permissions:\n      contents: read\n", 1)
 # Fail closed: dist's `host` job runs under always() and accepts skipped build jobs, so a failed
 # release-verify would not stop publishing. Make host (and announce) require it explicitly.
@@ -47,6 +53,8 @@ s = s.replace(old_if, "if: ${{ always() && needs.custom-release-verify.result ==
 old_ann = "  announce:\n    needs:\n      - plan\n      - host\n"
 assert old_ann in s
 s = s.replace(old_ann, old_ann + "      - custom-release-verify\n", 1)
-s = s.replace("if: ${{ always() && needs.host.result == 'success' }}", "if: ${{ always() && needs.custom-release-verify.result == 'success' && needs.host.result == 'success' }}", 1)
+old_ann_if = "if: ${{ always() && needs.host.result == 'success'"
+assert s.count(old_ann_if) == 1, "announce condition changed"
+s = s.replace(old_ann_if, "if: ${{ always() && needs.custom-release-verify.result == 'success' && needs.host.result == 'success'", 1)
 open(p, "w").write(s)
 PY

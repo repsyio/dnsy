@@ -1,0 +1,49 @@
+# nfpm configuration for the .deb and .rpm packages (docs/book/src/release.md).
+# Packages the already built release binary; nothing is compiled here. Driven by
+# scripts/package-linux.sh, which sets these environment variables:
+#   DNSY_ARCH     nfpm architecture: amd64 or arm64
+#   DNSY_VERSION  package version without a leading "v", e.g. 0.1.0 or 0.2.0-rc.1
+#   DNSY_BIN      path to the dnsy binary taken from the release archive
+name: dnsy
+arch: ${DNSY_ARCH}
+platform: linux
+version: ${DNSY_VERSION}
+section: net
+priority: optional
+maintainer: DNSY maintainers <firat@repsy.io>
+description: |
+  DNSY is a single-binary DNS server: UDP/TCP, DoT, DoH, forwarding, caching,
+  DNSSEC validation and signing, filtering, a REST API and a web UI.
+vendor: DNSY
+homepage: https://github.com/repsyio/dnsy
+license: Apache-2.0
+
+contents:
+  - src: ${DNSY_BIN}
+    expand: true
+    dst: /usr/bin/dnsy
+    file_info:
+      mode: 0755
+  - dst: /etc/dnsy
+    type: dir
+    file_info:
+      mode: 0750
+  - src: examples/dnsy.toml
+    dst: /etc/dnsy/dnsy.toml
+    type: config|noreplace
+    file_info:
+      mode: 0640
+  - src: examples/dnsy.service
+    dst: /usr/lib/systemd/system/dnsy.service
+    file_info:
+      mode: 0644
+  - src: examples/dnsy.sysusers
+    dst: /usr/lib/sysusers.d/dnsy.conf
+    file_info:
+      mode: 0644
+
+# The same POSIX sh scripts serve both formats; they tell dpkg and rpm arguments apart themselves.
+scripts:
+  postinstall: packaging/scripts/postinst.sh
+  preremove: packaging/scripts/prerm.sh
+  postremove: packaging/scripts/postrm.sh
