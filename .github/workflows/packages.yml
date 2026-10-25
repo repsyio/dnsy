@@ -11,6 +11,7 @@ on:
       - .github/workflows/packages.yml
       - .github/workflows/package-linux.yml
       - scripts/package-linux.sh
+      - scripts/update-sha256sum.sh
       - scripts/install-nfpm.sh
       - examples/dnsy.service
       - examples/dnsy.sysusers
@@ -37,9 +38,11 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck --severity=warning packaging/scripts/*.sh packaging/test/*.sh scripts/package-linux.sh scripts/install-nfpm.sh
+        run: shellcheck --severity=warning packaging/scripts/*.sh packaging/test/*.sh scripts/package-linux.sh scripts/install-nfpm.sh scripts/update-sha256sum.sh
       - name: Run the maintainer script tests under dash
         run: dash packaging/test/test-scripts.sh
+      - name: Run the sha256.sum merge tests
+        run: bash packaging/test/test-update-sha256sum.sh
 
   # The gnu archives of a release are built in manylinux_2_28 containers; do the same here with a
   # debug build so the binary runs on every distro image below (glibc 2.28 floor).
