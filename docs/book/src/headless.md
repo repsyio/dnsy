@@ -4,8 +4,8 @@ This page covers running DNSY as a systemd service on a server with no desktop: 
 service user, the hardened unit, freeing port 53, and reaching the web panel over SSH.
 
 The unit and the user definition live in the repository as
-[`examples/dnsy.service`](https://github.com/repsy/dnsy/blob/main/examples/dnsy.service) and
-[`examples/dnsy.sysusers`](https://github.com/repsy/dnsy/blob/main/examples/dnsy.sysusers).
+[`examples/dnsy.service`](https://github.com/repsyio/dnsy/blob/main/examples/dnsy.service) and
+[`examples/dnsy.sysusers`](https://github.com/repsyio/dnsy/blob/main/examples/dnsy.sysusers).
 Distribution packages install them to `/usr/lib/systemd/system/dnsy.service` and
 `/usr/lib/sysusers.d/dnsy.conf`. For a tarball or `cargo install` setup, copy them there yourself
 (or to `/etc/systemd/system/dnsy.service` and `/etc/sysusers.d/dnsy.conf`).

@@ -1,6 +1,6 @@
 [Unit]
 Description=DNSY DNS server
-Documentation=https://github.com/repsy/dnsy
+Documentation=https://github.com/repsyio/dnsy
 After=network-online.target
 Wants=network-online.target
 
