@@ -2,12 +2,11 @@
 # release instead: the macOS and Windows build and test, and the macOS .pkg and Windows .msi
 # installers (built with cargo-dist and installed on a real runner). Nothing is published.
 #
-# It runs
+# It never runs on pull requests. It runs
 #   * by hand: Actions, release-pre-check, Run workflow (do this on main and wait for green before
-#     tagging a release, see docs/book/src/release.md),
-#   * weekly on main, so a Windows or macOS break does not wait for release day,
-#   * on pull requests that carry the `release-check` label (add it to a PR that touches packaging,
-#     the build scripts or platform-specific code); it re-runs on every push while the label stays.
+#     tagging a release, see docs/book/src/release.md; pick a branch to check a packaging change
+#     before it merges),
+#   * weekly on main, so a Windows or macOS break does not wait for release day.
 # It is not a required check and the release workflow does not wait for it.
 name: release-pre-check
 
@@ -15,15 +14,13 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "17 5 * * 1" # Mondays 05:17 UTC
-  pull_request:
-    types: [labeled, synchronize, reopened]
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-pre-check-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: release-pre-check-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,7 +32,6 @@ jobs:
   # Linux-only; this only proves the workspace compiles and the unit/integration tests pass.
   cross-platform:
     name: build-and-test (${{ matrix.os }})
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-check')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -86,7 +82,6 @@ jobs:
 
   pkg:
     name: pkg (macos arm64)
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-check')
     runs-on: macos-14
     timeout-minutes: 45
     steps:
@@ -129,7 +124,6 @@ jobs:
 
   msi:
     name: msi (windows x64)
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-check')
     runs-on: windows-2022
     timeout-minutes: 45
     steps:

@@ -317,10 +317,9 @@ Slower, platform-specific checks do not run on every pull request. The `release-
 holds them: `build-and-test (macos-latest, windows-latest)` (`cargo build --workspace --all-targets`
 and the nextest suite, without coverage, deny or e2e) and the `pkg (macos arm64)` and
 `msi (windows x64)` jobs, which build the cargo-dist installers and install them on a real runner.
-It runs by hand (Actions, release-pre-check, Run workflow), weekly on `main`, and on any pull request
-that carries the `release-check` label, again on every push while the label stays. Add the label to a
-PR that touches packaging, `dist-workspace.toml`, the build scripts or platform-specific code. It is
-not a required check.
+It never runs on pull requests: start it by hand (Actions, release-pre-check, Run workflow, on `main`
+or on a branch that changes packaging, `dist-workspace.toml`, the build scripts or platform-specific
+code) and it runs weekly on `main`. It is not a required check.
 
 The jobs named `ci` and `e2e` only aggregate the others, so branch protection needs just those two
 (plus `pr-title`) as required checks. Every third-party action is pinned by commit SHA with its

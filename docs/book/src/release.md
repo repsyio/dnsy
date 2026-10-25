@@ -267,8 +267,8 @@ free `ubuntu-24.04-arm` runners need that) or has larger arm runners.
    normal PR that also updates `Cargo.lock`.
 3. Run the `release-pre-check` workflow on `main` (Actions, release-pre-check, Run workflow) and wait
    for it to be green. It builds and tests on macOS and Windows and builds and installs the `.pkg`
-   and `.msi`; none of that runs on ordinary pull requests, so this is where a platform break
-   shows up before a tag. It also runs weekly. The release workflow does not wait for it, so a
+   and `.msi`; none of that runs on pull requests, so this is where a platform break
+   shows up before a tag. It also runs weekly on `main`. The release workflow does not wait for it, so a
    hotfix tag is never blocked by it.
 4. Optional dry run on your machine (no tag, nothing published): with `dist` 0.33.1 installed run
    `dist plan` and `dist generate --check`. Add `dist build --artifacts=local --target=<triple>`
