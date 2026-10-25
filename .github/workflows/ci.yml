@@ -42,6 +42,14 @@ jobs:
         with:
           tool: just,cargo-nextest,cargo-llvm-cov,cargo-deny,cargo-audit
       - run: just check
+      # Skips with a clear message (instead of failing) on a runner without systemd-analyze.
+      - name: Verify the systemd unit
+        run: |
+          if ! command -v systemd-analyze >/dev/null; then
+            echo "systemd-analyze not found on this runner; skipping the unit check"
+            exit 0
+          fi
+          systemd-analyze verify examples/dnsy.service
       - run: just cov-rust
       - name: Upload the coverage report
         if: always()
