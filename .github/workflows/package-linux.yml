@@ -1,0 +1,87 @@
+# Builds the .deb and .rpm packages (amd64 and arm64) for a release and uploads them to it. Nothing is
+# compiled: nfpm packages the dnsy binary from the release's own gnu archives, so a package holds
+# byte-for-byte the binary of the archive.
+#
+# Two entry points:
+#   * workflow_call: release.yml runs it as a cargo-dist publish job (`publish-jobs` in
+#     dist-workspace.toml) after `host` has created the release; dist passes its `plan`.
+#   * workflow_dispatch: run it by hand with a tag to (re)build the packages for an existing release,
+#     for example after fixing a packaging bug on a branch, without moving the tag. The packaging
+#     files come from the ref the workflow runs on; the binaries come from the release.
+name: Package Linux
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: The cargo-dist plan (JSON), passed by release.yml
+        type: string
+        required: false
+      tag:
+        description: The release tag; taken from the plan when empty
+        type: string
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose packages to (re)build, e.g. v0.1.0
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: deb and rpm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG_INPUT: ${{ inputs.tag }}
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the tag
+        run: |
+          set -euo pipefail
+          tag=$TAG_INPUT
+          if [ -z "$tag" ]; then
+            tag=$(jq -r '.announcement_tag // empty' <<<"${PLAN:-null}")
+          fi
+          if ! printf '%s' "$tag" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]*)?$'; then
+            echo "not a release tag: '$tag'" >&2
+            exit 1
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=${tag#v}" >> "$GITHUB_ENV"
+      - name: Install nfpm (pinned, sha256-verified)
+        run: scripts/install-nfpm.sh "$RUNNER_TEMP/nfpm" && echo "$RUNNER_TEMP/nfpm" >> "$GITHUB_PATH"
+      - name: Download the gnu archives
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/archives"
+          for triple in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            gh release download "$TAG" --dir "$RUNNER_TEMP/archives" \
+              --pattern "dnsy-$triple.tar.xz" --pattern "dnsy-$triple.tar.xz.sha256"
+            (cd "$RUNNER_TEMP/archives" && sha256sum -c "dnsy-$triple.tar.xz.sha256")
+          done
+      - name: Build the packages
+        run: scripts/package-linux.sh "$VERSION" "$RUNNER_TEMP/archives" "$RUNNER_TEMP/packages"
+      - name: Check the packages
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packages"
+          ls -l
+          for f in dnsy_*.deb; do dpkg-deb --info "$f" | grep -E 'Version|Architecture'; done
+          sha256sum -c ./*.sha256
+      - name: Upload the packages to the release
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packages"
+          gh release upload "$TAG" --clobber dnsy_*.deb dnsy-*.rpm ./*.sha256
