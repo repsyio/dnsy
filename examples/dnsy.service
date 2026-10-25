@@ -1,0 +1,50 @@
+[Unit]
+Description=DNSY DNS server
+Documentation=https://github.com/repsyio/dnsy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dnsy
+Group=dnsy
+# Package installs put the binary in /usr/bin. For a tarball install, change this to the real
+# path, for example /usr/local/bin/dnsy.
+ExecStart=/usr/bin/dnsy --config /etc/dnsy/dnsy.toml serve
+Restart=on-failure
+RestartSec=2s
+
+# /var/lib/dnsy (data_dir) and /etc/dnsy are created and owned by systemd.
+StateDirectory=dnsy
+StateDirectoryMode=0750
+ConfigurationDirectory=dnsy
+ConfigurationDirectoryMode=0750
+
+# Bind port 53 (and 853/443) without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Sandboxing.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
