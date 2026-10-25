@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "base64",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "axum",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "base64",
@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-bench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "criterion",
@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dnsy-core",
  "ipnet",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ipnet",
  "serde",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-dnssec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dnsy-core",
  "dnsy-proto",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-e2e"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "dnsy-core",
@@ -708,7 +708,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "dnsy-config",
@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-filter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "axum",
@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-keys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "base64",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-observe"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dnsy-core",
  "dnsy-proto",
@@ -793,14 +793,14 @@ dependencies = [
 
 [[package]]
 name = "dnsy-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "insta",
 ]
 
 [[package]]
 name = "dnsy-resolver"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "base64",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "base64",
@@ -849,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusqlite",
  "sha2",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "dnsy-zone"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "dnsy-core",

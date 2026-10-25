@@ -6,6 +6,42 @@ All notable changes to DNSY are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-25
+
+### Added
+
+- `dnsy config init` writes a commented starter configuration to the `--config` path; `--dev`
+  writes one that runs without root (DNS on 127.0.0.1:5353, state in `./dnsy-data`, public
+  upstreams). It refuses to overwrite an existing file without `--force`. The archives also carry
+  the sample config as `dnsy.toml`.
+- `dnsy serve` and `dnsy config check` warn when `resolver.upstreams` is empty, since every
+  forwarded query would then answer SERVFAIL.
+- Installers for more platforms: a `.pkg` for macOS (x86_64 and aarch64), an `.msi` for Windows
+  and `.deb` and `.rpm` packages for Linux (x86_64 and aarch64). The packages are unsigned; see
+  `docs/book/src/release.md`. The Linux packages install the config as `/etc/dnsy/dnsy.toml`,
+  the unit and a `dnsy` service user, and never enable or start the service.
+- A hardened systemd unit (`examples/dnsy.service`) and a headless and service install page in the
+  book.
+- `dnsy.dev/install.sh` and `dnsy.dev/install.ps1` ask where to install (system-wide, just you,
+  or a local folder; Windows offers just you or a local folder) and whether to write a starter
+  config. Flags and environment variables skip the questions; see the release page.
+- The landing page shows the install command with a copy button.
+- The Linux packages are listed in the release's `sha256.sum`.
+
+### Changed
+
+- **Behaviour change:** `install.sh` run without a terminal now installs to `~/.local/bin`
+  instead of `~/.cargo/bin`.
+- Bind failures name the protocol, the address and the likely cause (systemd-resolved on port 53,
+  needing root or `CAP_NET_BIND_SERVICE`, the config key and `DNSY_*` override). Data, zones and
+  database path errors name the path and suggest a writable one.
+- The one-time bootstrap code is printed only after every listener has bound, so a failed start
+  never shows or burns it.
+- The gnu Linux builds are made in `manylinux_2_28` containers and need glibc 2.28 or newer
+  (RHEL, Rocky and Alma 8+, Debian 10+, Ubuntu 20.04+); the aarch64 build previously needed 2.39.
+- Quickstart and troubleshooting docs cover port 53 and systemd-resolved, running without root,
+  setting upstreams and testing with `dig -p`.
+
 ## [0.1.0] - 2026-10-23
 
 ### Changed
