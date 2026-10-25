@@ -49,7 +49,11 @@ jobs:
             echo "systemd-analyze not found on this runner; skipping the unit check"
             exit 0
           fi
-          systemd-analyze verify examples/dnsy.service
+          # verify also checks that ExecStart exists, and dnsy is not installed on the runner:
+          # point it at /bin/true in a scratch copy and keep everything else as written.
+          unit="$(mktemp -d)/dnsy.service"
+          sed -E 's#^ExecStart=[^ ]+#ExecStart=/bin/true#' examples/dnsy.service > "$unit"
+          systemd-analyze verify "$unit"
       - run: just cov-rust
       - name: Upload the coverage report
         if: always()
