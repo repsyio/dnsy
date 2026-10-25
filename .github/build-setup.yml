@@ -1,5 +1,11 @@
 # Extra steps cargo-dist runs in every build-local-artifacts job (see dist-workspace.toml).
 # They produce web/dist/dnsy/browser, which the `embed-ui` feature compiles into the binary.
+# pnpm/action-setup's self-installer shells out to npm, which the manylinux containers do not have,
+# so Node must be on PATH before it runs (the second setup-node adds the pnpm cache).
+- name: Install Node.js (for the pnpm installer)
+  uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+  with:
+    node-version: 24
 - name: Install pnpm
   uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
   with:
@@ -17,7 +23,9 @@
     pnpm install --frozen-lockfile
     pnpm build
     test -f dist/dnsy/browser/index.html
+# The musl targets build on the Ubuntu runner itself; the gnu targets run in manylinux (CentOS-family,
+# no apt-get) containers, where matrix.container is set.
 - name: Install musl-tools
-  if: runner.os == 'Linux'
+  if: runner.os == 'Linux' && !matrix.container
   shell: bash
   run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools

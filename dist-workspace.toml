@@ -9,7 +9,7 @@ cargo-dist-version = "0.33.1"
 # CI backend to support
 ci = "github"
 # The installers to generate for each app
-installers = ["shell", "powershell"]
+installers = ["shell", "powershell", "pkg", "msi"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = [
     "x86_64-unknown-linux-gnu",
@@ -36,7 +36,20 @@ allow-dirty = ["ci"]
 github-build-setup = "../build-setup.yml"
 # Extra jobs: run the embed-ui tests before any artifact is built
 plan-jobs = ["./release-verify"]
-# Native arm64 Linux runners (no cross-compilation)
+# Native arm64 Linux runners (no cross-compilation). The gnu targets build inside manylinux_2_28
+# containers so the binaries need glibc 2.28 or newer (RHEL 8+, Debian 10+, Ubuntu 20.04+); the
+# container's `host` is the triple of the dist binary that runs in it (a static musl build).
 [dist.github-custom-runners]
-aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
 aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
+
+[dist.github-custom-runners.x86_64-unknown-linux-gnu]
+runner = "ubuntu-22.04"
+container = { image = "quay.io/pypa/manylinux_2_28_x86_64", host = "x86_64-unknown-linux-musl" }
+
+[dist.github-custom-runners.aarch64-unknown-linux-gnu]
+runner = "ubuntu-24.04-arm"
+container = { image = "quay.io/pypa/manylinux_2_28_aarch64", host = "aarch64-unknown-linux-musl" }
+
+# macOS .pkg installers (one per architecture); unsigned.
+[dist.mac-pkg-config]
+identifier = "dev.dnsy.dnsy"
