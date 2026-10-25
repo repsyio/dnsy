@@ -265,10 +265,15 @@ free `ubuntu-24.04-arm` runners need that) or has larger arm runners.
    plus dist's artifact table. Commit through a PR.
 2. Check that `version` in the root `Cargo.toml` (`[workspace.package]`) is `0.1.0`. Bumping it is a
    normal PR that also updates `Cargo.lock`.
-3. Optional dry run on your machine (no tag, nothing published): with `dist` 0.33.1 installed run
+3. Run the `release-pre-check` workflow on `main` (Actions, release-pre-check, Run workflow) and wait
+   for it to be green. It builds and tests on macOS and Windows and builds and installs the `.pkg`
+   and `.msi`; none of that runs on ordinary pull requests, so this is where a platform break
+   shows up before a tag. It also runs weekly. The release workflow does not wait for it, so a
+   hotfix tag is never blocked by it.
+4. Optional dry run on your machine (no tag, nothing published): with `dist` 0.33.1 installed run
    `dist plan` and `dist generate --check`. Add `dist build --artifacts=local --target=<triple>`
    after `cd web && pnpm install --frozen-lockfile && pnpm build` to build one archive.
-4. Tag the merged commit and push the tag:
+5. Tag the merged commit and push the tag:
 
    ```sh
    git checkout main && git pull --ff-only
@@ -276,10 +281,10 @@ free `ubuntu-24.04-arm` runners need that) or has larger arm runners.
    git push origin v0.1.0
    ```
 
-5. Watch the `Release` workflow. When it is green the release `v0.1.0` has the 7 archives, 2
+6. Watch the `Release` workflow. When it is green the release `v0.1.0` has the 7 archives, 2
    script installers, 2 `.pkg` files, the `.msi`, the 2 `.deb` and 2 `.rpm` packages, `source.tar.gz`, per-file `.sha256` files and `sha256.sum`.
-6. Verify the packages by hand (the `installers` workflow does the same on pull requests that touch
-   the packaging files, but a release is the real test):
+7. Verify the packages by hand (`release-pre-check` does the same on a runner, but a release is the
+   real test):
    - macOS (a Mac with no `dnsy` installed): download `dnsy-<arch>.pkg` in a browser, expect the
      Gatekeeper block, **Open Anyway**, finish the installer, then `dnsy version` prints `0.1.0` and
      `which dnsy` is `/usr/local/bin/dnsy`. Repeat the other architecture if you have the hardware.
@@ -287,13 +292,13 @@ free `ubuntu-24.04-arm` runners need that) or has larger arm runners.
      open a new terminal and run `dnsy version`; check `C:\Program Files\dnsy\bin\dnsy.exe` and the
      system `PATH`; install it again over itself and over an older build (no second Apps entry);
      uninstall and check both are gone.
-7. Verify the Linux packages: `apt install ./dnsy_0.1.0_amd64.deb` on a clean Ubuntu or Debian host
+8. Verify the Linux packages: `apt install ./dnsy_0.1.0_amd64.deb` on a clean Ubuntu or Debian host
    and `dnf install ./dnsy-0.1.0-1.x86_64.rpm` on a clean Rocky or Fedora host; `dnsy version`
    prints `0.1.0`, `systemctl status dnsy` shows the unit loaded but inactive and disabled, and
    `apt purge dnsy` / `dnf remove dnsy` behave as described above. The `packages` workflow runs
    these steps in containers on pull requests, but only a tag exercises the download from the
    release and the upload.
-8. Verify: download `sha256.sum` and the archives and run `sha256sum -c sha256.sum --ignore-missing`;
+9. Verify: download `sha256.sum` and the archives and run `sha256sum -c sha256.sum --ignore-missing`;
    run the installer on a clean Linux and a clean Windows machine; `dnsy version` must print
    `0.1.0` and `/` on the web port must serve the UI (embedded).
 

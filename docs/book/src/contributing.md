@@ -310,9 +310,17 @@ recipes as the local gate, so a green `just ci` predicts a green pipeline.
 | `ci` / `rust (linux)` | `just check` (fmt, clippy, cargo-deny, advisory cargo-audit, OpenAPI drift), `just cov-rust` (full nextest suite plus the coverage gates) |
 | `ci` / `rust (embed-ui)` | builds `web/dist`, then clippy and the `dnsy-api` tests with `--features embed-ui`, which the default build compiles out (`ui_serves_brotli_when_accepted`). `just ci` does not run these |
 | `ci` / `web` | `just web` (frozen install, dedupe check, `ng lint`, `ng test --coverage`, `ng build`, API types drift) plus an advisory `pnpm audit` |
-| `ci` / `build-and-test (macos, windows)` | `cargo build --workspace --all-targets` and the nextest suite, without coverage, deny or e2e |
 | `e2e` / `e2e (rust)` | `just e2e` |
 | `e2e` / `e2e (browser)` | the `just e2e-ui` steps, with `playwright install --with-deps chromium`; the report is uploaded on failure |
+
+Slower, platform-specific checks do not run on every pull request. The `release-pre-check` workflow
+holds them: `build-and-test (macos-latest, windows-latest)` (`cargo build --workspace --all-targets`
+and the nextest suite, without coverage, deny or e2e) and the `pkg (macos arm64)` and
+`msi (windows x64)` jobs, which build the cargo-dist installers and install them on a real runner.
+It runs by hand (Actions, release-pre-check, Run workflow), weekly on `main`, and on any pull request
+that carries the `release-check` label, again on every push while the label stays. Add the label to a
+PR that touches packaging, `dist-workspace.toml`, the build scripts or platform-specific code. It is
+not a required check.
 
 The jobs named `ci` and `e2e` only aggregate the others, so branch protection needs just those two
 (plus `pr-title`) as required checks. Every third-party action is pinned by commit SHA with its
