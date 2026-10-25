@@ -17,13 +17,23 @@ in v1.
 | `aarch64-apple-darwin` | `dnsy-aarch64-apple-darwin.tar.xz` | macos-14 |
 | `x86_64-pc-windows-msvc` | `dnsy-x86_64-pc-windows-msvc.zip` | windows-2022 |
 
+Native installers sit beside the archives:
+
+| Target | Installer | Runner |
+| --- | --- | --- |
+| `x86_64-apple-darwin` | `dnsy-x86_64-apple-darwin.pkg` | macos-15-intel |
+| `aarch64-apple-darwin` | `dnsy-aarch64-apple-darwin.pkg` | macos-14 |
+| `x86_64-pc-windows-msvc` | `dnsy-x86_64-pc-windows-msvc.msi` | windows-2022 |
+
 Each archive holds `dnsy` (`dnsy.exe` on Windows), `LICENSE`, `README.md`, `CHANGELOG.md` and the sample config `dnsy.toml`.
 Next to the archives the release has `dnsy-installer.sh` (Linux and macOS), `dnsy-installer.ps1`
-(Windows), `source.tar.gz`, one `<file>.sha256` per file and a combined `sha256.sum`.
+(Windows), the two `.pkg` files and the `.msi` above, `source.tar.gz`, one `<file>.sha256` per file
+and a combined `sha256.sum`. The packages hold only the binary (no `LICENSE`, `README.md` or sample
+config; use `dnsy config init` to write a config).
 
 The `gnu` builds link glibc 2.35 or newer (ubuntu-22.04); use the `musl` builds on older or
-glibc-free distributions such as Alpine. Binaries are not code-signed or notarised: macOS
-Gatekeeper and Windows SmartScreen may warn on first run.
+glibc-free distributions such as Alpine. Binaries and packages are not code-signed or notarised
+(see [Unsigned packages](#unsigned-packages)).
 
 ## Installing a release
 
@@ -74,6 +84,48 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/repsyio/dnsy/releases/latest/download/dnsy-installer.ps1 | iex"
 ```
 
+### macOS package
+
+There is one `.pkg` per architecture (`aarch64` for Apple silicon, `x86_64` for Intel). Download it
+from the release page and install it for all users:
+
+```sh
+sudo installer -pkg dnsy-aarch64-apple-darwin.pkg -target /
+dnsy version
+```
+
+The package identifier is `dev.dnsy.dnsy` and it installs `dnsy` under `/usr/local/bin`
+(`pkgutil --files dev.dnsy.dnsy` lists what it installed). macOS has no uninstaller for `.pkg`
+files: delete `/usr/local/bin/dnsy` and run `sudo pkgutil --forget dev.dnsy.dnsy`.
+
+### Windows package
+
+```powershell
+msiexec /i dnsy-x86_64-pc-windows-msvc.msi /qn
+```
+
+The MSI is per machine (run it from an elevated prompt). It installs `dnsy.exe` to
+`C:\Program Files\dnsy\bin` and adds that folder to the system `PATH`; open a new terminal before
+running `dnsy`. Upgrades replace the previous version in place (the upgrade code is fixed in
+`crates/dnsy/Cargo.toml` and must never change). Remove it with `msiexec /x
+dnsy-x86_64-pc-windows-msvc.msi /qn` or from Apps in Settings. Without `/qn` the installer shows a
+wizard where the PATH entry can be deselected.
+
+### Unsigned packages
+
+The `.pkg` and `.msi` files are not signed (no Apple Developer ID, no Windows code-signing
+certificate), so both operating systems warn:
+
+- **macOS 15 (Sequoia) and later**: Gatekeeper blocks a quarantined unsigned `.pkg` opened from the
+  Finder or installed from a browser download. Open **System Settings > Privacy & Security**, scroll
+  to the message about `dnsy-...pkg` and choose **Open Anyway**. Running `sudo installer` in a
+  terminal on a file fetched with `curl` (which sets no quarantine flag) is not blocked; for a
+  browser download you can instead run `xattr -d com.apple.quarantine <file>.pkg`.
+- **Windows**: SmartScreen shows "Windows protected your PC" for the `.msi`; choose **More info**
+  then **Run anyway**. `msiexec /qn` does not show the prompt.
+
+Verify the download against `sha256.sum` (below) before overriding either warning.
+
 Or download an archive by hand and verify it:
 
 ```sh
@@ -103,6 +155,9 @@ Configuration lives in `dist-workspace.toml`; the workflow is `.github/workflows
    `web/dist/dnsy/browser`) and install `musl-tools`; then `dist build` compiles
    `dnsy --features embed-ui` with the `dist` profile, which inherits `[profile.release]` unchanged
    (fat LTO, one codegen unit, stripped, overflow checks, `panic = "unwind"`).
+   On the macOS and Windows runners the same `dist build` also produces the `.pkg` (`pkgbuild` and
+   `productbuild`, identifier from `[dist.mac-pkg-config]`) and the `.msi` (WiX 3 via cargo-wix, from
+   `crates/dnsy/wix/main.wxs`; the WiX upgrade and PATH GUIDs are in `[package.metadata.wix]`).
 4. `build-global-artifacts` creates the installers, `source.tar.gz` and `sha256.sum`.
 5. `host` uploads everything and creates the GitHub Release (the only job with `contents: write`).
    Tags with a suffix such as `v0.2.0-rc.1` are marked as pre-releases.
@@ -140,8 +195,17 @@ free `ubuntu-24.04-arm` runners need that) or has larger arm runners.
    ```
 
 5. Watch the `Release` workflow. When it is green the release `v0.1.0` has the 7 archives, 2
-   installers, `source.tar.gz`, per-file `.sha256` files and `sha256.sum`.
-6. Verify: download `sha256.sum` and the archives and run `sha256sum -c sha256.sum --ignore-missing`;
+   script installers, 2 `.pkg` files, the `.msi`, `source.tar.gz`, per-file `.sha256` files and `sha256.sum`.
+6. Verify the packages by hand (the `installers` workflow does the same on pull requests that touch
+   the packaging files, but a release is the real test):
+   - macOS (a Mac with no `dnsy` installed): download `dnsy-<arch>.pkg` in a browser, expect the
+     Gatekeeper block, **Open Anyway**, finish the installer, then `dnsy version` prints `0.1.0` and
+     `which dnsy` is `/usr/local/bin/dnsy`. Repeat the other architecture if you have the hardware.
+   - Windows: download the `.msi`, expect the SmartScreen warning, install it (wizard and `/qn`),
+     open a new terminal and run `dnsy version`; check `C:\Program Files\dnsy\bin\dnsy.exe` and the
+     system `PATH`; install it again over itself and over an older build (no second Apps entry);
+     uninstall and check both are gone.
+7. Verify: download `sha256.sum` and the archives and run `sha256sum -c sha256.sum --ignore-missing`;
    run the installer on a clean Linux and a clean Windows machine; `dnsy version` must print
    `0.1.0` and `/` on the web port must serve the UI (embedded).
 
