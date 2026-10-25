@@ -71,8 +71,9 @@ Prebuilt binaries for Linux, macOS and Windows are on the
 curl -fsSL https://dnsy.dev/install.sh | sh
 ```
 
-On Windows (PowerShell): `irm https://dnsy.dev/install.ps1 | iex`. Both are small wrappers around the
-installer attached to the latest release (see [Releases](docs/book/src/release.md)); you can also
+On Windows (PowerShell): `irm https://dnsy.dev/install.ps1 | iex`. The script asks where to install
+(system-wide, just for you, or a local folder) and whether to write a starter config; flags and
+environment variables skip the questions (see [Releases](docs/book/src/release.md)). You can also
 build from source as below.
 
 **1. Build (skip this if you installed a release).** You need a Rust toolchain (pinned in `rust-toolchain.toml`). `just build` also builds
