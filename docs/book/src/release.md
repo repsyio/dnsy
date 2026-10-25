@@ -37,8 +37,17 @@ Linux distribution packages are built from the two `gnu` archives after the rele
 Each archive holds `dnsy` (`dnsy.exe` on Windows), `LICENSE`, `README.md`, `CHANGELOG.md` and the sample config `dnsy.toml`.
 Next to the archives the release has `dnsy-installer.sh` (Linux and macOS), `dnsy-installer.ps1`
 (Windows), the two `.pkg` files and the `.msi` above, the four Linux packages (each with its own
-`.sha256`, but not listed in `sha256.sum`, which dist writes before the packages exist), `source.tar.gz`, one `<file>.sha256` per file
-and a combined `sha256.sum`. The macOS and Windows packages hold only the binary (no `LICENSE`, `README.md` or sample
+`.sha256`), `source.tar.gz`, one `<file>.sha256` per archive and package, and a combined `sha256.sum`.
+
+`sha256.sum` covers the seven archives, `source.tar.gz` and the four Linux packages. dist writes it
+before the packages exist, so `package-linux.yml` adds their lines afterwards
+(`scripts/update-sha256sum.sh`: same `<sha256> *<file>` format, sorted by name, an existing line for
+the same file is replaced, so a re-run never duplicates) and re-uploads it. The two script installers,
+the `.pkg` files and the `.msi` are **not** in `sha256.sum` and have no `.sha256` file: dist
+checksums archives only, as the installers of v0.1.0 show, and it treats `.pkg` and `.msi` as
+installers too (not confirmed against a release that has them). For those, rely on the
+HTTPS download from the release page. To verify a download, put it next to `sha256.sum` and run
+`sha256sum -c sha256.sum --ignore-missing` (macOS: `shasum -a 256 -c sha256.sum --ignore-missing`). The macOS and Windows packages hold only the binary (no `LICENSE`, `README.md` or sample
 config; use `dnsy config init` to write a config).
 
 The `gnu` builds (x86_64 and aarch64) are built inside `quay.io/pypa/manylinux_2_28_<arch>`
@@ -227,8 +236,11 @@ Configuration lives in `dist-workspace.toml`; the workflow is `.github/workflows
    release, checks them against their `.sha256`, runs `scripts/package-linux.sh` (nfpm 2.48.0,
    downloaded by `scripts/install-nfpm.sh` and verified against the sha256 pinned in that script;
    configuration in `packaging/nfpm.yaml`, maintainer scripts in `packaging/scripts/`) and uploads
-   the four packages and their `.sha256` files with `gh release upload --clobber`. Nothing is
-   compiled again. If it fails the release still exists; fix the cause and run **Package Linux**
+   the four packages and their `.sha256` files with `gh release upload --clobber`, then downloads
+   the release's `sha256.sum`, adds the package lines with `scripts/update-sha256sum.sh`, checks every
+   line of the result with `sha256sum -c` against the release's files, and uploads it back with
+   `--clobber`. It fails if the release has no `sha256.sum` (it never creates one that lists only
+   the packages). Nothing is compiled again. If it fails the release still exists; fix the cause and run **Package Linux**
    from the Actions tab (`workflow_dispatch`) with the tag, which rebuilds and replaces the
    packages using the packaging files of the branch you run it on, without moving the tag.
 

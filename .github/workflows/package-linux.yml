@@ -85,3 +85,25 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP/packages"
           gh release upload "$TAG" --clobber dnsy_*.deb dnsy-*.rpm ./*.sha256
+      - name: Add the packages to sha256.sum
+        run: |
+          set -euo pipefail
+          # dist wrote sha256.sum in `host`, before the packages existed. It must already be on the
+          # release: fail rather than create a sum that lists only the packages.
+          sums="$RUNNER_TEMP/sums"
+          rm -rf "$sums" && mkdir -p "$sums"
+          if ! gh release download "$TAG" --dir "$sums" --pattern sha256.sum || [ ! -s "$sums/sha256.sum" ]; then
+            echo "::error::release $TAG has no sha256.sum to update"
+            exit 1
+          fi
+          scripts/update-sha256sum.sh "$sums/sha256.sum" "$RUNNER_TEMP/packages"
+          # Every listed file must match: fetch what the sum lists (archives, source.tar.gz) and
+          # check it together with the packages. No --ignore-missing: a missing file is an error.
+          verify="$RUNNER_TEMP/verify"
+          rm -rf "$verify" && mkdir -p "$verify"
+          sed 's/^[0-9a-f]* [ *]//' "$sums/sha256.sum" | grep -Ev '^dnsy[_-].*\.(deb|rpm)$' |
+            while IFS= read -r f; do printf -- '--pattern\0%s\0' "$f"; done |
+            xargs -0 gh release download "$TAG" --dir "$verify"
+          cp "$RUNNER_TEMP"/packages/dnsy_*.deb "$RUNNER_TEMP"/packages/dnsy-*.rpm "$sums/sha256.sum" "$verify/"
+          (cd "$verify" && sha256sum -c sha256.sum)
+          gh release upload "$TAG" --clobber "$sums/sha256.sum"
