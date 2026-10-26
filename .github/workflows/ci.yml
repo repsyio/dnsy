@@ -39,7 +39,7 @@ jobs:
           fi
           rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: just,cargo-nextest,cargo-llvm-cov,cargo-deny,cargo-audit
       - run: just check
@@ -102,7 +102,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: embed-ui
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-nextest
       - run: cargo clippy -p dnsy-api -p dnsy --all-targets --features dnsy/embed-ui,dnsy-api/embed-ui -- -D warnings
@@ -130,7 +130,7 @@ jobs:
           package_json_file: web/package.json
           cache: true
           cache_dependency_path: web/pnpm-lock.yaml
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: just
       - run: just web
