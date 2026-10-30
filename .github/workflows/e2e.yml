@@ -20,7 +20,7 @@ env:
 jobs:
   rust:
     name: e2e (rust)
-    runs-on: repsy-lg
+    runs-on: ubicloud-standard-8
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,7 +46,7 @@ jobs:
   # `just e2e-ui`, with system dependencies for Chromium and the report kept on failure.
   browser:
     name: e2e (browser)
-    runs-on: repsy-lg
+    runs-on: ubicloud-standard-8
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,7 +74,6 @@ jobs:
         uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4 # v2.2.0
         with:
           install-dependencies: true
-          no-sudo: true
       - name: Point Playwright at Chrome
         run: echo "CHROME_BIN=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
       - name: Install the pinned toolchain
@@ -111,7 +110,7 @@ jobs:
     name: e2e
     if: always()
     needs: [rust, browser]
-    runs-on: repsy-md
+    runs-on: ubicloud-standard-4
     timeout-minutes: 5
     steps:
       - name: Require every job to have succeeded
