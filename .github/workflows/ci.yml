@@ -23,7 +23,7 @@ jobs:
   # and `just cov-rust` (cargo llvm-cov nextest: runs the whole suite, then the coverage gates).
   rust:
     name: rust (linux)
-    runs-on: repsy-lg
+    runs-on: ubicloud-standard-8
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,7 +70,7 @@ jobs:
   # web UI first (rust-embed reads web/dist/dnsy/browser), then run the API suite with the feature.
   embed-ui:
     name: rust (embed-ui)
-    runs-on: repsy-lg
+    runs-on: ubicloud-standard-8
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -114,7 +114,7 @@ jobs:
   # web/angular.json), ng build, OpenAPI types drift.
   web:
     name: web
-    runs-on: repsy-md
+    runs-on: ubicloud-standard-4
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,7 +144,7 @@ jobs:
     name: ci
     if: always()
     needs: [rust, embed-ui, web]
-    runs-on: repsy-sm
+    runs-on: ubicloud-standard-2
     timeout-minutes: 5
     steps:
       - name: Require every job to have succeeded
