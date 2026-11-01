@@ -18,8 +18,8 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    # The self-hosted runners labelled code-scanning, as with the default setup.
-    runs-on: code-scanning
+    # A runnerd runner: it does not serve the old code-scanning label.
+    runs-on: repsy-lg
     timeout-minutes: 60
     permissions:
       actions: read
