@@ -19,7 +19,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     # A runnerd runner: it does not serve the old code-scanning label.
-    runs-on: repsy-lg
+    runs-on: repsy-md
     timeout-minutes: 60
     permissions:
       actions: read
