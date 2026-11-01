@@ -4,7 +4,7 @@ version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: weekly, day: monday, time: "00:40", timezone: "Europe/Amsterdam" }
     open-pull-requests-limit: 5
     commit-message: { prefix: "DNSY-115: ⬆️" }
     groups:
@@ -32,7 +32,7 @@ updates:
 
   - package-ecosystem: npm
     directory: /web
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: weekly, day: monday, time: "00:40", timezone: "Europe/Amsterdam" }
     open-pull-requests-limit: 5
     commit-message: { prefix: "DNSY-115: ⬆️" }
     groups:
@@ -61,7 +61,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: weekly, day: monday, time: "00:40", timezone: "Europe/Amsterdam" }
     commit-message: { prefix: "DNSY-115: 👷" }
     groups:
       actions:
