@@ -9,9 +9,8 @@ permissions:
 
 jobs:
   pr-title:
-    # Deliberately GitHub-hosted, like repsyio/repsy: the check needs no checkout or secrets, so it
-    # stays off the shared self-hosted runners.
-    runs-on: ubuntu-latest
+    # A runnerd runner. The check needs no checkout or secrets.
+    runs-on: repsy-sm
     timeout-minutes: 5
     steps:
       - name: Check the PR title shape
