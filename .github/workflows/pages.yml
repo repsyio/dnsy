@@ -32,6 +32,8 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
           fi
           rustup show active-toolchain || rustup toolchain install
+          # mdbook runs rustdoc from outside the checkout, where rust-toolchain.toml does not apply.
+          rustup default "$(rustup show active-toolchain | awk '{print $1}')"
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: just,mdbook@0.5.4
