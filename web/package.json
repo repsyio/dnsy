@@ -42,10 +42,10 @@
     "jsdom": "^30.0.0",
     "openapi-typescript": "^7.13.0",
     "postcss": "^8.5.32",
-    "prettier": "^3.8.1",
+    "prettier": "^3.10.1",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
-    "typescript-eslint": "8.72.1",
+    "typescript-eslint": "8.72.2",
     "vitest": "^5.0.0"
   },
   "pnpm": {
