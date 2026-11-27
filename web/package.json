@@ -38,14 +38,14 @@
     "@types/node": "^24.19.2",
     "@vitest/coverage-v8": "^5.1.0",
     "angular-eslint": "22.6.0",
-    "eslint": "^10.14.0",
+    "eslint": "^10.15.0",
     "jsdom": "^30.0.0",
     "openapi-typescript": "^7.13.0",
     "postcss": "^8.5.32",
-    "prettier": "^3.8.1",
+    "prettier": "^3.10.1",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
-    "typescript-eslint": "8.72.1",
+    "typescript-eslint": "8.74.0",
     "vitest": "^5.1.0"
   },
   "pnpm": {
